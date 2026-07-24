@@ -1,5 +1,4 @@
 from __future__ import annotations
-import threading
 
 import csv
 import math
@@ -94,6 +93,10 @@ VEST_LABELS = {
     "reflective_vest",
     "chaleco",
     "chaleco_reflectivo",
+}
+PERSON_LABELS = {
+    "person",
+    "persona",
 }
 
 EVENT_FIELDS = [
@@ -253,6 +256,178 @@ def intersection_over_item(item_box: np.ndarray, region_box: np.ndarray) -> floa
     return intersection / item_area
 
 
+
+def box_iou(box_a: np.ndarray, box_b: np.ndarray) -> float:
+    """IoU entre dos cajas xyxy."""
+    ax1, ay1, ax2, ay2 = box_a.astype(float)
+    bx1, by1, bx2, by2 = box_b.astype(float)
+
+    ix1 = max(ax1, bx1)
+    iy1 = max(ay1, by1)
+    ix2 = min(ax2, bx2)
+    iy2 = min(ay2, by2)
+    intersection = max(0.0, ix2 - ix1) * max(0.0, iy2 - iy1)
+
+    area_a = max(1.0, ax2 - ax1) * max(1.0, ay2 - ay1)
+    area_b = max(1.0, bx2 - bx1) * max(1.0, by2 - by1)
+    union = area_a + area_b - intersection
+    return intersection / union if union > 0 else 0.0
+
+
+def keypoint_confidence_threshold() -> float:
+    """Reutiliza POSE_CONF sin añadir otra variable de configuración."""
+    return max(0.25, min(0.50, POSE_CONF))
+
+
+def visible_keypoint_count(keypoints: np.ndarray | None) -> int:
+    if keypoints is None:
+        return 0
+
+    threshold = keypoint_confidence_threshold()
+    return sum(
+        1
+        for point in keypoints
+        if point.shape[0] >= 3 and float(point[2]) >= threshold
+    )
+
+
+def keypoint_group_visible(
+    keypoints: np.ndarray | None,
+    indices: tuple[int, ...],
+) -> bool:
+    if keypoints is None:
+        return False
+
+    threshold = keypoint_confidence_threshold()
+    return any(
+        index < len(keypoints)
+        and keypoints[index].shape[0] >= 3
+        and float(keypoints[index][2]) >= threshold
+        for index in indices
+    )
+
+
+def pose_confirmed_by_ppe_person(
+    person_box: np.ndarray,
+    ppe_person_boxes: list[np.ndarray],
+) -> bool:
+    """Usa la clase Person de best_ppe.pt como confirmación cruzada."""
+    minimum_iou = max(0.10, min(0.30, IOU_THRESHOLD / 2.0))
+    px1, py1, px2, py2 = person_box.astype(float)
+
+    for candidate in ppe_person_boxes:
+        if box_iou(person_box, candidate) >= minimum_iou:
+            return True
+
+        cx = float(candidate[0] + candidate[2]) / 2.0
+        cy = float(candidate[1] + candidate[3]) / 2.0
+        if px1 <= cx <= px2 and py1 <= cy <= py2:
+            return True
+
+    return False
+
+
+def valid_pose_person(
+    person: dict[str, Any],
+    ppe_person_boxes: list[np.ndarray],
+) -> bool:
+    """Descarta poses anatómicamente pobres o no confirmadas."""
+    keypoints = person["keypoints"]
+
+    if visible_keypoint_count(keypoints) < 5:
+        return False
+    if not keypoint_group_visible(keypoints, (5, 6)):
+        return False
+    if not keypoint_group_visible(keypoints, (11, 12)):
+        return False
+
+    strong_pose_threshold = min(0.85, POSE_CONF + 0.25)
+    if person["confidence"] >= strong_pose_threshold:
+        return True
+
+    return pose_confirmed_by_ppe_person(person["box"], ppe_person_boxes)
+
+
+def epp_evaluable_for_person(
+    person: dict[str, Any],
+    frame_width: int,
+    frame_height: int,
+) -> bool:
+    """No evalúa EPP cuando la persona está entrando/saliendo o muy recortada."""
+    x1, y1, x2, y2 = person["box"].astype(float)
+    margin = max(8, int(min(frame_width, frame_height) * 0.01))
+
+    # Para esta cámara la entrada principal ocurre por el borde inferior.
+    if y2 >= frame_height - margin:
+        return False
+
+    person_height = max(0.0, y2 - y1)
+    if person_height / max(1.0, frame_height) < 0.12:
+        return False
+
+    keypoints = person["keypoints"]
+    head_visible = keypoint_group_visible(keypoints, (0, 1, 2, 3, 4))
+    shoulders_visible = keypoint_group_visible(keypoints, (5, 6))
+    hips_visible = keypoint_group_visible(keypoints, (11, 12))
+    return head_visible and shoulders_visible and hips_visible
+
+
+def draw_valid_pose(frame: np.ndarray, person: dict[str, Any]) -> None:
+    """Dibuja solo la pose que ya pasó la validación."""
+    keypoints = person["keypoints"]
+    if keypoints is None:
+        return
+
+    threshold = keypoint_confidence_threshold()
+    skeleton = (
+        (0, 1), (0, 2), (1, 3), (2, 4),
+        (5, 6), (5, 7), (7, 9), (6, 8), (8, 10),
+        (5, 11), (6, 12), (11, 12),
+        (11, 13), (13, 15), (12, 14), (14, 16),
+    )
+
+    for start_index, end_index in skeleton:
+        if start_index >= len(keypoints) or end_index >= len(keypoints):
+            continue
+        start = keypoints[start_index]
+        end = keypoints[end_index]
+        start_conf = float(start[2]) if start.shape[0] >= 3 else 0.0
+        end_conf = float(end[2]) if end.shape[0] >= 3 else 0.0
+        if start_conf < threshold or end_conf < threshold:
+            continue
+        cv2.line(
+            frame,
+            tuple(start[:2].astype(int)),
+            tuple(end[:2].astype(int)),
+            (255, 140, 0),
+            2,
+            cv2.LINE_AA,
+        )
+
+    for point in keypoints:
+        confidence = float(point[2]) if point.shape[0] >= 3 else 0.0
+        if confidence < threshold:
+            continue
+        cv2.circle(frame, tuple(point[:2].astype(int)), 4, (0, 255, 0), -1)
+
+
+def draw_associated_ppe(frame: np.ndarray, item: dict[str, Any]) -> None:
+    """Dibuja únicamente EPP asociado a una persona válida."""
+    x1, y1, x2, y2 = item["box"].astype(int)
+    label = "casco" if item["type"] == "helmet" else "chaleco"
+    cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 220, 255), 2)
+    cv2.putText(
+        frame,
+        f"{label} {item['confidence']:.2f}",
+        (x1, max(20, y1 - 6)),
+        cv2.FONT_HERSHEY_SIMPLEX,
+        0.50,
+        (0, 220, 255),
+        2,
+        cv2.LINE_AA,
+    )
+
+
 def region_for_person(person_box: np.ndarray, item_type: str) -> np.ndarray:
     """Crea una región anatómica aproximada para casco o chaleco."""
     x1, y1, x2, y2 = person_box.astype(float)
@@ -282,14 +457,22 @@ def region_for_person(person_box: np.ndarray, item_type: str) -> np.ndarray:
 def associate_ppe_to_people(
     people: list[dict[str, Any]],
     ppe_detections: list[dict[str, Any]],
-) -> dict[int, dict[str, bool]]:
-    """Asocia cada casco/chaleco a una sola persona según su ubicación."""
-    associations = {
-        person["track_id"]: {"helmet": False, "vest": False}
+) -> dict[int, dict[str, Any]]:
+    """Asocia cada casco/chaleco a una sola persona y conserva la caja asociada."""
+    associations: dict[int, dict[str, Any]] = {
+        person["track_id"]: {
+            "helmet": False,
+            "vest": False,
+            "helmet_item": None,
+            "vest_item": None,
+        }
         for person in people
     }
 
     for item in ppe_detections:
+        if item["type"] not in {"helmet", "vest"}:
+            continue
+
         item_box = item["box"]
         item_type = item["type"]
         center_x = float(item_box[0] + item_box[2]) / 2.0
@@ -299,24 +482,29 @@ def associate_ppe_to_people(
         best_score = 0.0
 
         for person in people:
+            if not person.get("epp_evaluable", False):
+                continue
+
             region = region_for_person(person["box"], item_type)
             center_inside = (
                 region[0] <= center_x <= region[2]
                 and region[1] <= center_y <= region[3]
             )
             overlap = intersection_over_item(item_box, region)
-
-            # El centro dentro de la zona anatómica pesa más que una intersección marginal.
             score = overlap + (0.50 if center_inside else 0.0)
+
             if score > best_score:
                 best_score = score
                 best_track_id = person["track_id"]
 
         if best_track_id is not None and best_score >= 0.35:
-            associations[best_track_id][item_type] = True
+            item_key = f"{item_type}_item"
+            current = associations[best_track_id][item_key]
+            if current is None or item["confidence"] > current["confidence"]:
+                associations[best_track_id][item_type] = True
+                associations[best_track_id][item_key] = item
 
     return associations
-
 
 def stable_epp_status(state: TrackState) -> tuple[str | None, float, float]:
     sample_count = min(len(state.helmet_history), len(state.vest_history))
@@ -571,6 +759,8 @@ def extract_ppe_detections(ppe_result: Any) -> list[dict[str, Any]]:
             item_type = "helmet"
         elif label in VEST_LABELS:
             item_type = "vest"
+        elif label in PERSON_LABELS:
+            item_type = "person"
         else:
             continue
 
@@ -584,7 +774,6 @@ def extract_ppe_detections(ppe_result: Any) -> list[dict[str, Any]]:
         )
 
     return detections
-
 
 def masked_rtsp_url(rtsp_url: str) -> str:
     """Oculta la contraseña al imprimir diagnósticos."""
@@ -904,28 +1093,37 @@ def main() -> None:
                     **model_kwargs(),
                 )[0]
 
-                people = extract_people(pose_result)
-                ppe_detections = extract_ppe_detections(ppe_result)
+                raw_people = extract_people(pose_result)
+                all_ppe_detections = extract_ppe_detections(ppe_result)
+
+                ppe_person_boxes = [
+                    item["box"]
+                    for item in all_ppe_detections
+                    if item["type"] == "person"
+                ]
+                people = [
+                    person
+                    for person in raw_people
+                    if valid_pose_person(person, ppe_person_boxes)
+                ]
+
+                for person in people:
+                    person["epp_evaluable"] = epp_evaluable_for_person(
+                        person,
+                        frame_width=frame.shape[1],
+                        frame_height=frame.shape[0],
+                    )
+
+                ppe_detections = [
+                    item
+                    for item in all_ppe_detections
+                    if item["type"] in {"helmet", "vest"}
+                ]
                 associations = associate_ppe_to_people(people, ppe_detections)
 
-                # pose_result.plot() dibuja cajas y keypoints; después agregamos estados.
-                annotated = pose_result.plot()
+                # Se dibuja desde el frame original para no mostrar detecciones descartadas.
+                annotated = frame.copy()
                 pending_events: list[dict[str, Any]] = []
-
-                for item in ppe_detections:
-                    x1, y1, x2, y2 = item["box"].astype(int)
-                    text = f"{item['type']} {item['confidence']:.2f}"
-                    cv2.rectangle(annotated, (x1, y1), (x2, y2), (200, 200, 200), 1)
-                    cv2.putText(
-                        annotated,
-                        text,
-                        (x1, max(20, y1 - 5)),
-                        cv2.FONT_HERSHEY_SIMPLEX,
-                        0.45,
-                        (255, 255, 255),
-                        1,
-                        cv2.LINE_AA,
-                    )
 
                 for person in people:
                     track_id = person["track_id"]
@@ -934,14 +1132,25 @@ def main() -> None:
                     state.last_seen = now_monotonic
 
                     current_ppe = associations.get(
-                        track_id, {"helmet": False, "vest": False}
+                        track_id,
+                        {
+                            "helmet": False,
+                            "vest": False,
+                            "helmet_item": None,
+                            "vest_item": None,
+                        },
                     )
-                    state.helmet_history.append(current_ppe["helmet"])
-                    state.vest_history.append(current_ppe["vest"])
 
-                    epp_status, helmet_ratio, vest_ratio = stable_epp_status(state)
+                    epp_status: str | None = None
+                    helmet_ratio = 0.0
+                    vest_ratio = 0.0
                     stable_helmet: bool | None = None
                     stable_vest: bool | None = None
+
+                    if person["epp_evaluable"]:
+                        state.helmet_history.append(current_ppe["helmet"])
+                        state.vest_history.append(current_ppe["vest"])
+                        epp_status, helmet_ratio, vest_ratio = stable_epp_status(state)
 
                     if epp_status is not None:
                         stable_helmet = helmet_ratio >= EPP_PRESENT_RATIO
@@ -993,13 +1202,18 @@ def main() -> None:
                         )
 
                     x1, y1, x2, y2 = box.astype(int)
-                    display_epp = epp_status or "Evaluando EPP"
+                    display_epp = (
+                        epp_status or "Evaluando EPP"
+                        if person["epp_evaluable"]
+                        else "EPP no evaluable: persona parcial"
+                    )
                     display_fall = " | POSIBLE CAIDA" if fall["active"] else ""
                     track_text = (
                         f"T{track_id} | " if SHOW_TEMPORARY_TRACK_ID else ""
                     )
                     label = f"{track_text}{display_epp}{display_fall}"
 
+                    draw_valid_pose(annotated, person)
                     cv2.rectangle(annotated, (x1, y1), (x2, y2), (255, 255, 255), 2)
                     cv2.putText(
                         annotated,
@@ -1011,6 +1225,11 @@ def main() -> None:
                         2,
                         cv2.LINE_AA,
                     )
+
+                    if current_ppe["helmet_item"] is not None:
+                        draw_associated_ppe(annotated, current_ppe["helmet_item"])
+                    if current_ppe["vest_item"] is not None:
+                        draw_associated_ppe(annotated, current_ppe["vest_item"])
 
                 # Guardar evidencias después de dibujar todas las anotaciones del frame.
                 for pending in pending_events:
