@@ -5,10 +5,10 @@ import cv2
 import os
 
 # Crear carpeta de evidencias
-os.makedirs(r"C:\IA\Evidencias", exist_ok=True)
+os.makedirs(r"Evidencias", exist_ok=True)
 
 # Modelo
-model = YOLO(r"C:\IA\best_ppe.pt")
+model = YOLO(r"best_ppe.pt")
 
 print("CLASES DEL MODELO:")
 print(model.names)
@@ -94,7 +94,7 @@ for r in resultados:
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
 
             foto = (
-                rf"C:\IA\Evidencias\ID_{persona_id}_{timestamp}.jpg"
+                rf"Evidencias\ID_{persona_id}_{timestamp}.jpg"
             )
 
             cv2.imwrite(
@@ -125,7 +125,7 @@ for r in resultados:
         df = pd.DataFrame(datos)
 
         df.to_excel(
-            r"C:\IA\Reporte_EPP.xlsx",
+            r"Reporte_EPP.xlsx",
             index=False
         )
 
@@ -139,10 +139,9 @@ for r in resultados:
 df = pd.DataFrame(datos)
 
 df.to_excel(
-    r"C:\IA\Reporte_EPP.xlsx",
+    r"Reporte_EPP.xlsx",
     index=False
 )
 
 print(df)
 print("Reporte generado correctamente")
-
