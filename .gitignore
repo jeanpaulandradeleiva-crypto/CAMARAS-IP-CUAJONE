@@ -1,2 +1,8 @@
 .env
+yolo11n.pt
 /Evidencias
+.venv312/
+.venv*/
+__pychache__/
+*-xlsx
+*.csv

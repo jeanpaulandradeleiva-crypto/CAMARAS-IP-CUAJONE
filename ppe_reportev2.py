@@ -507,11 +507,18 @@ def selected_device() -> str:
 
 def model_kwargs() -> dict[str, Any]:
     device = selected_device()
-    kwargs: dict[str, Any] = {"device": device}
 
-    using_cuda = device not in {"cpu", "mps"} and torch.cuda.is_available()
+    kwargs: dict[str, Any] = {
+        "device": device,
+    }
+
+    using_cuda = (
+        device not in {"cpu", "mps"}
+        and torch.cuda.is_available()
+    )
+
     if USE_FP16 and using_cuda:
-        kwargs["half"] = True
+        kwargs["quantize"] = 16
 
     return kwargs
 
@@ -800,7 +807,15 @@ def main() -> None:
 
     print("Clases del modelo EPP:")
     print(ppe_model.names)
-    print(f"Dispositivo: {selected_device()} | FP16: {model_kwargs().get('half', False)}")
+    device = selected_device()
+    kwargs = model_kwargs()
+
+    fp16_enabled = kwargs.get("quantize") in {16, "fp16"}
+
+    print(
+        f"Dispositivo: {device} | "
+        f"FP16: {fp16_enabled}"
+    )
     print(f"Tracker temporal: {TRACKER}")
 
     model_names = (
