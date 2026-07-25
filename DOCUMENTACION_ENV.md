@@ -74,6 +74,114 @@ uv usa `pyproject.toml` como manifiesto, `.python-version` para preferir Python
 uv en este repositorio. `uv sync --locked` exige que el bloqueo corresponda al
 manifiesto y recrea `.venv` cuando el intérprete no es compatible.
 
+## Instalación opcional de PyTorch con CUDA
+
+La configuración `YOLO_DEVICE=0` y la consulta `torch.cuda.is_available()` no
+instalan CUDA. Solo seleccionan o detectan la GPU cuando la compilación instalada
+de PyTorch incluye soporte para un runtime CUDA compatible. Una instalación
+genérica puede resolver una compilación sin ese soporte aunque el equipo tenga una
+GPU NVIDIA.
+
+### Requisitos previos
+
+Antes de reemplazar las ruedas de PyTorch, confirma:
+
+- Una GPU NVIDIA soportada por PyTorch.
+- Un controlador NVIDIA actual y compatible. `nvidia-smi` debe ejecutarse sin
+  errores y reconocer la GPU.
+- Python 3.12 dentro de `.venv`.
+- Una rueda de PyTorch que corresponda a uno de los runtimes CUDA admitidos
+  oficialmente para la versión seleccionada.
+
+Consulta el [selector oficial de instalación de PyTorch](https://pytorch.org/get-started/locally/)
+y utiliza el comando vigente que indique para tu plataforma. No existe una versión
+CUDA universalmente correcta: las compilaciones soportadas cambian con las
+versiones de PyTorch.
+
+Las ruedas CUDA precompiladas de PyTorch normalmente incluyen el runtime CUDA de
+espacio de usuario que necesitan. Aun así, requieren un controlador NVIDIA
+compatible. Por lo general, el CUDA Toolkit instalado en el sistema solo es
+necesario para compilar extensiones CUDA personalizadas, no para ejecutar estas
+ruedas precompiladas.
+
+### Reinstalación con pip
+
+Después de crear y activar `.venv` mediante la ruta pip, reemplaza `cuXXX` por el
+índice indicado en el selector oficial y reinstala `torch` y `torchvision`:
+
+```powershell
+python -m pip install --reinstall torch torchvision --index-url https://download.pytorch.org/whl/cuXXX
+```
+
+El mismo comando se aplica en POSIX con `.venv` activado:
+
+```bash
+python -m pip install --reinstall torch torchvision --index-url https://download.pytorch.org/whl/cuXXX
+```
+
+### Reinstalación con uv
+
+Después de `uv sync --locked`, indica el intérprete de `.venv` de forma explícita.
+En Windows:
+
+```powershell
+uv pip install --python .venv\Scripts\python.exe --reinstall torch torchvision --index-url https://download.pytorch.org/whl/cuXXX
+```
+
+En POSIX:
+
+```bash
+uv pip install --python .venv/bin/python --reinstall torch torchvision --index-url https://download.pytorch.org/whl/cuXXX
+```
+
+> `cuXXX` es únicamente un marcador de posición. DEBE reemplazarse por el sufijo
+> CUDA que muestre el selector oficial; copiar `cuXXX` literalmente es inválido.
+
+### Verificación
+
+Primero comprueba el controlador:
+
+```powershell
+nvidia-smi
+```
+
+Con `.venv` activado, verifica la compilación instalada y la GPU detectada:
+
+```powershell
+python -c "import torch; print('CUDA disponible:', torch.cuda.is_available()); print('CUDA de PyTorch:', torch.version.cuda); print('GPU:', torch.cuda.get_device_name(0) if torch.cuda.is_available() else 'CPU')"
+```
+
+La verificación equivalente sin activar el entorno es:
+
+```powershell
+uv run python -c "import torch; print('CUDA disponible:', torch.cuda.is_available()); print('CUDA de PyTorch:', torch.version.cuda); print('GPU:', torch.cuda.get_device_name(0) if torch.cuda.is_available() else 'CPU')"
+```
+
+La instalación es correcta cuando `torch.cuda.is_available()` muestra `True`,
+`torch.version.cuda` muestra una versión no nula y aparece el nombre de la GPU.
+
+Si `torch.cuda.is_available()` muestra `False`, no configures `YOLO_DEVICE=0`.
+Utiliza temporalmente:
+
+```dotenv
+YOLO_DEVICE=cpu
+USE_FP16=0
+```
+
+Después, vuelve a comprobar el controlador mediante `nvidia-smi` y confirma que la
+rueda elegida corresponde a una compilación CUDA ofrecida actualmente por el
+selector oficial de PyTorch.
+
+### Reproducibilidad del entorno
+
+La reinstalación CUDA descrita aquí es una sustitución manual posterior a la
+sincronización. El bloqueo actual del proyecto usa resolución genérica de PyPI y
+no detecta la GPU ni conserva automáticamente una variante CUDA específica. Una
+ejecución posterior de `uv sync --locked` o una reinstalación pip desde
+`requirements.txt` o `requirements-dev.txt` puede reemplazarla. Después de cada
+sincronización o reinstalación, vuelve a aplicar el índice CUDA seleccionado y
+repite la verificación.
+
 ---
 
 # Modo de analítica

@@ -76,6 +76,51 @@ dependencias. En instalaciones y verificaciones reproducibles, utiliza
 `uv sync --locked` para que un bloqueo desactualizado produzca un error en lugar
 de regenerarse silenciosamente.
 
+### PyTorch con CUDA opcional
+
+Si el equipo tiene una GPU NVIDIA compatible, instala una compilación de PyTorch
+con CUDA después de crear `.venv` y completar la ruta pip o uv. `YOLO_DEVICE=0` y
+`torch.cuda.is_available()` solo seleccionan o detectan CUDA cuando la compilación
+instalada de PyTorch lo admite; no instalan soporte CUDA.
+
+Requisitos: GPU NVIDIA soportada, controlador NVIDIA actual y compatible
+verificado con `nvidia-smi`, Python 3.12 y una rueda de PyTorch correspondiente a
+un runtime CUDA admitido oficialmente. Obtén siempre el comando vigente del
+[selector oficial de PyTorch](https://pytorch.org/get-started/locally/); la versión
+compatible cambia con el tiempo.
+
+Con `.venv` activado, la ruta pip usa este patrón:
+
+```powershell
+python -m pip install --reinstall torch torchvision --index-url https://download.pytorch.org/whl/cuXXX
+```
+
+Para uv, indica explícitamente el intérprete de `.venv`:
+
+```powershell
+uv pip install --python .venv\Scripts\python.exe --reinstall torch torchvision --index-url https://download.pytorch.org/whl/cuXXX
+```
+
+```bash
+uv pip install --python .venv/bin/python --reinstall torch torchvision --index-url https://download.pytorch.org/whl/cuXXX
+```
+
+`cuXXX` es un marcador y DEBE reemplazarse por el valor indicado por el selector
+oficial; copiarlo literalmente produce un comando inválido. Verifica la instalación:
+
+```powershell
+nvidia-smi
+python -c "import torch; print('CUDA disponible:', torch.cuda.is_available()); print('CUDA de PyTorch:', torch.version.cuda); print('GPU:', torch.cuda.get_device_name(0) if torch.cuda.is_available() else 'CPU')"
+uv run python -c "import torch; print('CUDA disponible:', torch.cuda.is_available()); print('CUDA de PyTorch:', torch.version.cuda); print('GPU:', torch.cuda.get_device_name(0) if torch.cuda.is_available() else 'CPU')"
+```
+
+El resultado correcto muestra `True`, una versión CUDA no nula y el nombre de la
+GPU. Si falla, usa `YOLO_DEVICE=cpu` y `USE_FP16=0`. Consulta la explicación y la
+resolución de problemas en [`DOCUMENTACION_ENV.md`](DOCUMENTACION_ENV.md). Tras un
+`uv sync --locked` o una reinstalación desde los requisitos exportados, vuelve a
+aplicar y verificar la rueda CUDA: el bloqueo actual usa resolución genérica de
+PyPI y no detecta automáticamente la GPU.
+
 ## Configuración de la aplicación
 
 `.env.example` es la plantilla correspondiente a la implementación actual.
