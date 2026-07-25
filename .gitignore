@@ -3,6 +3,7 @@ yolo11n.pt
 /Evidencias
 .venv312/
 .venv*/
+.venv/
 __pycache__/
 *.xlsx
 *.csv

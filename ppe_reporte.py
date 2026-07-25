@@ -1,8 +1,15 @@
+"""Deprecated prototype. Use ppe_reportev2.py for production monitoring."""
+
 from ultralytics import YOLO
 import pandas as pd
 from datetime import datetime
 import cv2
 import os
+
+print("ADVERTENCIA: ppe_reporte.py está obsoleto; usa ppe_reportev2.py.")
+RTSP_URL = os.getenv("RTSP_URL")
+if not RTSP_URL:
+    raise RuntimeError("Falta RTSP_URL en el entorno.")
 
 # Crear carpeta de evidencias
 os.makedirs(r"Evidencias", exist_ok=True)
@@ -15,7 +22,7 @@ print(model.names)
 
 # Cámara
 resultados = model.track(
-    source="rtsp://admin:Omate$01@172.19.90.72/axis-media/media.amp",
+    source=RTSP_URL,
     stream=True,
     show=True,
     persist=True,

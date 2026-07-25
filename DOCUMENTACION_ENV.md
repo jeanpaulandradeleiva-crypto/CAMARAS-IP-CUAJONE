@@ -1,8 +1,8 @@
 # Documentación de configuración (`.env`)
 
-Este archivo explica las variables de entorno usadas por `ppe_reporte.py` y cómo modificarlas para realizar pruebas.
+Este archivo explica las variables de entorno usadas por `ppe_reportev2.py` y cómo modificarlas para realizar pruebas. `ppe_reporte.py` es un prototipo obsoleto y no debe usarse en operación.
 
-> El archivo `.env` debe estar en la misma carpeta que `ppe_reporte.py`.  
+> El archivo `.env` debe estar en la misma carpeta que `ppe_reportev2.py`.
 > Detén y vuelve a iniciar el programa después de cualquier cambio.
 
 ---
@@ -31,6 +31,76 @@ RTSP_URL="rtsp://usuario:clave@172.19.90.72:554/axis-media/media.amp"
 ```
 
 No compartas ni subas `.env` a Git porque contiene credenciales.
+
+---
+
+# Preparación del proyecto con Python 3.12
+
+La versión preferida y soportada por el proyecto es Python 3.12. El entorno local
+se crea siempre en `.venv` y Git lo ignora.
+
+## Ruta nativa con `venv` y pip
+
+PowerShell:
+
+```powershell
+py -3.12 -m venv .venv
+.venv\Scripts\Activate.ps1
+python -m pip install --upgrade pip
+python -m pip install -r requirements-dev.txt
+```
+
+En POSIX, usa `python3.12 -m venv .venv` y `source .venv/bin/activate`.
+Los archivos `requirements.txt` y `requirements-dev.txt` son exportaciones de
+compatibilidad para pip generadas desde el bloqueo de uv; no deben editarse a mano.
+
+## Ruta de proyecto con uv
+
+```powershell
+uv python install 3.12
+uv sync --locked
+.venv\Scripts\Activate.ps1
+```
+
+También puedes ejecutar sin activar el entorno:
+
+```powershell
+uv run python ppe_reportev2.py --mode ppe-only
+uv run pytest -q
+```
+
+uv usa `pyproject.toml` como manifiesto, `.python-version` para preferir Python
+3.12 y `uv.lock` como archivo de bloqueo universal. No existe un YAML de proyecto
+uv en este repositorio. `uv sync --locked` exige que el bloqueo corresponda al
+manifiesto y recrea `.venv` cuando el intérprete no es compatible.
+
+---
+
+# Modo de analítica
+
+## `ANALYTICS_MODE`
+
+Selecciona qué recursos se cargan y qué analítica se ejecuta:
+
+| Valor | Modelos cargados | Comportamiento |
+|---|---|---|
+| `ppe-fall` | EPP y pose | EPP más evaluación de caídas; valor predeterminado. |
+| `ppe-only` | Solo EPP | Seguimiento desde la clase `Person`; no carga ni ejecuta pose. |
+
+```dotenv
+ANALYTICS_MODE=ppe-only
+```
+
+El argumento `--mode` tiene prioridad sobre `ANALYTICS_MODE`:
+
+```powershell
+python ppe_reportev2.py --mode ppe-only
+```
+
+En `ppe-only`, una ruta `POSE_MODEL_PATH` inválida no bloquea el inicio porque
+`POSE_MODEL_PATH`, `POSE_IMGSZ`, `POSE_CONF` y todas las variables `FALL_*` se
+ignoran. El modelo EPP debe contener una clase reconocible como `Person` o
+`Persona`; de lo contrario, el proceso falla antes de abrir el monitoreo.
 
 ---
 
@@ -201,6 +271,9 @@ PPE_MODEL_PATH=modelos/best_ppe.pt
 
 Modelo de pose.
 
+Solo se consulta en `ppe-fall`. En `ppe-only` se ignora por completo y el modelo
+de pose no se valida, construye ni ejecuta.
+
 ```dotenv
 POSE_MODEL_PATH=yolo26s-pose.pt
 ```
@@ -232,12 +305,13 @@ Opciones:
 ```dotenv
 YOLO_DEVICE=0
 YOLO_DEVICE=cpu
-YOLO_DEVICE=auto
 ```
 
 - `0`: primera GPU CUDA.
 - `cpu`: procesador.
-- `auto`: selección automática, si el código lo admite.
+
+Para selección automática, deja `YOLO_DEVICE` sin definir: el script usa CUDA `0`
+si `torch.cuda.is_available()` es verdadero y, en caso contrario, usa CPU.
 
 Usa `0` solo si `torch.cuda.is_available()` devuelve `True`.
 
@@ -295,6 +369,8 @@ El ID del tracker no identifica a una persona. Solo relaciona detecciones durant
 
 Resolución usada por el modelo pose.
 
+Se ignora en `ppe-only`.
+
 ```dotenv
 POSE_IMGSZ=512
 ```
@@ -339,6 +415,8 @@ PPE_IMGSZ=640
 ## `POSE_CONF`
 
 Confianza mínima para aceptar una persona o pose.
+
+Se ignora en `ppe-only`.
 
 ```dotenv
 POSE_CONF=0.60
@@ -394,7 +472,36 @@ IOU_THRESHOLD=0.50
 
 ---
 
+## `TARGET_INFERENCE_FPS`
+
+Límite opcional para la frecuencia de inicio de inferencias.
+
+```dotenv
+TARGET_INFERENCE_FPS=0
+```
+
+- `0`: sin límite; procesa cada frame más reciente disponible.
+- Valor positivo: usa un plazo basado en `time.monotonic()` para omitir frames que
+  llegan antes de la siguiente inferencia permitida.
+- Valor negativo, infinito o no numérico: configuración inválida.
+
+La captura RTSP sigue drenando la fuente mientras se omiten frames intermedios. No
+se forma una cola ni se recupera trabajo atrasado. Por ejemplo,
+`TARGET_INFERENCE_FPS=5` limita a un máximo objetivo de cinco inicios por segundo,
+pero no garantiza 5 FPS si la inferencia tarda más de 200 ms.
+
+---
+
 # Validación de personas
+
+> **Estado de implementación:** las variables históricas de esta sección
+> (`MIN_KEYPOINT_CONF`, `MIN_VALID_KEYPOINTS`,
+> `REQUIRE_PPE_PERSON_CONFIRMATION`, `PERSON_IOU_THRESHOLD`,
+> `PERSON_HISTORY_FRAMES`, `PERSON_MIN_CONFIRMATIONS` y `EXCLUSION_ZONES`) no son
+> leídas actualmente por `ppe_reportev2.py`. Se conservan porque explican ajustes
+> útiles para una evolución futura, pero agregarlas a `.env` no cambia la ejecución.
+> La implementación actual deriva el umbral de keypoints desde `POSE_CONF`, exige
+> hombros y caderas visibles y usa una confirmación geométrica fija con `Person`.
 
 ## `MIN_KEYPOINT_CONF`
 
@@ -586,7 +693,24 @@ EPP_ALERT_COOLDOWN_S=120
 
 ---
 
+## `TRACK_TTL_S`
+
+Tiempo que se conserva el estado de un tracker que dejó de verse.
+
+```dotenv
+TRACK_TTL_S=5
+```
+
+Un valor muy bajo puede perder el historial durante oclusiones breves. Un valor
+excesivo conserva estados ya ausentes durante más tiempo y aumenta el diccionario
+de seguimiento.
+
+---
+
 # Detección de caídas
+
+Toda esta sección se aplica únicamente a `ppe-fall`. En `ppe-only` no se evalúan
+caídas y estas variables se ignoran.
 
 ## `FALL_CONFIRM_FRAMES`
 
@@ -762,27 +886,33 @@ Resultados/
 
 ---
 
-## `EXCEL_EXPORT_INTERVAL_S`
+## `EXCEL_EXPORT_EVERY_EVENTS`
 
-Frecuencia de actualización del Excel.
+Cantidad de eventos nuevos que activa una exportación periódica del Excel.
 
 ```dotenv
-EXCEL_EXPORT_INTERVAL_S=10
+EXCEL_EXPORT_EVERY_EVENTS=10
 ```
 
-El CSV puede escribirse inmediatamente y el Excel cada cierto tiempo para evitar bloqueos y sobrecarga.
+El CSV se escribe y sincroniza inmediatamente; el Excel se regenera cada cierta
+cantidad de eventos y durante el cierre limpio. Esto reduce el costo de exportar
+por cada frame o evento.
 
 Pruebas:
 
 ```dotenv
-EXCEL_EXPORT_INTERVAL_S=5
-EXCEL_EXPORT_INTERVAL_S=10
-EXCEL_EXPORT_INTERVAL_S=30
+EXCEL_EXPORT_EVERY_EVENTS=5
+EXCEL_EXPORT_EVERY_EVENTS=10
+EXCEL_EXPORT_EVERY_EVENTS=30
 ```
+
+La variable histórica `EXCEL_EXPORT_INTERVAL_S` no está implementada. Su objetivo
+de espaciar exportaciones sigue siendo válido, pero el código actual usa un conteo
+de eventos, no un intervalo de segundos.
 
 ---
 
-## `JPEG_QUALITY`
+## `JPEG_QUALITY` (histórica, no implementada)
 
 Calidad JPEG de las evidencias.
 
@@ -798,6 +928,10 @@ Rango habitual:
 
 - Mayor valor: mejor calidad y archivos más grandes.
 - Menor valor: menor tamaño y menos detalle.
+
+Esta recomendación de calidad sigue siendo útil para una mejora futura, pero
+`ppe_reportev2.py` no lee `JPEG_QUALITY`; actualmente `cv2.imwrite` usa su calidad
+predeterminada.
 
 ---
 
@@ -834,6 +968,9 @@ RTSP_URL="rtsp://usuario:clave@IP:554/axis-media/media.amp?videocodec=h264&resol
 
 ## Perfil para reducir falsos positivos
 
+Las variables de validación histórica de este perfil se mantienen como propuesta
+de calibración, pero no modifican el código actual. `POSE_CONF` sí está implementada.
+
 ```dotenv
 POSE_CONF=0.65
 MIN_KEYPOINT_CONF=0.50
@@ -869,6 +1006,7 @@ No cambies simultáneamente resolución, confianza, transporte y modelo, porque 
 ```dotenv
 CAMERA_ID=CAM_CUAJONE_01
 RTSP_URL="rtsp://usuario:clave@172.19.90.72:554/axis-media/media.amp?videocodec=h264&resolution=1280x720&fps=12&audio=0"
+ANALYTICS_MODE=ppe-fall
 
 RTSP_TRANSPORT=tcp
 RTSP_OPEN_TIMEOUT_MS=20000
@@ -888,14 +1026,7 @@ PPE_IMGSZ=640
 POSE_CONF=0.60
 PPE_CONF=0.35
 IOU_THRESHOLD=0.45
-
-MIN_KEYPOINT_CONF=0.45
-MIN_VALID_KEYPOINTS=7
-REQUIRE_PPE_PERSON_CONFIRMATION=1
-PERSON_IOU_THRESHOLD=0.30
-PERSON_HISTORY_FRAMES=10
-PERSON_MIN_CONFIRMATIONS=7
-EXCLUSION_ZONES=
+TARGET_INFERENCE_FPS=0
 
 EPP_WINDOW=20
 EPP_MIN_SAMPLES=12
@@ -914,6 +1045,18 @@ SHOW_WINDOW=1
 SHOW_TEMPORARY_TRACK_ID=0
 
 OUTPUT_DIR=Resultados
-EXCEL_EXPORT_INTERVAL_S=10
-JPEG_QUALITY=92
+EXCEL_EXPORT_EVERY_EVENTS=10
 ```
+
+Para `ppe-only`, cambia `ANALYTICS_MODE=ppe-only`; las líneas `POSE_*` y `FALL_*`
+pueden permanecer, pero serán ignoradas.
+
+---
+
+# Seguridad de credenciales
+
+El prototipo obsoleto `ppe_reporte.py` contenía anteriormente una credencial RTSP
+literal. El valor fue eliminado del árbol actual y ahora ese script exige
+`RTSP_URL` desde el entorno, pero la credencial expuesta debe ROTARSE porque puede
+permanecer en el historial de Git, copias o registros. Esta corrección no reescribe
+el historial. Usa `ppe_reportev2.py` para toda ejecución operativa.
