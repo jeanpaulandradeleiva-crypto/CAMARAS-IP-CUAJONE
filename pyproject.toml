@@ -1,0 +1,24 @@
+[project]
+name = "camaras-ip-cuajone"
+version = "0.1.0"
+description = "RTSP safety analytics for PPE compliance and optional fall detection"
+readme = "README.md"
+requires-python = ">=3.12,<3.13"
+dependencies = [
+    "numpy>=1.26,<3",
+    "opencv-python>=4.9,<5",
+    "openpyxl>=3.1,<4",
+    "pandas>=2.1,<3",
+    "python-dotenv>=1.0,<2",
+    "torch>=2.2,<3",
+    "ultralytics>=8.3,<9",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=8,<10",
+]
+
+[tool.uv]
+package = false
+default-groups = ["dev"]

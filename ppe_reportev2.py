@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import argparse
 import csv
 import math
 import os
@@ -9,6 +10,7 @@ import threading
 import time
 import uuid
 from collections import deque
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -36,6 +38,10 @@ RTSP_URL = os.getenv("RTSP_URL")
 PPE_MODEL_PATH = os.getenv("PPE_MODEL_PATH", "best_ppe.pt")
 POSE_MODEL_PATH = os.getenv("POSE_MODEL_PATH", "yolo26s-pose.pt")
 YOLO_DEVICE = os.getenv("YOLO_DEVICE")  # Vacío: selecciona CUDA si existe.
+TARGET_INFERENCE_FPS = float(os.getenv("TARGET_INFERENCE_FPS", "0"))
+
+DEFAULT_ANALYTICS_MODE = "ppe-fall"
+VALID_ANALYTICS_MODES = (DEFAULT_ANALYTICS_MODE, "ppe-only")
 
 BASE_DIR = Path(os.getenv("OUTPUT_DIR", str(SCRIPT_DIR))).expanduser()
 EVIDENCE_DIR = BASE_DIR / "Evidencias"
@@ -119,6 +125,39 @@ EVENT_FIELDS = [
 # cámara y hora; la identidad real debe ser completada por una persona autorizada.
 STOP_EVENT = threading.Event()
 
+
+def resolve_analytics_mode(
+    cli_mode: str | None,
+    environ: Mapping[str, str] | None = None,
+) -> str:
+    """Resuelve una sola frontera de recursos; CLI prevalece sobre el entorno."""
+    environment = os.environ if environ is None else environ
+    mode = cli_mode or environment.get("ANALYTICS_MODE", DEFAULT_ANALYTICS_MODE)
+    normalized = mode.strip().lower()
+    if normalized not in VALID_ANALYTICS_MODES:
+        valid = ", ".join(VALID_ANALYTICS_MODES)
+        raise ValueError(f"Modo de analítica inválido '{mode}'. Valores válidos: {valid}.")
+    return normalized
+
+
+def parse_args(
+    argv: Sequence[str] | None = None,
+    environ: Mapping[str, str] | None = None,
+) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="Monitoreo de EPP y caídas")
+    parser.add_argument(
+        "--mode",
+        choices=VALID_ANALYTICS_MODES,
+        help="Sobrescribe ANALYTICS_MODE para esta ejecución.",
+    )
+    args = parser.parse_args(argv)
+    try:
+        args.mode = resolve_analytics_mode(args.mode, environ)
+    except ValueError as exc:
+        parser.error(str(exc))
+    return args
+
+
 # ============================================================
 # ESTADO Y REGISTRO
 # ============================================================
@@ -143,6 +182,37 @@ class TrackState:
     fall_active: bool = False
     last_fall_alert: float = -1e9
     recent_descent_until: float = 0.0
+
+
+@dataclass(frozen=True)
+class AnalyticsModels:
+    """Modelos realmente disponibles; `pose=None` garantiza aislamiento PPE-only."""
+
+    ppe: Any
+    pose: Any | None
+    person_class_ids: tuple[int, ...]
+
+
+@dataclass
+class InferenceThrottle:
+    """Limita inicios de inferencia sin pausar el hilo que drena el RTSP."""
+
+    target_fps: float
+    next_inference_at: float = 0.0
+
+    def __post_init__(self) -> None:
+        if not math.isfinite(self.target_fps) or self.target_fps < 0:
+            raise ValueError("TARGET_INFERENCE_FPS debe ser 0 o un número positivo.")
+
+    def ready(self, now_monotonic: float) -> bool:
+        if self.target_fps == 0:
+            return True
+        if now_monotonic < self.next_inference_at:
+            return False
+        # No intenta recuperar plazos perdidos: después de una inferencia lenta se
+        # programa desde "ahora" para evitar ráfagas sobre frames ya obsoletos.
+        self.next_inference_at = now_monotonic + (1.0 / self.target_fps)
+        return True
 
 
 class EventLogger:
@@ -346,12 +416,12 @@ def valid_pose_person(
     return pose_confirmed_by_ppe_person(person["box"], ppe_person_boxes)
 
 
-def epp_evaluable_for_person(
+def box_epp_evaluable_for_person(
     person: dict[str, Any],
     frame_width: int,
     frame_height: int,
 ) -> bool:
-    """No evalúa EPP cuando la persona está entrando/saliendo o muy recortada."""
+    """Filtro geométrico compartido que no presupone la existencia de keypoints."""
     x1, y1, x2, y2 = person["box"].astype(float)
     margin = max(8, int(min(frame_width, frame_height) * 0.01))
 
@@ -363,7 +433,12 @@ def epp_evaluable_for_person(
     if person_height / max(1.0, frame_height) < 0.12:
         return False
 
-    keypoints = person["keypoints"]
+    return True
+
+
+def pose_keypoints_evaluable_for_person(person: dict[str, Any]) -> bool:
+    """Añade al filtro de caja la visibilidad anatómica exclusiva de ppe-fall."""
+    keypoints = person.get("keypoints")
     head_visible = keypoint_group_visible(keypoints, (0, 1, 2, 3, 4))
     shoulders_visible = keypoint_group_visible(keypoints, (5, 6))
     hips_visible = keypoint_group_visible(keypoints, (11, 12))
@@ -427,7 +502,7 @@ def draw_associated_ppe(frame: np.ndarray, item: dict[str, Any]) -> None:
 
 
 def region_for_person(person_box: np.ndarray, item_type: str) -> np.ndarray:
-    """Crea una región anatómica aproximada para casco o chaleco."""
+    """Aproxima cabeza o torso para no asignar EPP solo por cercanía de cajas."""
     x1, y1, x2, y2 = person_box.astype(float)
     width = max(1.0, x2 - x1)
     height = max(1.0, y2 - y1)
@@ -456,7 +531,7 @@ def associate_ppe_to_people(
     people: list[dict[str, Any]],
     ppe_detections: list[dict[str, Any]],
 ) -> dict[int, dict[str, Any]]:
-    """Asocia cada casco/chaleco a una sola persona y conserva la caja asociada."""
+    """Asocia cada EPP a una sola región anatómica y conserva la mejor detección."""
     associations: dict[int, dict[str, Any]] = {
         person["track_id"]: {
             "helmet": False,
@@ -489,6 +564,8 @@ def associate_ppe_to_people(
                 and region[1] <= center_y <= region[3]
             )
             overlap = intersection_over_item(item_box, region)
+            # El centro dentro de la zona pesa más que un roce entre cajas, algo
+            # frecuente cuando dos trabajadores aparecen juntos.
             score = overlap + (0.50 if center_inside else 0.0)
 
             if score > best_score:
@@ -505,6 +582,7 @@ def associate_ppe_to_people(
     return associations
 
 def stable_epp_status(state: TrackState) -> tuple[str | None, float, float]:
+    """Vota sobre una ventana temporal para no alertar por una omisión aislada."""
     sample_count = min(len(state.helmet_history), len(state.vest_history))
     if sample_count < EPP_MIN_SAMPLES:
         return None, 0.0, 0.0
@@ -556,6 +634,7 @@ def evaluate_fall(
     frame_height: int,
     now_monotonic: float,
 ) -> dict[str, Any]:
+    """Mantiene confirmación y recuperación separadas para evitar oscilaciones."""
     x1, y1, x2, y2 = person_box.astype(float)
     width = max(1.0, x2 - x1)
     height = max(1.0, y2 - y1)
@@ -595,6 +674,8 @@ def evaluate_fall(
         state.fall_candidate_frames += 1
         state.upright_frames = 0
     else:
+        # La evidencia negativa reduce gradualmente el candidato; un único frame
+        # ruidoso no borra de inmediato una secuencia de caída coherente.
         state.fall_candidate_frames = max(0, state.fall_candidate_frames - 2)
 
         clearly_upright = aspect_ratio < 0.80 and torso_angle < 35.0
@@ -614,6 +695,8 @@ def evaluate_fall(
         state.last_fall_alert = now_monotonic
 
     if state.fall_active and state.upright_frames >= FALL_RESET_FRAMES:
+        # Se exige una secuencia erguida independiente antes de permitir una nueva
+        # caída, evitando eventos repetidos mientras la persona sigue en el suelo.
         state.fall_active = False
         state.fall_candidate_frames = 0
 
@@ -709,6 +792,76 @@ def model_kwargs() -> dict[str, Any]:
     return kwargs
 
 
+def recognized_person_class_ids(model_names: Any) -> tuple[int, ...]:
+    if isinstance(model_names, dict):
+        names_by_id = model_names.items()
+    else:
+        names_by_id = enumerate(model_names)
+    return tuple(
+        int(class_id)
+        for class_id, name in names_by_id
+        if normalize_label(str(name)) in PERSON_LABELS
+    )
+
+
+def load_analytics_models(
+    mode: str,
+    yolo_factory: Any = YOLO,
+) -> AnalyticsModels:
+    """Carga pose solo en ppe-fall; PPE-only nunca toca su ruta ni constructor."""
+    mode = resolve_analytics_mode(mode, {})
+    print(f"Cargando modelo EPP: {PPE_MODEL_PATH}")
+    ppe_model = yolo_factory(PPE_MODEL_PATH)
+    person_class_ids = recognized_person_class_ids(ppe_model.names)
+    if not person_class_ids:
+        recognized = ", ".join(sorted(PERSON_LABELS))
+        raise RuntimeError(
+            "El modelo EPP no contiene una clase Person reconocida. "
+            f"Nombres aceptados: {recognized}. Clases encontradas: {ppe_model.names}"
+        )
+
+    pose_model = None
+    if mode == DEFAULT_ANALYTICS_MODE:
+        print(f"Cargando modelo pose: {POSE_MODEL_PATH}")
+        pose_model = yolo_factory(POSE_MODEL_PATH)
+
+    return AnalyticsModels(
+        ppe=ppe_model,
+        pose=pose_model,
+        person_class_ids=person_class_ids,
+    )
+
+
+def inference_kwargs_for_mode(
+    mode: str,
+) -> tuple[dict[str, Any], dict[str, Any] | None]:
+    """Construye una vez los argumentos inmutables que reutiliza el bucle."""
+    common_kwargs = model_kwargs()
+    ppe_kwargs: dict[str, Any] = {
+        "conf": PPE_CONF,
+        "iou": IOU_THRESHOLD,
+        "imgsz": PPE_IMGSZ,
+        "verbose": False,
+        **common_kwargs,
+    }
+    pose_kwargs: dict[str, Any] | None = None
+
+    if mode == "ppe-only":
+        ppe_kwargs.update({"persist": True, "tracker": TRACKER})
+    else:
+        pose_kwargs = {
+            "persist": True,
+            "tracker": TRACKER,
+            "conf": POSE_CONF,
+            "iou": IOU_THRESHOLD,
+            "classes": [0],
+            "imgsz": POSE_IMGSZ,
+            "verbose": False,
+            **common_kwargs,
+        }
+    return ppe_kwargs, pose_kwargs
+
+
 def extract_people(pose_result: Any) -> list[dict[str, Any]]:
     if pose_result.boxes is None or pose_result.boxes.id is None:
         return []
@@ -738,6 +891,36 @@ def extract_people(pose_result: Any) -> list[dict[str, Any]]:
             }
         )
 
+    return people
+
+
+def extract_tracked_ppe_people(
+    ppe_result: Any,
+    person_class_ids: tuple[int, ...],
+) -> list[dict[str, Any]]:
+    """Obtiene IDs exclusivamente de las cajas Person rastreadas por el modelo EPP."""
+    if ppe_result.boxes is None or ppe_result.boxes.id is None:
+        return []
+
+    boxes = ppe_result.boxes.xyxy.cpu().numpy()
+    track_ids = ppe_result.boxes.id.int().cpu().tolist()
+    classes = ppe_result.boxes.cls.int().cpu().tolist()
+    confidences = ppe_result.boxes.conf.cpu().numpy()
+    people: list[dict[str, Any]] = []
+
+    for box, track_id, class_id, confidence in zip(
+        boxes, track_ids, classes, confidences
+    ):
+        if int(class_id) not in person_class_ids:
+            continue
+        people.append(
+            {
+                "track_id": int(track_id),
+                "box": box.astype(float),
+                "confidence": float(confidence),
+                "keypoints": None,
+            }
+        )
     return people
 
 
@@ -869,6 +1052,10 @@ class LatestFrameCapture:
     """
     Lee el RTSP continuamente en un hilo independiente.
 
+    Este objeto es el único propietario del VideoCapture y de la reconexión local.
+    El lector publica bajo lock una instantánea numerada; el consumidor nunca toca
+    el capture directamente.
+
     No conserva una cola de frames:
     siempre reemplaza el frame anterior por el más reciente.
     Esto evita que YOLO procese video atrasado cuando la inferencia
@@ -935,8 +1122,9 @@ class LatestFrameCapture:
         previous_frame_number: int,
     ) -> tuple[bool, object | None, int]:
         """
-        Devuelve un frame solamente cuando existe uno más reciente
-        que el último procesado.
+        Devuelve una copia consistente solamente cuando existe un frame más nuevo.
+        Copiar dentro del lock evita que el productor reemplace la referencia a
+        mitad de la entrega, sin bloquearlo durante la inferencia.
         """
 
         with self.lock:
@@ -970,10 +1158,194 @@ class LatestFrameCapture:
         with self.lock:
             self.frame = None
 
+
+def infer_people_and_ppe(
+    frame: np.ndarray,
+    mode: str,
+    models: AnalyticsModels,
+    ppe_kwargs: dict[str, Any],
+    pose_kwargs: dict[str, Any] | None,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Separa los grafos de inferencia para sostener la garantía de recursos."""
+    if mode == "ppe-only":
+        # En este modo los IDs nacen del tracker del modelo EPP, no de pose ni de
+        # una asociación espacial posterior.
+        ppe_result = models.ppe.track(source=frame, **ppe_kwargs)[0]
+        people = extract_tracked_ppe_people(ppe_result, models.person_class_ids)
+    else:
+        if models.pose is None or pose_kwargs is None:
+            raise RuntimeError("El modo ppe-fall requiere el modelo de pose.")
+        pose_result = models.pose.track(source=frame, **pose_kwargs)[0]
+        ppe_result = models.ppe.predict(source=frame, **ppe_kwargs)[0]
+        raw_people = extract_people(pose_result)
+        all_ppe_detections = extract_ppe_detections(ppe_result)
+        ppe_person_boxes = [
+            item["box"]
+            for item in all_ppe_detections
+            if item["type"] == "person"
+        ]
+        people = [
+            person
+            for person in raw_people
+            if valid_pose_person(person, ppe_person_boxes)
+        ]
+
+    if mode == "ppe-only":
+        all_ppe_detections = extract_ppe_detections(ppe_result)
+    frame_height, frame_width = frame.shape[:2]
+    for person in people:
+        box_evaluable = box_epp_evaluable_for_person(
+            person,
+            frame_width=frame_width,
+            frame_height=frame_height,
+        )
+        person["epp_evaluable"] = box_evaluable and (
+            mode == "ppe-only" or pose_keypoints_evaluable_for_person(person)
+        )
+
+    ppe_detections = [
+        item
+        for item in all_ppe_detections
+        if item["type"] in {"helmet", "vest"}
+    ]
+    return people, ppe_detections
+
+
+def process_analytics_frame(
+    frame: np.ndarray,
+    mode: str,
+    models: AnalyticsModels,
+    states: dict[int, TrackState],
+    ppe_kwargs: dict[str, Any],
+    pose_kwargs: dict[str, Any] | None,
+    now_monotonic: float,
+) -> tuple[np.ndarray, list[dict[str, Any]]]:
+    """Anota el frame completo y devuelve eventos; la persistencia ocurre después."""
+    people, ppe_detections = infer_people_and_ppe(
+        frame,
+        mode,
+        models,
+        ppe_kwargs,
+        pose_kwargs,
+    )
+    associations = associate_ppe_to_people(people, ppe_detections)
+    annotated = frame.copy()
+    pending_events: list[dict[str, Any]] = []
+
+    for person in people:
+        track_id = person["track_id"]
+        box = person["box"]
+        state = states.setdefault(track_id, TrackState())
+        state.last_seen = now_monotonic
+        current_ppe = associations.get(
+            track_id,
+            {
+                "helmet": False,
+                "vest": False,
+                "helmet_item": None,
+                "vest_item": None,
+            },
+        )
+
+        epp_status: str | None = None
+        helmet_ratio = 0.0
+        vest_ratio = 0.0
+        stable_helmet: bool | None = None
+        stable_vest: bool | None = None
+
+        if person["epp_evaluable"]:
+            # El historial suaviza oclusiones breves. El cambio de estado permite
+            # alertar pronto y el cooldown limita repeticiones del mismo incumplimiento.
+            state.helmet_history.append(current_ppe["helmet"])
+            state.vest_history.append(current_ppe["vest"])
+            epp_status, helmet_ratio, vest_ratio = stable_epp_status(state)
+
+        if epp_status is not None:
+            stable_helmet = helmet_ratio >= EPP_PRESENT_RATIO
+            stable_vest = vest_ratio >= EPP_PRESENT_RATIO
+            violation = epp_status != "EPP Completo"
+            status_changed = epp_status != state.last_epp_status
+            cooldown_elapsed = (
+                now_monotonic - state.last_epp_alert >= EPP_ALERT_COOLDOWN_S
+            )
+
+            if violation and (status_changed or cooldown_elapsed):
+                pending_events.append(
+                    {
+                        "track_id": track_id,
+                        "type": "INCUMPLIMIENTO_EPP",
+                        "epp_status": epp_status,
+                        "helmet": stable_helmet,
+                        "vest": stable_vest,
+                        "confidence": min(
+                            1.0,
+                            max(1.0 - helmet_ratio, 1.0 - vest_ratio),
+                        ),
+                    }
+                )
+                state.last_epp_alert = now_monotonic
+            state.last_epp_status = epp_status
+
+        fall: dict[str, Any] | None = None
+        if mode == DEFAULT_ANALYTICS_MODE:
+            fall = evaluate_fall(
+                person_box=box,
+                keypoints=person["keypoints"],
+                state=state,
+                frame_height=frame.shape[0],
+                now_monotonic=now_monotonic,
+            )
+            if fall["confirmed_now"]:
+                pending_events.append(
+                    {
+                        "track_id": track_id,
+                        "type": "POSIBLE_CAIDA",
+                        "epp_status": epp_status or "En evaluación",
+                        "helmet": stable_helmet,
+                        "vest": stable_vest,
+                        "confidence": fall["score"],
+                    }
+                )
+
+        x1, y1, x2, y2 = box.astype(int)
+        display_epp = (
+            epp_status or "Evaluando EPP"
+            if person["epp_evaluable"]
+            else "EPP no evaluable: persona parcial"
+        )
+        display_fall = " | POSIBLE CAIDA" if fall and fall["active"] else ""
+        track_text = f"T{track_id} | " if SHOW_TEMPORARY_TRACK_ID else ""
+        label = f"{track_text}{display_epp}{display_fall}"
+
+        if mode == DEFAULT_ANALYTICS_MODE:
+            # Dibujar pose es parte del producto ppe-fall y también representa
+            # trabajo evitable; PPE-only no entra a esta ruta.
+            draw_valid_pose(annotated, person)
+        cv2.rectangle(annotated, (x1, y1), (x2, y2), (255, 255, 255), 2)
+        cv2.putText(
+            annotated,
+            label,
+            (x1, max(25, y1 - 10)),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.55,
+            (255, 255, 255),
+            2,
+            cv2.LINE_AA,
+        )
+        if current_ppe["helmet_item"] is not None:
+            draw_associated_ppe(annotated, current_ppe["helmet_item"])
+        if current_ppe["vest_item"] is not None:
+            draw_associated_ppe(annotated, current_ppe["vest_item"])
+
+    return annotated, pending_events
+
 # ============================================================
 # PROGRAMA PRINCIPAL
 # ============================================================
-def main() -> None:
+def main(argv: Sequence[str] | None = None) -> None:
+    args = parse_args(argv)
+    mode = args.mode
+    throttle = InferenceThrottle(TARGET_INFERENCE_FPS)
     if not RTSP_URL:
         raise RuntimeError(
             f"Falta RTSP_URL. Configúrala en el archivo {ENV_PATH}. "
@@ -986,29 +1358,28 @@ def main() -> None:
     print(f"Configuración cargada desde: {ENV_PATH}")
     print(f"RTSP: {masked_rtsp_url(RTSP_URL)}")
     diagnose_rtsp_endpoint(RTSP_URL)
-    print(f"Cargando modelo EPP: {PPE_MODEL_PATH}")
-    ppe_model = YOLO(PPE_MODEL_PATH)
-
-    print(f"Cargando modelo pose: {POSE_MODEL_PATH}")
-    pose_model = YOLO(POSE_MODEL_PATH)
+    models = load_analytics_models(mode)
 
     print("Clases del modelo EPP:")
-    print(ppe_model.names)
+    print(models.ppe.names)
     device = selected_device()
-    kwargs = model_kwargs()
+    # Son constantes durante toda la ejecución y no deben reconstruirse por frame.
+    ppe_inference_kwargs, pose_inference_kwargs = inference_kwargs_for_mode(mode)
+    fp16_enabled = ppe_inference_kwargs.get("quantize") in {16, "fp16"}
+    loaded_models = "PPE" if models.pose is None else "PPE, pose"
 
-    fp16_enabled = kwargs.get("quantize") in {16, "fp16"}
-
+    print(f"Modo efectivo: {mode} | Modelos cargados: {loaded_models}")
     print(
         f"Dispositivo: {device} | "
-        f"FP16: {fp16_enabled}"
+        f"FP16: {fp16_enabled} | "
+        f"FPS objetivo: {TARGET_INFERENCE_FPS or 'sin límite'}"
     )
     print(f"Tracker temporal: {TRACKER}")
 
     model_names = (
-        ppe_model.names.values()
-        if isinstance(ppe_model.names, dict)
-        else ppe_model.names
+        models.ppe.names.values()
+        if isinstance(models.ppe.names, dict)
+        else models.ppe.names
     )
     normalized_model_names = {normalize_label(str(name)) for name in model_names}
     if not normalized_model_names.intersection(HELMET_LABELS):
@@ -1068,168 +1439,24 @@ def main() -> None:
                     time.sleep(0.002)
                     continue
                 now_monotonic = time.monotonic()
-                frame_height, _ = frame.shape[:2]
+                if not throttle.ready(now_monotonic):
+                    # read_latest ya avanzó el número de frame. Al continuar se
+                    # descarta esta copia y la captura sigue reemplazando su slot.
+                    continue
 
-                pose_result = pose_model.track(
-                    source=frame,
-                    persist=True,
-                    tracker=TRACKER,
-                    conf=POSE_CONF,
-                    iou=IOU_THRESHOLD,
-                    classes=[0],
-                    imgsz=POSE_IMGSZ,
-                    verbose=False,
-                    **model_kwargs(),
-                )[0]
+                annotated, pending_events = process_analytics_frame(
+                    frame=frame,
+                    mode=mode,
+                    models=models,
+                    states=states,
+                    ppe_kwargs=ppe_inference_kwargs,
+                    pose_kwargs=pose_inference_kwargs,
+                    now_monotonic=now_monotonic,
+                )
 
-                ppe_result = ppe_model.predict(
-                    source=frame,
-                    conf=PPE_CONF,
-                    iou=IOU_THRESHOLD,
-                    imgsz=PPE_IMGSZ,
-                    verbose=False,
-                    **model_kwargs(),
-                )[0]
-
-                raw_people = extract_people(pose_result)
-                all_ppe_detections = extract_ppe_detections(ppe_result)
-
-                ppe_person_boxes = [
-                    item["box"]
-                    for item in all_ppe_detections
-                    if item["type"] == "person"
-                ]
-                people = [
-                    person
-                    for person in raw_people
-                    if valid_pose_person(person, ppe_person_boxes)
-                ]
-
-                for person in people:
-                    person["epp_evaluable"] = epp_evaluable_for_person(
-                        person,
-                        frame_width=frame.shape[1],
-                        frame_height=frame.shape[0],
-                    )
-
-                ppe_detections = [
-                    item
-                    for item in all_ppe_detections
-                    if item["type"] in {"helmet", "vest"}
-                ]
-                associations = associate_ppe_to_people(people, ppe_detections)
-
-                # Se dibuja desde el frame original para no mostrar detecciones descartadas.
-                annotated = frame.copy()
-                pending_events: list[dict[str, Any]] = []
-
-                for person in people:
-                    track_id = person["track_id"]
-                    box = person["box"]
-                    state = states.setdefault(track_id, TrackState())
-                    state.last_seen = now_monotonic
-
-                    current_ppe = associations.get(
-                        track_id,
-                        {
-                            "helmet": False,
-                            "vest": False,
-                            "helmet_item": None,
-                            "vest_item": None,
-                        },
-                    )
-
-                    epp_status: str | None = None
-                    helmet_ratio = 0.0
-                    vest_ratio = 0.0
-                    stable_helmet: bool | None = None
-                    stable_vest: bool | None = None
-
-                    if person["epp_evaluable"]:
-                        state.helmet_history.append(current_ppe["helmet"])
-                        state.vest_history.append(current_ppe["vest"])
-                        epp_status, helmet_ratio, vest_ratio = stable_epp_status(state)
-
-                    if epp_status is not None:
-                        stable_helmet = helmet_ratio >= EPP_PRESENT_RATIO
-                        stable_vest = vest_ratio >= EPP_PRESENT_RATIO
-
-                        violation = epp_status != "EPP Completo"
-                        status_changed = epp_status != state.last_epp_status
-                        cooldown_elapsed = (
-                            now_monotonic - state.last_epp_alert
-                            >= EPP_ALERT_COOLDOWN_S
-                        )
-
-                        if violation and (status_changed or cooldown_elapsed):
-                            pending_events.append(
-                                {
-                                    "track_id": track_id,
-                                    "type": "INCUMPLIMIENTO_EPP",
-                                    "epp_status": epp_status,
-                                    "helmet": stable_helmet,
-                                    "vest": stable_vest,
-                                    "confidence": min(
-                                        1.0,
-                                        max(1.0 - helmet_ratio, 1.0 - vest_ratio),
-                                    ),
-                                }
-                            )
-                            state.last_epp_alert = now_monotonic
-
-                        state.last_epp_status = epp_status
-
-                    fall = evaluate_fall(
-                        person_box=box,
-                        keypoints=person["keypoints"],
-                        state=state,
-                        frame_height=frame_height,
-                        now_monotonic=now_monotonic,
-                    )
-
-                    if fall["confirmed_now"]:
-                        pending_events.append(
-                            {
-                                "track_id": track_id,
-                                "type": "POSIBLE_CAIDA",
-                                "epp_status": epp_status or "En evaluación",
-                                "helmet": stable_helmet,
-                                "vest": stable_vest,
-                                "confidence": fall["score"],
-                            }
-                        )
-
-                    x1, y1, x2, y2 = box.astype(int)
-                    display_epp = (
-                        epp_status or "Evaluando EPP"
-                        if person["epp_evaluable"]
-                        else "EPP no evaluable: persona parcial"
-                    )
-                    display_fall = " | POSIBLE CAIDA" if fall["active"] else ""
-                    track_text = (
-                        f"T{track_id} | " if SHOW_TEMPORARY_TRACK_ID else ""
-                    )
-                    label = f"{track_text}{display_epp}{display_fall}"
-
-                    draw_valid_pose(annotated, person)
-                    cv2.rectangle(annotated, (x1, y1), (x2, y2), (255, 255, 255), 2)
-                    cv2.putText(
-                        annotated,
-                        label,
-                        (x1, max(25, y1 - 10)),
-                        cv2.FONT_HERSHEY_SIMPLEX,
-                        0.55,
-                        (255, 255, 255),
-                        2,
-                        cv2.LINE_AA,
-                    )
-
-                    if current_ppe["helmet_item"] is not None:
-                        draw_associated_ppe(annotated, current_ppe["helmet_item"])
-                    if current_ppe["vest_item"] is not None:
-                        draw_associated_ppe(annotated, current_ppe["vest_item"])
-
-                # Guardar evidencias después de dibujar todas las anotaciones del frame.
+                # Solo frames con eventos llegan a disco. Se espera a terminar
+                # todas las anotaciones para que cada evidencia muestre el contexto
+                # completo del instante, no una persona parcialmente procesada.
                 for pending in pending_events:
                     try:
                         event_id = new_event_id()
