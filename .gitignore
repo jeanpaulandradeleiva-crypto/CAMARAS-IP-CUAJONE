@@ -6,4 +6,5 @@ yolo11n.pt
 .venv/
 __pycache__/
 *.xlsx
+Reporte_Eventos_Seguridad.xlsx
 *.csv
