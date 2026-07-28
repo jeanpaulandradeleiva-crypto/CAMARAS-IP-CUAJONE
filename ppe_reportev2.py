@@ -28,13 +28,12 @@ from ultralytics import YOLO
 # ============================================================
 # CONFIGURACIÓN
 # ============================================================
-# Carga el archivo .env ubicado junto a este script. Las variables ya definidas
-# por el sistema tienen prioridad, lo que permite sobrescribir valores puntuales.
+# Carga el archivo .env ubicado junto a este script.
 SCRIPT_DIR = Path(__file__).resolve().parent
 ENV_PATH = SCRIPT_DIR / ".env"
 load_dotenv(dotenv_path=ENV_PATH, override=False)
 
-CAMERA_ID = os.getenv("CAMERA_ID", "CAM_CUAJONE_01")
+CAMERA_ID = os.getenv("CAMERA_ID", "CAM_P01_ADM")
 RTSP_URL = os.getenv("RTSP_URL")
 PPE_MODEL_PATH = os.getenv("PPE_MODEL_PATH", "best_ppe.pt")
 POSE_MODEL_PATH = os.getenv("POSE_MODEL_PATH", "yolo26s-pose.pt")
