@@ -3,10 +3,13 @@
 from ultralytics import YOLO
 import pandas as pd
 from datetime import datetime
+from pathlib import Path
 import cv2
 import os
+from dotenv import load_dotenv
 
 print("ADVERTENCIA: ppe_reporte.py está obsoleto; usa ppe_reportev2.py.")
+load_dotenv(dotenv_path=Path(__file__).resolve().parent / ".env", override=False)
 RTSP_URL = os.getenv("RTSP_URL")
 if not RTSP_URL:
     raise RuntimeError("Falta RTSP_URL en el entorno.")

@@ -133,6 +133,42 @@ def test_model_without_recognized_person_fails_early() -> None:
         app.load_analytics_models("ppe-only", yolo_factory=lambda _path: NoPersonModel())
 
 
+@pytest.mark.parametrize(
+    ("configured_device", "cuda_available", "expected_device"),
+    [
+        (None, True, "cuda:0"),
+        ("0", True, "cuda:0"),
+        ("cuda:1", True, "cuda:1"),
+        ("0", False, "cpu"),
+        ("cuda:0", False, "cpu"),
+        ("cpu", False, "cpu"),
+    ],
+)
+def test_selected_device_uses_explicit_cuda_or_safe_cpu_fallback(
+    monkeypatch: pytest.MonkeyPatch,
+    configured_device: str | None,
+    cuda_available: bool,
+    expected_device: str,
+) -> None:
+    monkeypatch.setattr(app, "YOLO_DEVICE", configured_device)
+    monkeypatch.setattr(app.torch.cuda, "is_available", lambda: cuda_available)
+
+    assert app.selected_device() == expected_device
+
+
+def test_inference_kwargs_pass_explicit_cuda_device_to_tracking_and_prediction(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(app, "YOLO_DEVICE", None)
+    monkeypatch.setattr(app.torch.cuda, "is_available", lambda: True)
+
+    ppe_kwargs, pose_kwargs = app.inference_kwargs_for_mode("ppe-fall")
+
+    assert ppe_kwargs["device"] == "cuda:0"
+    assert pose_kwargs is not None
+    assert pose_kwargs["device"] == "cuda:0"
+
+
 def test_ppe_only_uses_tracking_ids_from_person_detections() -> None:
     ppe_model = FakePPEModel(ppe_result_with_people())
     models = app.AnalyticsModels(

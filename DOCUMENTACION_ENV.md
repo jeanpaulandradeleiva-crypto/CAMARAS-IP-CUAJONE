@@ -131,7 +131,7 @@ uv pip install --python .venv\Scripts\python.exe --reinstall torch torchvision -
 En POSIX:
 
 ```bash
-uv pip install --python .venv/bin/python --reinstall torch torchvision --index-url https://download.pytorch.org/whl/cuXXX
+uv pip install --python .venv/Scripts/python.exe --reinstall torch torchvision --index-url https://download.pytorch.org/whl/cu124
 ```
 
 > `cuXXX` es únicamente un marcador de posición. DEBE reemplazarse por el sufijo
@@ -190,10 +190,10 @@ repite la verificación.
 
 Selecciona qué recursos se cargan y qué analítica se ejecuta:
 
-| Valor | Modelos cargados | Comportamiento |
-|---|---|---|
-| `ppe-fall` | EPP y pose | EPP más evaluación de caídas; valor predeterminado. |
-| `ppe-only` | Solo EPP | Seguimiento desde la clase `Person`; no carga ni ejecuta pose. |
+| Valor      | Modelos cargados | Comportamiento                                                 |
+| ---------- | ---------------- | -------------------------------------------------------------- |
+| `ppe-fall` | EPP y pose       | EPP más evaluación de caídas; valor predeterminado.            |
+| `ppe-only` | Solo EPP         | Seguimiento desde la clase `Person`; no carga ni ejecuta pose. |
 
 ```dotenv
 ANALYTICS_MODE=ppe-only
@@ -250,14 +250,14 @@ RTSP_URL="rtsp://usuario:clave@IP:554/axis-media/media.amp?videocodec=h264&resol
 Caracteres reservados en la contraseña:
 
 | Carácter | Codificación |
-|---|---|
-| `@` | `%40` |
-| `#` | `%23` |
-| `%` | `%25` |
-| `:` | `%3A` |
-| `/` | `%2F` |
-| `?` | `%3F` |
-| `&` | `%26` |
+| -------- | ------------ |
+| `@`      | `%40`        |
+| `#`      | `%23`        |
+| `%`      | `%25`        |
+| `:`      | `%3A`        |
+| `/`      | `%2F`        |
+| `?`      | `%3F`        |
+| `&`      | `%26`        |
 
 ---
 
@@ -277,11 +277,13 @@ RTSP_TRANSPORT=udp
 ```
 
 **TCP**
+
 - Más estable.
 - Tolera pérdidas mediante retransmisión.
 - Puede acumular latencia.
 
 **UDP**
+
 - Menor latencia.
 - Puede perder frames o mostrar artefactos.
 - Recomendable solo en una red estable.
@@ -742,10 +744,12 @@ EPP_WINDOW=20
 ```
 
 Más alto:
+
 - Mayor estabilidad.
 - Más demora para alertar.
 
 Más bajo:
+
 - Respuesta rápida.
 - Mayor riesgo de falsos positivos.
 
@@ -1099,11 +1103,11 @@ Modifica una sola variable por prueba.
 
 Registra:
 
-| Prueba | Variable | Valor | FPS | Latencia | Falsos positivos | Observaciones |
-|---|---|---:|---:|---:|---:|---|
-| 1 | `POSE_CONF` | 0.55 |  |  |  |  |
-| 2 | `POSE_CONF` | 0.60 |  |  |  |  |
-| 3 | `POSE_CONF` | 0.65 |  |  |  |  |
+| Prueba | Variable    | Valor | FPS | Latencia | Falsos positivos | Observaciones |
+| ------ | ----------- | ----: | --: | -------: | ---------------: | ------------- |
+| 1      | `POSE_CONF` |  0.55 |     |          |                  |               |
+| 2      | `POSE_CONF` |  0.60 |     |          |                  |               |
+| 3      | `POSE_CONF` |  0.65 |     |          |                  |               |
 
 No cambies simultáneamente resolución, confianza, transporte y modelo, porque no podrás identificar qué cambio mejoró o empeoró el sistema.
 

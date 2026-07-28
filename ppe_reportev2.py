@@ -770,9 +770,22 @@ def make_event(
 
 
 def selected_device() -> str:
-    if YOLO_DEVICE:
-        return YOLO_DEVICE
-    return "0" if torch.cuda.is_available() else "cpu"
+    requested_device = YOLO_DEVICE.strip() if YOLO_DEVICE else "cuda:0"
+    normalized_device = requested_device.lower()
+    cuda_requested = (
+        normalized_device == "cuda"
+        or normalized_device.startswith("cuda:")
+        or requested_device.isdigit()
+    )
+
+    if cuda_requested:
+        if not torch.cuda.is_available():
+            return "cpu"
+        if requested_device.isdigit():
+            return f"cuda:{requested_device}"
+        return "cuda:0" if normalized_device == "cuda" else requested_device
+
+    return requested_device
 
 
 def model_kwargs() -> dict[str, Any]:
