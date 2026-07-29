@@ -1,69 +1,173 @@
-# Instalador Windows del runtime nativo
+# Para TI: MSI Windows del runtime nativo
 
-Este limite produce un instalador Windows x64 del proyecto abierto bajo AGPL-3.0. Empaqueta el ejecutable Release, sus DLL runtime demostradas, la licencia, el ofrecimiento de fuente y los avisos disponibles. No incluye engines, modelos, credenciales, SDK ni datos.
+Esta es la guía técnica para preparar, verificar, instalar y mantener el MSI x64
+por máquina. La persona usuaria debe seguir la
+[guía simple de instalación](../../INSTALACION_WINDOWS.md).
 
-> Alcance validado: carga del ejecutable y `--help`. No existen engines EPP/pose reales aprobados, por lo que este instalador no demuestra inferencia operativa.
+## Secuencia recomendada
 
-## Ruta rapida
+1. Confirma el alcance y la autorización de seguridad.
+2. Prepara la confianza privada del piloto, si corresponde.
+3. Verifica los hashes, los certificados y la firma antes de instalar.
+4. Instala con interfaz o en modo silencioso y conserva el registro MSI.
+5. Comprueba únicamente la ayuda de comandos, sin abrir cámaras.
+6. Usa Windows Installer para reparar, actualizar, desinstalar o volver a una
+   versión anterior.
 
-Desde PowerShell en la raiz del repositorio:
+## 1. Confirmar el alcance
+
+El MSI está construido con WiX Toolset. Instala el ejecutable propio, las DLL
+runtime demostradas, licencias, avisos, hashes y procedencia. No incluye engines,
+modelos, credenciales, SDK, configuración de cámaras ni datos operativos.
+
+El instalador no fija el producto a una cámara. La configuración ocurre después y
+los datos mutables permanecen bajo `C:\ProgramData\Cuajone PPE Monitor`, separados
+de los binarios instalados. El piloto actual tiene alcance limitado; no se afirma
+soporte runtime para varias cámaras.
+
+> Alcance validado: base MSI, extracción administrativa, carga del ejecutable y
+> `--help`. No se ejecutaron instalación real, cámaras, inferencia, engines ni
+> `--preflight` en el host de desarrollo.
+
+## 2. Preparar la confianza privada del piloto
+
+La confianza privada es un prerrequisito independiente y requiere autorización de
+TI o seguridad. **El MSI no instala certificados, raíces ni publicadores
+confiables.** Tampoco desactiva Defender, EDR, SOC, SmartScreen, AppLocker o WDAC.
+
+El script autorizado enrola únicamente la raíz pública en
+`LocalMachine\Root` y la hoja pública en `LocalMachine\TrustedPublisher`.
+
+Antes de continuar, TI debe obtener por canales aprobados e independientes:
+
+- el MSI y los certificados públicos raíz y hoja;
+- los valores SHA-256 del MSI y de ambos certificados;
+- las huellas esperadas de ambos certificados;
+- `Install-Pilot.ps1` e `Install-InternalPilotTrust.ps1`;
+- autorización para enrolar la confianza en el equipo.
+
+La firma mejora la trazabilidad, pero no garantiza que antivirus, EDR, SOC o
+SmartScreen dejen de generar alertas. No se deben desactivar controles ni crear
+exclusiones amplias.
+
+## 3. Verificar e instalar el piloto
+
+Desde la raíz del repositorio, abre PowerShell como administrador.
+`Install-Pilot.ps1` valida primero los hashes, las huellas y la cadena sin importar
+certificados. Solo después del parámetro explícito `-AuthorizeTrustEnrollment`
+enrola la confianza, verifica el firmante exacto del MSI y llama a Windows
+Installer.
 
 ```powershell
-.\installer\native\build-installer.ps1 -BuildMode Preview -AllowUnsignedPreview
-
-$installer = "D:\DevTools\CuajoneNative\installer\output\CuajonePPEMonitor-0.1.0-internal.3-x64-Internal-Setup.exe"
-.\installer\native\test-installer.ps1 -InstallerPath $installer
+.\installer\native\Install-Pilot.ps1 `
+  -MsiPath "D:\Paquete\CuajonePPEMonitor-0.1.0-internal.3-x64-Internal.msi" `
+  -RootCertificatePath "D:\Paquete\Cuajone-PPE-Monitor-Internal-Pilot-Root-CA-2026.cer" `
+  -LeafCertificatePath "D:\Paquete\Cuajone-PPE-Monitor-Internal-Pilot-Code-Signing-2026.cer" `
+  -ExpectedMsiSha256 "<SHA256_MSI>" `
+  -ExpectedRootCertificateSha256 "<SHA256_CER_RAIZ>" `
+  -ExpectedLeafCertificateSha256 "<SHA256_CER_HOJA>" `
+  -ExpectedRootThumbprint "<HUELLA_SHA1_RAIZ>" `
+  -ExpectedLeafThumbprint "<HUELLA_SHA1_HOJA>" `
+  -InstallFolder "D:\Apps\Cuajone PPE Monitor" `
+  -LogPath "D:\Logs\cuajone-install.log" `
+  -AuthorizeTrustEnrollment
 ```
 
-Staging, salida, logs y aceptacion se crean bajo `D:\DevTools\CuajoneNative\installer`. El script no instala dependencias ni modifica `PATH` global.
+Los valores esperados deben proceder de un canal independiente del paquete. Una
+ejecución por doble clic no puede expresar de forma segura esta autorización ni
+esos valores.
 
-## Contrato del paquete
+## 4. Elegir la forma de instalación
 
-| Ruta instalada | Politica |
-| --- | --- |
-| `bin/` | Ejecutable y DLL inmutables. SYSTEM y Administrators tienen FullControl; Users tiene Read/Execute. |
-| `runtime/models/` | Engines externos persistentes. El instalador nunca los aporta. |
-| `runtime/config/` | Reservado para material del operador. El CLI actual no carga archivos de configuracion. |
-| `runtime/output/` | Evidencias y salidas persistentes. |
-| `runtime/logs/` | Registros persistentes. |
-| `docs/`, `licenses/`, `manifest/` | Guia, AGPL, avisos, ofrecimiento de fuente, hashes y metadatos de construccion. |
+### Instalación interactiva
 
-La instalacion es exclusivamente por maquina y requiere elevacion administrativa;
-ya no existe override por usuario. El destino sigue siendo seleccionable. Para
-aceptacion se usa una ruta explicita en D.
+Después de que TI verifique y prepare el equipo, abre el MSI. La interfaz incluye
+**Browse** para elegir el destino. El valor predeterminado es:
 
-El instalador reemplaza ACL heredadas mediante SIDs conocidos. `bin/` queda limitado
-a SYSTEM y Administrators con FullControl y Users con Read/Execute. Las cuatro
-carpetas `runtime/` conceden Modify a Users y se conservan en upgrades y
-desinstalaciones. Si una operación ACL falla, la instalación falla. La eliminación
-manual es intencional para evitar pérdida de engines, configuración, evidencias o
-logs.
+```text
+C:\Program Files\Cuajone PPE Monitor
+```
 
-## Dependencias
+`INSTALLFOLDER` controla los binarios y archivos inmutables. Los datos operativos
+se mantienen en estas carpetas, aunque se elija otro destino:
 
-`build-installer.ps1` usa el `dumpbin.exe` oficial de MSVC para recorrer imports PE. Solo resuelve DLL desde OpenCV, CUDA Runtime, TensorRT Runtime y el directorio oficial `VC/Redist` x64. El plugin FFmpeg de OpenCV se agrega explicitamente porque `videoio` lo carga por nombre, no mediante la tabla PE.
+```text
+C:\ProgramData\Cuajone PPE Monitor\runtime\models
+C:\ProgramData\Cuajone PPE Monitor\runtime\config
+C:\ProgramData\Cuajone PPE Monitor\runtime\output
+C:\ProgramData\Cuajone PPE Monitor\runtime\logs
+```
 
-`nvinfer_plugin_11.dll`, parsers ONNX y recursos de builder se rechazan. El runtime actual no inicializa ni carga plugins TensorRT; un engine que los requiera no esta soportado por este paquete.
+Los usuarios estándar reciben permisos de modificación solo en esas cuatro
+carpetas. Los binarios conservan los permisos endurecidos heredados de
+`Program Files`. La instalación crea accesos en el menú Inicio y se registra en
+Aplicaciones instaladas.
 
-## Firma y version
+### Despliegue silencioso y registros
 
-El modo predeterminado es `Release` y falla cerrado si falta firma confiable,
-fuente exacta o correspondencia con un worktree limpio. Solo
-`-BuildMode Preview -AllowUnsignedPreview` permite intencionalmente un artefacto
-interno `NotSigned`.
+Para el piloto privado, usa el comando de la sección anterior y agrega `-Silent`.
+Así se conservan las validaciones, la autorización y el registro indicado con
+`-LogPath`.
 
-`sign-release.ps1` firma unicamente PE propios mediante Microsoft `signtool`.
-Admite un certificado del almacen de Windows o Microsoft Trusted Signing. No
-acepta PFX ni contrasenas y no vuelve a firmar DLL de terceros.
+Cuando la confianza ya fue preparada y el MSI fue verificado mediante el proceso
+aprobado, `INSTALLFOLDER` puede dirigirse a otra ruta:
 
-### Firma privada para el piloto interno
+```powershell
+$msi = "D:\Paquetes\CuajonePPEMonitor-0.1.0-internal.3-x64-Internal.msi"
+$log = "D:\Logs\cuajone-install.log"
 
-Esta ruta es **solo para equipos piloto enrolados**. Usa una CA raiz privada y un
-certificado hoja separado con EKU Code Signing. Ambas claves privadas permanecen
-como no exportables en `Cert:\CurrentUser\My` del usuario firmante; el repositorio
-no recibe PFX, PEM, claves, contrasenas ni secretos.
+msiexec.exe /i $msi /qn /norestart `
+  INSTALLFOLDER="D:\Apps\Cuajone PPE Monitor" `
+  /L*V $log
+```
 
-En la maquina de firma:
+Para mostrar la interfaz y conservar el registro, omite `/qn`. Si la instalación
+falla, entrega el archivo indicado por `/L*V` al equipo responsable.
+
+## 5. Comprobar sin cámara
+
+Desde el menú Inicio, abre **Cuajone PPE Monitor - Command Help**. La prueba es
+correcta si aparece la ayuda sin un error. Este acceso ejecuta únicamente
+`--help`: no abre cámaras, no carga engines y no inicia inferencia.
+
+No uses `--preflight` como comprobación básica, porque selecciona CUDA y puede
+deserializar engines.
+
+## 6. Mantener la instalación
+
+### Reparar
+
+Usa el mismo MSI aprobado y conserva un registro:
+
+```powershell
+msiexec.exe /fa "D:\Paquetes\CuajonePPEMonitor.msi" /qn /L*V "D:\Logs\repair.log"
+```
+
+### Actualizar
+
+Las versiones mayores nuevas reemplazan la versión anterior mediante el
+`UpgradeCode` estable. Instala el nuevo MSI aprobado con el mismo procedimiento de
+verificación y registro. Un downgrade directo se bloquea.
+
+### Desinstalar
+
+Puede usarse Aplicaciones instaladas o este comando:
+
+```powershell
+msiexec.exe /x "D:\Paquetes\CuajonePPEMonitor.msi" /qn /L*V "D:\Logs\uninstall.log"
+```
+
+### Volver a una versión anterior
+
+Para rollback, desinstala la versión actual y luego instala el MSI anterior
+aprobado. Los binarios, accesos y registro de la aplicación se eliminan. Las
+carpetas mutables vacías también se eliminan; si contienen datos del operador,
+Windows Installer las conserva. Respalda o elimina esos datos solo con aprobación.
+
+## 7. Construir el MSI
+
+El build predeterminado es `Release` y falla cerrado. Para un Preview interno
+firmado, configura la hoja piloto no exportable existente y ejecuta:
 
 ```powershell
 $certs = .\installer\native\New-InternalPilotSigningCertificates.ps1
@@ -72,237 +176,86 @@ $env:CUAJONE_PILOT_ROOT_CER = $certs.RootPublicCertificate
 $env:CUAJONE_ALLOW_INTERNAL_PILOT_TRUST = "1"
 $env:CUAJONE_SIGNTOOL_PATH = "C:\Program Files (x86)\Windows Kits\10\bin\10.0.26100.0\x64\signtool.exe"
 $env:CUAJONE_TIMESTAMP_URL = "http://timestamp.acs.microsoft.com"
-$env:CUAJONE_PE_SIGN_COMMAND = (Resolve-Path .\installer\native\sign-release.ps1).Path
-$env:PATH = "$(Split-Path $env:CUAJONE_SIGNTOOL_PATH);$env:PATH"
-$env:CUAJONE_SIGNTOOL_NAME = "CuajonePilotSign"
-$env:CUAJONE_SIGNTOOL_COMMAND = "signtool.exe sign /v /fd SHA256 /tr $env:CUAJONE_TIMESTAMP_URL /td SHA256 /sha1 $env:CUAJONE_CERTIFICATE_SHA1 `$f"
+$env:CUAJONE_SIGN_COMMAND = (Resolve-Path .\installer\native\sign-release.ps1).Path
+
 .\installer\native\build-installer.ps1 -BuildMode Preview
 ```
 
-El ajuste de `PATH` anterior afecta solo al proceso PowerShell actual. Permite que
-Inno firme setup y desinstalador sin modificar el `PATH` global.
+El MSI, su `.sha256`, staging, temporales y evidencia de verificación quedan bajo
+`D:\DevTools\CuajoneNative\installer`. El script firma primero
+`cuajone_native.exe`, construye el MSI, firma el MSI y realiza extracción
+administrativa en D. Nunca vuelve a firmar DLL de terceros.
 
-La creacion es idempotente: reutiliza solo certificados validos que coincidan con
-la identidad piloto, la cadena y la politica no exportable. Ante ambiguedad,
-expiracion proxima o un archivo CER distinto, falla sin reemplazar nada. Solo
-exporta estos certificados publicos bajo `D:\DevTools\CuajoneNative\signing`:
+## 8. Controlar la firma
 
-- `Cuajone-PPE-Monitor-Internal-Pilot-Root-CA-2026.cer`
-- `Cuajone-PPE-Monitor-Internal-Pilot-Code-Signing-2026.cer`
+`sign-release.ps1` acepta únicamente el `.exe` propio y archivos `.msi`. Usa
+SignTool con digest SHA-256, timestamp RFC 3161 y verificación Authenticode. No
+acepta PFX, contraseñas ni claves exportadas.
 
-### Instalación del piloto firmado en un equipo objetivo
+El opt-in `CUAJONE_ALLOW_INTERNAL_PILOT_TRUST=1` solo funciona con
+`-BuildMode Preview`. La verificación admite únicamente `UntrustedRoot` en una
+máquina todavía no enrolada y prueba además la cadena contra el CER raíz público
+indicado. `Release` nunca acepta esa ruta: exige confianza pública, worktree
+limpio, revisión exacta y archivos de fuente correspondientes publicados por
+HTTPS con SHA-256.
 
-Este procedimiento requiere autorización previa del equipo de TI/seguridad del
-cliente.
+## 9. Toolchain fijado
 
-**1. Obtén y copia el paquete aprobado.** El operador debe disponer de:
+Las herramientas locales se mantienen fuera del repositorio:
 
-- el instalador, los dos CER públicos y los valores SHA-256 y huellas digitales
-  aprobados, obtenidos por un canal autorizado;
-- una copia del repositorio o, como mínimo,
-  `installer/native/Install-InternalPilotTrust.ps1` junto con ambos CER;
-- una cuenta con permisos administrativos. Incluso `-ValidateOnly` requiere una
-  sesión de PowerShell elevada.
+| Componente | Ruta | Versión usada |
+| --- | --- | --- |
+| .NET SDK | `D:\DevTools\CuajoneNative\dotnet-sdk` | 8.0.423 |
+| WiX CLI | `D:\DevTools\CuajoneNative\wix` | 6.0.2 |
+| Extensiones UI/Util | `D:\DevTools\CuajoneNative\wix\.wix` | 6.0.2 |
+| NuGet | `D:\DevTools\CuajoneNative\cache\nuget` | caché local |
+| Temporales | `D:\DevTools\CuajoneNative\temp\wix` | proceso local |
 
-Los valores esperados deben llegar por el medio aprobado por seguridad, de forma
-independiente de los archivos.
+NuGet publica WiX 7.0.0 como versión más reciente, pero su binario exige aceptar
+el acuerdo OSMF y puede requerir una tarifa para uso generador de ingresos. Este
+repositorio no acepta términos legales ni presupone elegibilidad: se fija WiX
+6.0.2 hasta que el responsable confirme por escrito el cumplimiento OSMF o apruebe
+una compilación propia de WiX 7.
 
-**2. Abre PowerShell como Administrador y verifica el paquete** antes de modificar
-los almacenes:
+`CuajonePpeMonitor.wixproj` registra las dependencias; `build-installer.ps1` usa
+el CLI local fijado. `Package.wxs` define identidad, `UpgradeCode`, UI, carpetas,
+ACL y accesos. El script genera `Payload.wxs` en D con un componente y GUID
+determinista por ruta staged; ese archivo no se versiona.
 
-```powershell
-$packageDir = "D:\<RUTA_PAQUETE_PILOTO>"
-$installer = Join-Path $packageDir "CuajonePPEMonitor-0.1.0-internal.3-x64-Internal-Setup.exe"
-$rootCer = Join-Path $packageDir "Cuajone-PPE-Monitor-Internal-Pilot-Root-CA-2026.cer"
-$leafCer = Join-Path $packageDir "Cuajone-PPE-Monitor-Internal-Pilot-Code-Signing-2026.cer"
-$trustScript = "D:\<RUTA_SCRIPT>\Install-InternalPilotTrust.ps1"
+## 10. Verificar sin instalar
 
-$expectedHashes = @(
-    [pscustomobject]@{ Path = $installer; SHA256 = "<SHA256_INSTALADOR>" }
-    [pscustomobject]@{ Path = $rootCer; SHA256 = "<SHA256_CER_RAIZ>" }
-    [pscustomobject]@{ Path = $leafCer; SHA256 = "<SHA256_CER_HOJA>" }
-)
-foreach ($item in $expectedHashes) {
-    $actual = (Get-FileHash -LiteralPath $item.Path -Algorithm SHA256).Hash
-    if ($actual -cne $item.SHA256.ToUpperInvariant()) {
-        throw "SHA-256 no coincide: $($item.Path)"
-    }
-}
+`test-installer.ps1` no instala ni desinstala el producto. Realiza:
 
-$expectedRootThumbprint = "<HUELLA_SHA1_RAIZ_SIN_ESPACIOS>".ToUpperInvariant()
-$expectedLeafThumbprint = "<HUELLA_SHA1_HOJA_SIN_ESPACIOS>".ToUpperInvariant()
-$rootCertificate = [System.Security.Cryptography.X509Certificates.X509Certificate2]::new($rootCer)
-$leafCertificate = [System.Security.Cryptography.X509Certificates.X509Certificate2]::new($leafCer)
-try {
-    if ($rootCertificate.Thumbprint -cne $expectedRootThumbprint) { throw "Huella raíz no coincide" }
-    if ($leafCertificate.Thumbprint -cne $expectedLeafThumbprint) { throw "Huella hoja no coincide" }
-}
-finally {
-    $rootCertificate.Dispose()
-    $leafCertificate.Dispose()
-}
-```
-
-**3. Valida los certificados sin importarlos:**
+1. `wix msi validate` con temporales en D.
+2. Lectura de tablas MSI en modo solo lectura.
+3. Comprobación de x64, ámbito por máquina, `INSTALLFOLDER`, `UpgradeCode`,
+   downgrade, componentes, feature, accesos, ARP, reparación y desinstalación.
+4. Extracción administrativa con `msiexec /a` hacia D.
+5. Comparación SHA-256 de todo el payload contra staging y de cada archivo copiado
+   contra su fuente actual del repositorio, build o toolchain.
+6. Verificación de firma del MSI y del `.exe` propio, seguida únicamente por
+   `--help`.
 
 ```powershell
-& $trustScript -RootCertificatePath $rootCer -LeafCertificatePath $leafCer -ValidateOnly
+.\installer\native\test-installer.ps1 `
+  -InstallerPath "D:\DevTools\CuajoneNative\installer\output\<paquete>.msi" `
+  -StageDir "D:\DevTools\CuajoneNative\installer\stage" `
+  -ExpectedSignatureStatus Signed `
+  -AllowInternalPilotTrust
 ```
 
-**4. Realiza el enrolamiento:**
+La aceptación completa de instalación, reparación, actualización y
+desinstalación debe ejecutarse en una VM piloto enrolada, manteniendo Defender y
+los controles corporativos activos.
 
-```powershell
-& $trustScript -RootCertificatePath $rootCer -LeafCertificatePath $leafCer
-```
+## 11. Dependencias y distribución
 
-El script valida identidad, uso y cadena, importa solo la raíz pública a
-`LocalMachine\Root` y la hoja pública a `LocalMachine\TrustedPublisher`, y muestra
-las huellas enroladas.
+`build-installer.ps1` recorre imports PE con `dumpbin`, agrega explícitamente el
+plugin FFmpeg de OpenCV y rechaza plugins o builders TensorRT no aprobados. Los
+hashes de cada binario se registran en `build-metadata.json` y
+`SHA256SUMS.txt`; las licencias y la procedencia se incluyen como antes.
 
-**5. Verifica la firma y el firmante antes de ejecutar:**
-
-```powershell
-$signature = Get-AuthenticodeSignature -LiteralPath $installer
-if ($signature.Status -ne "Valid") { throw "Firma Authenticode no válida: $($signature.Status)" }
-if ($signature.SignerCertificate.Thumbprint -cne $expectedLeafThumbprint) {
-    throw "El firmante no coincide con la hoja piloto aprobada"
-}
-```
-
-**6. Ejecuta el instalador:**
-
-```powershell
-Start-Process -FilePath $installer -Wait
-```
-
-**7. Realiza la comprobación posterior mínima** con la ruta seleccionada durante
-la instalación:
-
-```powershell
-& "D:\<RUTA_INSTALACION>\bin\cuajone_native.exe" --help
-```
-
-No ejecutes `--preflight`, no abras cámaras y no inicies inferencia como parte de
-esta validación.
-
-El enrolamiento solo establece confianza en ese publicador para los equipos
-enrolados; **no otorga confianza pública**. Tampoco garantiza silencio del
-antivirus/EDR, suprime alertas del SOC, evita SmartScreen o Smart App Control, ni
-invalida políticas de AppLocker, WDAC o Defender. Seguridad debe aprobar o incluir
-en allowlist la instalación y el comportamiento esperado de procesos y red,
-preferentemente por el certificado hoja o por el hash del artefacto cuando su
-herramienta lo permita. No se deben crear exclusiones amplias ni desactivar
-controles de seguridad.
-
-#### Retiro del piloto y de la confianza
-
-1. Desinstala **Cuajone PPE Monitor** desde Aplicaciones instaladas o mediante el
-   desinstalador aprobado.
-2. Confirma con TI/seguridad que ningún otro despliegue piloto en esta máquina
-   depende de estos certificados.
-3. En PowerShell como Administrador, inspecciona y elimina únicamente las huellas
-   exactas aprobadas:
-
-```powershell
-$leafThumbprint = "<HUELLA_SHA1_HOJA_SIN_ESPACIOS>"
-$rootThumbprint = "<HUELLA_SHA1_RAIZ_SIN_ESPACIOS>"
-
-Get-Item -LiteralPath "Cert:\LocalMachine\TrustedPublisher\$leafThumbprint"
-Get-Item -LiteralPath "Cert:\LocalMachine\Root\$rootThumbprint"
-
-Remove-Item -LiteralPath "Cert:\LocalMachine\TrustedPublisher\$leafThumbprint"
-Remove-Item -LiteralPath "Cert:\LocalMachine\Root\$rootThumbprint"
-```
-
-No elimines otros certificados y no retires la raíz mientras otro despliegue
-autorizado todavía dependa de ella.
-
-`CUAJONE_ALLOW_INTERNAL_PILOT_TRUST=1` es un opt-in explicito y esta desactivado
-por defecto. `build-installer.ps1` lo admite solo con `-BuildMode Preview`; un
-`Release` publico sigue fallando cerrado y exige confianza publica. Fuera de los
-equipos enrolados, esta firma privada no es confiable y no elimina advertencias de
-SmartScreen.
-
-Ejemplo con certificado del almacen:
-
-```powershell
-$env:CUAJONE_SIGNTOOL_PATH = "C:\Program Files (x86)\Windows Kits\10\bin\10.0.26100.0\x64\signtool.exe"
-$env:CUAJONE_TIMESTAMP_URL = "http://timestamp.acs.microsoft.com"
-$env:CUAJONE_CERTIFICATE_SHA1 = "<HUELLA_SHA1_DEL_CERTIFICADO_CONFIABLE>"
-$env:CUAJONE_PE_SIGN_COMMAND = (Resolve-Path .\installer\native\sign-release.ps1).Path
-.\installer\native\sign-release.ps1 -FilePath D:\ruta\cuajone_native.exe
-```
-
-Para Trusted Signing, define `CUAJONE_TRUSTED_SIGNING_DLIB` y
-`CUAJONE_TRUSTED_SIGNING_METADATA` en lugar de la huella. La autenticacion se
-resuelve fuera del repositorio mediante el proveedor aprobado.
-
-El build llama primero a `CUAJONE_PE_SIGN_COMMAND` con la ruta del ejecutable
-propio. Luego Inno usa `CUAJONE_SIGNTOOL_NAME` y
-`CUAJONE_SIGNTOOL_COMMAND` para firmar setup y desinstalador. El comando Inno
-debe usar `$f` como marcador de archivo y mantener `/fd SHA256`, un `/tr` RFC
-3161 aprobado y `/td SHA256`.
-
-Lista de firma:
-
-1. Configura un certificado publico confiable o Trusted Signing; la CA privada anterior es exclusiva del piloto y nunca es una credencial de produccion.
-2. Firma `cuajone_native.exe` antes del staging mediante `CUAJONE_PE_SIGN_COMMAND`.
-3. Configura el SignTool de Inno para setup y `SignedUninstaller`.
-4. Ejecuta el build `Release` con revision, URL y SHA-256 de los archivos fuente del proyecto y FFmpeg.
-5. Verifica ejecutable, instalador y desinstalador con `signtool verify /pa /all /v`.
-6. Confirma que las DLL OpenCV, FFmpeg, NVIDIA y MSVC conservan sus bytes y firmas upstream.
-
-Ejemplo de variables de correspondencia de fuente:
-
-```powershell
-$env:CUAJONE_SOURCE_REVISION = git rev-parse HEAD
-$env:CUAJONE_SOURCE_ARCHIVE_URL = "https://github.com/jeanpaulandradeleiva-crypto/CAMARAS-IP-CUAJONE/releases/download/v0.1.0/source.tar.gz"
-$env:CUAJONE_SOURCE_ARCHIVE_SHA256 = "<SHA256_DE_64_CARACTERES>"
-$env:CUAJONE_FFMPEG_SOURCE_ARCHIVE_URL = "https://github.com/jeanpaulandradeleiva-crypto/CAMARAS-IP-CUAJONE/releases/download/v0.1.0/opencv-ffmpeg-sources.tar.xz"
-$env:CUAJONE_FFMPEG_SOURCE_ARCHIVE_SHA256 = "<SHA256_DE_64_CARACTERES>"
-```
-
-El certificado, la identidad de Trusted Signing, los comandos reales y el
-servidor de timestamp deben ser aprobados por la organizacion. `AppVersion`
-acepta SemVer; `FileVersion` debe tener cuatro componentes numericos.
-El setup se compila primero como `CuajonePPEMonitorSetup.exe` para conservar ese
-`OriginalFilename` PE exacto y luego se renombra al artefacto largo versionado.
-
-## Instalacion y operacion
-
-El instalador exige Windows x64 y bloquea si no detecta `nvcuda.dll` y una ejecucion correcta de `nvidia-smi -L`. No descarga drivers ni realiza llamadas de red.
-
-Coloca los dos engines compatibles manualmente en `runtime/models/`. Ejecuta el binario mediante CLI con `--ppe-engine`, `--pose-engine`, `--source` y `--output`; no existe un cargador de config y no debe inventarse uno. Consulta el acceso directo **Command Help**. No se inicia monitor, camara ni inferencia automaticamente.
-
-## Upgrade, desinstalacion y rollback
-
-El `AppId` es estable, por lo que una version nueva actualiza la misma aplicacion. Los binarios se reemplazan; `runtime/` se conserva.
-
-Para rollback, reinstala un instalador interno anterior con el mismo `AppId` y verifica nuevamente `--help`. Para retirar el producto, usa el desinstalador: elimina binarios, accesos y metadatos, pero conserva `runtime/`. Borra esa carpeta manualmente solo despues de respaldar y aprobar la eliminacion.
-
-## Aceptacion en host limpio
-
-1. Verifica SHA-256 y Authenticode antes de ejecutar.
-2. Instala en una ruta D seleccionada y sin engines.
-3. Ejecuta `bin\cuajone_native.exe --help` con `PATH` limitado a `bin` y Windows.
-4. Confirma las cuatro carpetas mutables y revisa ACL.
-5. Desinstala silenciosamente.
-6. Confirma que `bin/` desaparecio y que `runtime/` permanece.
-
-No ejecutes `--preflight`: selecciona CUDA y deserializa engines. Tampoco abras camaras ni ejecutes inferencia durante esta aceptacion.
-
-## Distribucion
-
-Estado de licencia del proyecto: **codigo abierto AGPL-3.0-only**. El artefacto
-actual sigue siendo un preview interno sin validacion con engines reales. Una
-firma privada piloto, si se aplica, solo es confiable en equipos enrolados. La
-distribucion externa permanece bloqueada hasta publicar fuente exacta
-del proyecto y del plugin FFmpeg, usar Authenticode confiable y validar la licencia
-aplicable del compilador Inno Setup instalado, que informa `Non-commercial use
-only`. Nada de esto convierte los modelos, datasets ni DLL de terceros a AGPL.
-
-La firma mejora trazabilidad y reputacion, pero no garantiza cero alertas de
-Defender o SmartScreen. No se recomiendan exclusiones generales de antivirus.
-
-Consulta [`FFMPEG-SOURCE.md`](FFMPEG-SOURCE.md) para la correspondencia de fuente
-y [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md) para el indice de terceros.
+El MSI no inicia el monitor, no abre cámaras, no descarga drivers y no carga
+engines. El operador aporta engines compatibles bajo sus propios términos y usa
+rutas CLI explícitas. Consulta [`FFMPEG-SOURCE.md`](FFMPEG-SOURCE.md) y
+[`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md).

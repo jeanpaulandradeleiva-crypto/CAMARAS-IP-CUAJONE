@@ -130,9 +130,13 @@ function Assert-InternalPilotSignature(
     }
 }
 
-Assert-File $FilePath "PE file"
+Assert-File $FilePath "Signable artifact"
 Assert-File $SignToolPath "Microsoft signtool"
 $target = (Resolve-Path -LiteralPath $FilePath).Path
+$extension = [System.IO.Path]::GetExtension($target).ToLowerInvariant()
+if ($extension -notin @(".exe", ".msi")) {
+    throw "Only owned executable and MSI artifacts may be signed: $target"
+}
 
 if ($AllowInternalPilotTrust -and [string]::IsNullOrWhiteSpace($PilotRootCertificatePath)) {
     throw "Internal pilot trust requires CUAJONE_PILOT_ROOT_CER or -PilotRootCertificatePath"
@@ -188,6 +192,10 @@ if (-not $VerifyOnly) {
 $verifyOutput = @(& $SignToolPath verify /pa /all /v $target 2>&1)
 $verifyExitCode = $LASTEXITCODE
 $verifyOutput | ForEach-Object { Write-Host $_ }
+$verifyText = $verifyOutput -join [Environment]::NewLine
+if ($verifyText -notmatch '(?i)\bsha256\b') {
+    throw "Authenticode verification did not report a SHA-256 digest"
+}
 
 $signature = Get-AuthenticodeSignature -LiteralPath $target
 if ($AllowInternalPilotTrust) {
@@ -201,6 +209,13 @@ if ($AllowInternalPilotTrust) {
 if ($verifyExitCode -ne 0 -or
     $signature.Status -ne [System.Management.Automation.SignatureStatus]::Valid) {
     throw "Trusted Authenticode verification failed: signtool=$verifyExitCode status=$($signature.Status)"
+}
+if ($null -eq $signature.TimeStamperCertificate) {
+    throw "Trusted Authenticode signature is missing its RFC 3161 timestamp"
+}
+if (-not [string]::IsNullOrWhiteSpace($CertificateThumbprint) -and
+    $signature.SignerCertificate.Thumbprint -cne $CertificateThumbprint.ToUpperInvariant()) {
+    throw "Authenticode signer does not match the configured certificate-store thumbprint"
 }
 
 [pscustomobject]@{

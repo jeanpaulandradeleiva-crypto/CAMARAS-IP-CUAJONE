@@ -1,0 +1,95 @@
+<!-- SPDX-License-Identifier: AGPL-3.0-only -->
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs"
+     xmlns:ui="http://wixtoolset.org/schemas/v4/wxs/ui"
+     xmlns:util="http://wixtoolset.org/schemas/v4/wxs/util">
+  <Package Id="CuajonePpeMonitor"
+           Name="Cuajone PPE Monitor"
+           Manufacturer="Cuajone PPE Monitor Project"
+           Language="1033"
+           Version="$(var.MsiVersion)"
+           UpgradeCode="88A886C2-8F6D-4669-B6FB-7DFC1E7B0397"
+           Scope="perMachine"
+           InstallerVersion="500"
+           Compressed="yes">
+    <SummaryInformation Description="Cuajone PPE Monitor $(var.AppVersion) x64"
+                        Manufacturer="Cuajone PPE Monitor Project" />
+
+    <MajorUpgrade DowngradeErrorMessage="A newer version of Cuajone PPE Monitor is already installed. Uninstall it before installing this older package."
+                  Schedule="afterInstallInitialize" />
+    <MediaTemplate EmbedCab="yes" CompressionLevel="high" />
+
+    <Property Id="INSTALLFOLDER" Secure="yes" />
+    <Property Id="ARPCOMMENTS" Value="$(var.ArpComments)" />
+    <Property Id="ARPHELPLINK" Value="https://github.com/jeanpaulandradeleiva-crypto/CAMARAS-IP-CUAJONE/issues" />
+    <Property Id="ARPURLINFOABOUT" Value="https://github.com/jeanpaulandradeleiva-crypto/CAMARAS-IP-CUAJONE" />
+    <Property Id="ARPURLUPDATEINFO" Value="https://github.com/jeanpaulandradeleiva-crypto/CAMARAS-IP-CUAJONE/releases" />
+    <Property Id="ARPPRODUCTICON" Value="ProductIcon" />
+    <Icon Id="ProductIcon" SourceFile="$(var.StageDir)\CuajonePPEMonitor.ico" />
+
+    <Launch Condition="Installed OR (VersionNT64 &gt;= 603 AND WindowsBuildNumber &gt;= 17763)"
+            Message="Cuajone PPE Monitor requires 64-bit Windows 10 version 1809 or later." />
+
+    <ui:WixUI Id="WixUI_InstallDir" InstallDirectory="INSTALLFOLDER" />
+    <WixVariable Id="WixUILicenseRtf" Value="$(var.LicenseRtf)" />
+
+    <Feature Id="MainFeature" Title="Cuajone PPE Monitor" Level="1">
+      <ComponentGroupRef Id="PayloadComponents" />
+      <ComponentGroupRef Id="RuntimeDataDirectories" />
+    </Feature>
+  </Package>
+
+  <Fragment>
+    <StandardDirectory Id="ProgramFiles64Folder">
+      <Directory Id="INSTALLFOLDER" Name="Cuajone PPE Monitor" />
+    </StandardDirectory>
+
+    <StandardDirectory Id="CommonAppDataFolder">
+      <Directory Id="APPLICATIONDATAFOLDER" Name="Cuajone PPE Monitor">
+        <Directory Id="RUNTIMEFOLDER" Name="runtime">
+          <Directory Id="MODELSFOLDER" Name="models" />
+          <Directory Id="CONFIGFOLDER" Name="config" />
+          <Directory Id="OUTPUTFOLDER" Name="output" />
+          <Directory Id="LOGSFOLDER" Name="logs" />
+        </Directory>
+      </Directory>
+    </StandardDirectory>
+
+    <StandardDirectory Id="ProgramMenuFolder">
+      <Directory Id="ProgramMenuAppFolder" Name="Cuajone PPE Monitor" />
+    </StandardDirectory>
+  </Fragment>
+
+  <Fragment>
+    <ComponentGroup Id="RuntimeDataDirectories">
+      <Component Id="RuntimeModelsDirectory" Directory="MODELSFOLDER" Guid="D35B10E0-97B1-4CB4-A638-8BD836FF77F5">
+        <CreateFolder>
+          <util:PermissionEx User="S-1-5-32-545" GenericRead="yes" GenericWrite="yes" GenericExecute="yes"
+                             CreateFile="yes" CreateChild="yes" Delete="yes" DeleteChild="yes"
+                             ReadPermission="yes" Synchronize="yes" Traverse="yes" />
+        </CreateFolder>
+      </Component>
+      <Component Id="RuntimeConfigDirectory" Directory="CONFIGFOLDER" Guid="0CE24DFA-B744-43D4-999C-4CB3886BE0A5">
+        <CreateFolder>
+          <util:PermissionEx User="S-1-5-32-545" GenericRead="yes" GenericWrite="yes" GenericExecute="yes"
+                             CreateFile="yes" CreateChild="yes" Delete="yes" DeleteChild="yes"
+                             ReadPermission="yes" Synchronize="yes" Traverse="yes" />
+        </CreateFolder>
+      </Component>
+      <Component Id="RuntimeOutputDirectory" Directory="OUTPUTFOLDER" Guid="9D3B7F4F-CB4F-4E95-AF35-7DA01CA06097">
+        <CreateFolder>
+          <util:PermissionEx User="S-1-5-32-545" GenericRead="yes" GenericWrite="yes" GenericExecute="yes"
+                             CreateFile="yes" CreateChild="yes" Delete="yes" DeleteChild="yes"
+                             ReadPermission="yes" Synchronize="yes" Traverse="yes" />
+        </CreateFolder>
+      </Component>
+      <Component Id="RuntimeLogsDirectory" Directory="LOGSFOLDER" Guid="8EF4EA77-F8B0-4AAE-A686-175C83C066D3">
+        <CreateFolder>
+          <util:PermissionEx User="S-1-5-32-545" GenericRead="yes" GenericWrite="yes" GenericExecute="yes"
+                             CreateFile="yes" CreateChild="yes" Delete="yes" DeleteChild="yes"
+                             ReadPermission="yes" Synchronize="yes" Traverse="yes" />
+        </CreateFolder>
+      </Component>
+    </ComponentGroup>
+  </Fragment>
+
+</Wix>

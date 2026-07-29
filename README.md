@@ -6,6 +6,12 @@ de forma opcional, ejecuta heurísticas de caída basadas en pose.
 
 `ppe_reporte.py` es un prototipo obsoleto. No debe utilizarse en operación.
 
+## Instalar en Windows
+
+Para instalar el MSI sin usar comandos, sigue la
+[guía simple de instalación para Windows](INSTALACION_WINDOWS.md). La preparación
+de confianza del equipo, cuando sea necesaria, corresponde a TI.
+
 ## Licencia
 
 El codigo fuente original del proyecto se distribuye exclusivamente bajo
@@ -291,7 +297,8 @@ combinaciones arbitrarias de GPU, TensorRT, CUDA y controlador.
 
 El primer candidato Windows x64 sin Python/PyTorch en runtime se encuentra en
 [`native/`](native/README.md). Incluye EPP y pose/caídas con dos engines TensorRT
-externos, pruebas CPU y preflight. El instalador interno, su procedimiento de build
-y la aceptación limitada a loader/`--help` se documentan en
-[`installer/native/`](installer/native/README.md). `ppe_reportev2.py` continúa
-siendo la referencia de comportamiento y el fallback operativo.
+externos, pruebas CPU y preflight. La instalación para usuarios se explica en
+[`INSTALACION_WINDOWS.md`](INSTALACION_WINDOWS.md). La construcción, firma,
+administración y aceptación del MSI se documentan en la
+[guía para TI](installer/native/README.md). `ppe_reportev2.py` continúa siendo la
+referencia de comportamiento y el fallback operativo.
