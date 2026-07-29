@@ -1,0 +1,396 @@
+#include "cuajone/engine_reader.hpp"
+// SPDX-License-Identifier: AGPL-3.0-only
+
+#include "cuajone/cli.hpp"
+#include "cuajone/fall_analytics.hpp"
+#include "cuajone/iou_tracker.hpp"
+#include "cuajone/ppe_analytics.hpp"
+#include "cuajone/preprocess.hpp"
+#include "cuajone/yolo_decode.hpp"
+
+#include <opencv2/core.hpp>
+
+#include <chrono>
+#include <cmath>
+#include <filesystem>
+#include <fstream>
+#include <functional>
+#include <iostream>
+#include <limits>
+#include <stdexcept>
+#include <string>
+#include <vector>
+
+namespace {
+
+using namespace cuajone;
+using Clock = std::chrono::steady_clock;
+
+void require(bool condition, const std::string& message) {
+    if (!condition) throw std::runtime_error(message);
+}
+
+void requireNear(float actual, float expected, float tolerance, const std::string& message) {
+    if (std::abs(actual - expected) > tolerance) {
+        throw std::runtime_error(message + ": expected " + std::to_string(expected)
+            + ", got " + std::to_string(actual));
+    }
+}
+
+template <typename Function>
+void requireThrows(Function function, const std::string& message) {
+    try {
+        function();
+    } catch (const std::exception&) {
+        return;
+    }
+    throw std::runtime_error(message);
+}
+
+class TemporaryFile {
+public:
+    explicit TemporaryFile(const std::vector<unsigned char>& bytes) {
+        path_ = std::filesystem::temp_directory_path()
+            / ("cuajone_native_" + std::to_string(++sequence_) + ".engine");
+        std::ofstream output(path_, std::ios::binary);
+        output.write(reinterpret_cast<const char*>(bytes.data()), static_cast<std::streamsize>(bytes.size()));
+    }
+    ~TemporaryFile() { std::error_code ignored; std::filesystem::remove(path_, ignored); }
+    const std::filesystem::path& path() const { return path_; }
+
+private:
+    std::filesystem::path path_;
+    inline static int sequence_{};
+};
+
+void testEngineRawAndMetadataPrefix() {
+    TemporaryFile raw({0x24, 0x00, 0x00, 0x00, 0xAA, 0xBB});
+    const EngineFile raw_engine = EngineFile::read(raw.path());
+    require(!raw_engine.hasMetadataPrefix(), "Raw plan was mistaken for metadata");
+    require(raw_engine.plan().size() == 6, "Raw plan length changed");
+
+    const std::string json = R"({"task":"detect","names":{"0":"Person","1":"Hard_hat","2":"Vest"},"imgsz":[640,640],"kpt_shape":[17,3]})";
+    std::vector<unsigned char> prefixed{
+        static_cast<unsigned char>(json.size() & 0xFFU),
+        static_cast<unsigned char>((json.size() >> 8U) & 0xFFU),
+        static_cast<unsigned char>((json.size() >> 16U) & 0xFFU),
+        static_cast<unsigned char>((json.size() >> 24U) & 0xFFU),
+    };
+    prefixed.insert(prefixed.end(), json.begin(), json.end());
+    prefixed.insert(prefixed.end(), {0x01, 0x02, 0x03});
+    TemporaryFile metadata_file(prefixed);
+    const EngineFile engine = EngineFile::read(metadata_file.path());
+    require(engine.hasMetadataPrefix(), "Metadata prefix was not detected");
+    require(engine.plan().size() == 3, "Metadata bytes were not skipped exactly");
+    require(engine.metadata().task == "detect", "Task metadata missing");
+    require(engine.metadata().names.at(1) == "Hard_hat", "Names metadata missing");
+    require(engine.metadata().image_size == std::array{640, 640}, "Image size metadata missing");
+    require(engine.metadata().keypoint_shape == std::array{17, 3}, "Keypoint shape metadata missing");
+
+    const std::string invalid = "{invalid";
+    std::vector<unsigned char> bad{static_cast<unsigned char>(invalid.size()), 0, 0, 0};
+    bad.insert(bad.end(), invalid.begin(), invalid.end());
+    bad.push_back(0x01);
+    TemporaryFile invalid_file(bad);
+    requireThrows([&] { EngineFile::read(invalid_file.path()); }, "Invalid metadata JSON was accepted");
+
+    std::vector<unsigned char> truncated{100, 0, 0, 0, '{', '"', 'x', '"', ':'};
+    TemporaryFile truncated_file(truncated);
+    requireThrows([&] { EngineFile::read(truncated_file.path()); }, "Truncated metadata prefix was accepted");
+
+    const auto prefixedEngine = [](const std::string& metadata) {
+        std::vector<unsigned char> bytes{
+            static_cast<unsigned char>(metadata.size() & 0xFFU),
+            static_cast<unsigned char>((metadata.size() >> 8U) & 0xFFU),
+            static_cast<unsigned char>((metadata.size() >> 16U) & 0xFFU),
+            static_cast<unsigned char>((metadata.size() >> 24U) & 0xFFU),
+        };
+        bytes.insert(bytes.end(), metadata.begin(), metadata.end());
+        bytes.push_back(0x01);
+        return bytes;
+    };
+    TemporaryFile surrogate_file(prefixedEngine(R"({"names":{"0":"\uD83D\uDE00"}})"));
+    const EngineFile surrogate_engine = EngineFile::read(surrogate_file.path());
+    require(surrogate_engine.metadata().names.at(0) == "\xF0\x9F\x98\x80", "Unicode surrogate pair was not combined");
+
+    TemporaryFile lone_surrogate(prefixedEngine(R"({"names":{"0":"\uD83D"}})"));
+    requireThrows([&] { EngineFile::read(lone_surrogate.path()); }, "Lone Unicode surrogate was accepted");
+    TemporaryFile leading_zero(prefixedEngine(R"({"imgsz":01})"));
+    requireThrows([&] { EngineFile::read(leading_zero.path()); }, "JSON leading-zero number was accepted");
+    TemporaryFile missing_fraction(prefixedEngine(R"({"imgsz":1.})"));
+    requireThrows([&] { EngineFile::read(missing_fraction.path()); }, "JSON number without fraction digits was accepted");
+    TemporaryFile missing_exponent(prefixedEngine(R"({"imgsz":1e})"));
+    requireThrows([&] { EngineFile::read(missing_exponent.path()); }, "JSON number without exponent digits was accepted");
+    TemporaryFile duplicate_ids(prefixedEngine(R"({"names":{"1":"one","01":"also one"}})"));
+    requireThrows([&] { EngineFile::read(duplicate_ids.path()); }, "Duplicate numeric class IDs were accepted");
+    TemporaryFile oversized_prefix({0x01, 0x00, 0x00, 0x01, '{', '}', 0x01});
+    requireThrows([&] { EngineFile::read(oversized_prefix.path()); }, "Recognizable oversized metadata prefix was treated as a raw plan");
+}
+
+void testLetterboxMappingAndPacking() {
+    cv::Mat frame(720, 1280, CV_8UC3, cv::Scalar(10, 20, 30));
+    LetterboxPreprocessor preprocessor(640, 640);
+    const PreprocessedFrame result = preprocessor.process(frame);
+    require(result.nchw.size() == 3U * 640U * 640U, "Unexpected NCHW length");
+    require(result.transform.padding_left == 0, "Unexpected horizontal padding");
+    require(result.transform.padding_top == 140, "Unexpected vertical padding");
+    const Box restored = result.transform.restore(Box{0.0F, 140.0F, 640.0F, 500.0F});
+    requireNear(restored.x2, 1280.0F, 0.01F, "Box x mapping failed");
+    requireNear(restored.y2, 720.0F, 0.01F, "Box y mapping failed");
+    const std::size_t image_offset = 140U * 640U;
+    requireNear(result.nchw[image_offset], 30.0F / 255.0F, 0.0001F, "BGR to RGB failed");
+}
+
+void testDetectSchemaDecodeAndNms() {
+    const LetterboxTransform transform{640, 640, 640, 640, 1.0F, 1.0F, 0, 0};
+    // [1, channels=7, predictions=2], channel-major.
+    const std::vector<float> values{
+        100, 400,
+        100, 400,
+        40, 40,
+        60, 60,
+        0.90F, 0.10F,
+        0.05F, 0.20F,
+        0.01F, 0.30F,
+    };
+    const std::array<std::int64_t, 3> shape{1, 7, 2};
+    const TensorView tensor{values, shape};
+    const auto schema = validateDetectSchema(tensor.shape, 3);
+    require(schema.layout == TensorLayout::ChannelsFirst, "Detect layout was not recognized");
+    const auto decoded = decodeDetections(tensor, 3, 0.5F, 0.45F, transform);
+    require(decoded.size() == 1 && decoded[0].class_id == 0, "Detect decode confidence failed");
+    requireNear(decoded[0].box.x1, 80.0F, 0.01F, "Detect box decode failed");
+
+    const std::vector<float> objectness_values{100, 100, 40, 60, 0.8F, 0.75F, 0.1F, 0.1F};
+    const std::array<std::int64_t, 3> objectness_shape{1, 1, 8};
+    const TensorView objectness_tensor{objectness_values, objectness_shape};
+    const auto objectness_decoded = decodeDetections(objectness_tensor, 3, 0.5F, 0.45F, transform);
+    require(objectness_decoded.size() == 1, "Objectness detect schema was not decoded");
+    requireNear(objectness_decoded[0].confidence, 0.6F, 0.001F, "Objectness was not multiplied");
+    requireThrows(
+        [] { validateDetectSchema(std::array<std::int64_t, 3>{1, 6, 100}, 3); },
+        "Unsupported detect schema was accepted");
+
+    std::vector<Detection> candidates{
+        {{0, 0, 100, 100}, 0.9F, 0},
+        {{5, 5, 95, 95}, 0.8F, 0},
+        {{5, 5, 95, 95}, 0.7F, 1},
+    };
+    const auto kept = classAwareNms(std::move(candidates), 0.45F);
+    require(kept.size() == 2, "Class-aware NMS suppressed the wrong boxes");
+
+    const std::vector<float> edge_values{
+        10, 30,
+        50, 50,
+        60, 60,
+        100, 100,
+        0.9F, 0.8F,
+    };
+    const std::array<std::int64_t, 3> edge_shape{1, 5, 2};
+    const auto edge_detections = decodeDetections(
+        {edge_values, edge_shape}, 1, 0.1F, 0.6F,
+        LetterboxTransform{100, 100, 100, 100, 1.0F, 1.0F, 0, 0});
+    require(edge_detections.size() == 2, "NMS ran after clipping instead of in model coordinates");
+
+    auto nonfinite = objectness_values;
+    nonfinite[4] = std::numeric_limits<float>::quiet_NaN();
+    require(decodeDetections({nonfinite, objectness_shape}, 3, 0.1F, 0.45F, transform).empty(),
+        "Non-finite objectness was accepted");
+    const auto limited = decodeDetections(
+        {edge_values, edge_shape}, 1, 0.1F, 1.0F, transform, {2, 1});
+    require(limited.size() == 1 && limited[0].confidence == 0.9F,
+        "Final max detection limit did not preserve the best candidate");
+}
+
+void testPoseSchemaAndDecode() {
+    const LetterboxTransform transform{640, 640, 640, 640, 1.0F, 1.0F, 0, 0};
+    // [1, predictions=1, channels=11]: xywh + one class + 2*(x,y,confidence).
+    const std::vector<float> values{
+        100, 120, 40, 80, 0.8F,
+        90, 100, 0.7F,
+        110, 140, 0.6F,
+    };
+    const std::array<std::int64_t, 3> shape{1, 1, 11};
+    const TensorView tensor{values, shape};
+    const auto schema = validatePoseSchema(tensor.shape, 1, 2, 3);
+    require(schema.layout == TensorLayout::PredictionsFirst, "Pose layout was not recognized");
+    const auto poses = decodePoses(tensor, 1, 2, 3, 0.5F, 0.45F, transform);
+    require(poses.size() == 1 && poses[0].keypoints.size() == 2, "Pose decode failed");
+    requireNear(poses[0].keypoints[1].confidence, 0.6F, 0.001F, "Keypoint confidence lost");
+    requireThrows(
+        [] { validatePoseSchema(std::array<std::int64_t, 3>{1, 56, 56}, 1, 17, 3); },
+        "Ambiguous pose schema was accepted");
+
+    auto nonfinite = values;
+    nonfinite[5] = std::numeric_limits<float>::infinity();
+    require(decodePoses({nonfinite, shape}, 1, 2, 3, 0.5F, 0.45F, transform).empty(),
+        "Non-finite pose keypoint coordinate was accepted");
+}
+
+void testCliUrlsAndInvariantDefense() {
+    require(isPersonClassLabel("Person") && isPersonClassLabel(" persona ")
+            && !isPersonClassLabel("worker"),
+        "Pose person/persona metadata normalization contract failed");
+    validateRtspSource("rtsp://user:password@[2001:db8::1]:554/live");
+    validateRtspSource("rtsps://camera.example/live");
+    require(defaultSourceLabel("rtsp://user:password@[2001:db8::1]:554/live")
+            == "rtsp-2001:db8::1",
+        "RTSP IPv6 source label was not credential-free");
+    require(redactSource("rtsps://user:password@camera.example/live")
+            == "rtsps://***@camera.example/live",
+        "RTSPS credentials were not redacted");
+    requireThrows([] { validateRtspSource("rtsp://"); }, "Empty RTSP authority was accepted");
+    requireThrows([] { validateRtspSource("rtsp://user:password@"); }, "Empty RTSP host was accepted");
+    requireThrows([] { validateRtspSource("rtsp://2001:db8::1/live"); }, "Unbracketed IPv6 host was accepted");
+
+    const auto parse = [](std::vector<std::string> arguments) {
+        std::vector<char*> argv;
+        argv.reserve(arguments.size());
+        for (auto& argument : arguments) argv.push_back(argument.data());
+        return parseCommandLine(static_cast<int>(argv.size()), argv.data());
+    };
+    const std::vector<std::string> base{
+        "cuajone_native", "--source", "video.mp4", "--ppe-engine", "ppe.engine",
+        "--pose-engine", "pose.engine", "--output", "out",
+    };
+    auto valid = base;
+    valid.insert(valid.end(), {"--max-det", "42", "--rtsp-transport", "udp",
+                               "--capture-open-timeout-ms", "0"});
+    const RuntimeConfig parsed = parse(valid);
+    require(parsed.max_det == 42 && parsed.rtsp_transport == RtspTransport::Udp
+            && parsed.capture_open_timeout.count() == 0,
+        "CLI did not preserve max-det, transport, or zero timeout");
+    auto invalid_confidence = base;
+    invalid_confidence.insert(invalid_confidence.end(), {"--pose-conf", "1.1"});
+    requireThrows([&] { parse(invalid_confidence); }, "CLI accepted confidence above one");
+    auto invalid_cooldown = base;
+    invalid_cooldown.insert(invalid_cooldown.end(), {"--fall-cooldown", "-1"});
+    requireThrows([&] { parse(invalid_cooldown); }, "CLI accepted a negative cooldown");
+    auto invalid_capacity = base;
+    invalid_capacity.insert(invalid_capacity.end(), {"--tracker-max-tracks", "0"});
+    requireThrows([&] { parse(invalid_capacity); }, "CLI accepted zero tracker capacity");
+
+    requireThrows(
+        [] { IoUTracker({0.3F, 0, 1}); },
+        "Zero tracker age was accepted by the constructor");
+    requireThrows(
+        [] { PpeAnalyzer({1, 1, 0.5F, std::chrono::seconds(-1), std::chrono::seconds(1)}); },
+        "Negative PPE cooldown was accepted by the constructor");
+    requireThrows(
+        [] { FallAnalyzer({0, 1, std::chrono::seconds(1), std::chrono::seconds(1), 1.0F, 45.0F, 0.1F, 0.5F}); },
+        "Zero fall confirmation count was accepted by the constructor");
+}
+
+void testTrackerContinuityAndExpiry() {
+    IoUTracker tracker({0.3F, 2, 4});
+    const std::array<Box, 1> first{{{0, 0, 100, 100}}};
+    const int id = tracker.update(first)[0];
+    const std::array<Box, 1> moved{{{5, 0, 105, 100}}};
+    require(tracker.update(moved)[0] == id, "Tracker did not preserve ID");
+    tracker.update({});
+    tracker.update({});
+    require(tracker.activeTrackCount() == 1, "Tracker expired too early");
+    tracker.update({});
+    require(tracker.activeTrackCount() == 0, "Tracker did not expire at maximum age");
+}
+
+void testPpeAssociationVotingAndCooldown() {
+    const auto classes = resolvePpeClasses({{0, "Person"}, {1, "Hard hat"}, {2, "Vest"}});
+    const TrackedPerson person{7, {100, 50, 300, 450}, 0.9F, {}, true};
+    const std::array<Detection, 2> items{{
+        {{150, 40, 220, 130}, 0.8F, 1},
+        {{140, 160, 260, 330}, 0.9F, 2},
+    }};
+    const auto associations = associatePpe(std::span(&person, 1), items, classes);
+    require(associations.at(7).helmet && associations.at(7).vest, "PPE association failed");
+
+    PpeAnalyzer analyzer({4, 3, 0.5F, std::chrono::seconds(10), std::chrono::seconds(5)});
+    const PpeAssociation missing{};
+    const auto start = Clock::time_point{} + std::chrono::seconds(100);
+    require(!analyzer.update(7, missing, true, start), "PPE voted before minimum samples");
+    require(!analyzer.update(7, missing, true, start + std::chrono::seconds(1)), "PPE voted early");
+    require(analyzer.update(7, missing, true, start + std::chrono::seconds(2)).has_value(), "PPE violation was not emitted");
+    require(!analyzer.update(7, missing, true, start + std::chrono::seconds(3)), "PPE cooldown failed");
+    require(analyzer.update(7, missing, true, start + std::chrono::seconds(12)).has_value(), "PPE cooldown did not reopen");
+}
+
+std::vector<Keypoint> horizontalPose() {
+    std::vector<Keypoint> points(17, {0, 0, 0.0F});
+    points[5] = {100, 300, 0.9F};
+    points[6] = {100, 320, 0.9F};
+    points[11] = {250, 300, 0.9F};
+    points[12] = {250, 320, 0.9F};
+    points[0] = {50, 300, 0.9F};
+    return points;
+}
+
+std::vector<Keypoint> uprightPose() {
+    std::vector<Keypoint> points(17, {0, 0, 0.0F});
+    points[5] = {180, 180, 0.9F};
+    points[6] = {220, 180, 0.9F};
+    points[11] = {180, 360, 0.9F};
+    points[12] = {220, 360, 0.9F};
+    points[0] = {200, 100, 0.9F};
+    return points;
+}
+
+void testFallConfirmationRecoveryAndCooldown() {
+    FallAnalyzer analyzer({
+        3, 2, std::chrono::seconds(20), std::chrono::seconds(5),
+        1.05F, 55.0F, 0.12F, 0.65F,
+    });
+    const auto pose = horizontalPose();
+    const auto upright_pose = uprightPose();
+    PoseDetection weak_pose;
+    weak_pose.box = {100, 100, 300, 600};
+    weak_pose.confidence = 0.4F;
+    weak_pose.keypoints = upright_pose;
+    const std::array<Box, 1> ppe_anchor{{{110, 110, 290, 590}}};
+    require(isValidPosePerson(weak_pose, ppe_anchor, 0.35F, 0.45F), "PPE anchor did not validate pose person");
+    const Box fallen{100, 500, 400, 650};
+    const auto start = Clock::time_point{} + std::chrono::seconds(100);
+    require(!analyzer.update(9, fallen, pose, 720, start).confirmed_now, "Fall confirmed early");
+    require(!analyzer.update(9, fallen, pose, 720, start + std::chrono::seconds(1)).confirmed_now, "Fall confirmed early");
+    require(analyzer.update(9, fallen, pose, 720, start + std::chrono::seconds(2)).confirmed_now, "Fall was not confirmed");
+
+    const Box upright{150, 100, 260, 600};
+    analyzer.update(9, upright, upright_pose, 720, start + std::chrono::seconds(3));
+    const auto recovered = analyzer.update(9, upright, upright_pose, 720, start + std::chrono::seconds(4));
+    require(!recovered.active, "Fall state did not recover");
+    require(!analyzer.update(9, fallen, pose, 720, start + std::chrono::seconds(5)).confirmed_now, "Fall cooldown failed");
+    analyzer.update(9, fallen, pose, 720, start + std::chrono::seconds(6));
+    require(!analyzer.update(9, fallen, pose, 720, start + std::chrono::seconds(7)).confirmed_now, "Fall cooldown failed");
+    analyzer.update(9, upright, upright_pose, 720, start + std::chrono::seconds(8));
+    analyzer.update(9, upright, upright_pose, 720, start + std::chrono::seconds(9));
+    analyzer.update(9, fallen, pose, 720, start + std::chrono::seconds(23));
+    analyzer.update(9, fallen, pose, 720, start + std::chrono::seconds(24));
+    require(analyzer.update(9, fallen, pose, 720, start + std::chrono::seconds(25)).confirmed_now, "Fall cooldown did not reopen");
+}
+
+}  // namespace
+
+int main() {
+    const std::vector<std::pair<std::string, std::function<void()>>> tests{
+        {"engine metadata prefix", testEngineRawAndMetadataPrefix},
+        {"letterbox mapping", testLetterboxMappingAndPacking},
+        {"detect decode and NMS", testDetectSchemaDecodeAndNms},
+        {"pose decode", testPoseSchemaAndDecode},
+        {"CLI URLs and invariants", testCliUrlsAndInvariantDefense},
+        {"IoU tracker", testTrackerContinuityAndExpiry},
+        {"PPE analytics", testPpeAssociationVotingAndCooldown},
+        {"fall analytics", testFallConfirmationRecoveryAndCooldown},
+    };
+    int failures = 0;
+    for (const auto& [name, test] : tests) {
+        try {
+            test();
+            std::cout << "PASS: " << name << '\n';
+        } catch (const std::exception& error) {
+            ++failures;
+            std::cerr << "FAIL: " << name << ": " << error.what() << '\n';
+        }
+    }
+    std::cout << (tests.size() - static_cast<std::size_t>(failures)) << "/"
+              << tests.size() << " CPU tests passed\n";
+    return failures == 0 ? 0 : 1;
+}

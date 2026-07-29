@@ -1,0 +1,54 @@
+{
+  "version": 6,
+  "cmakeMinimumRequired": {
+    "major": 3,
+    "minor": 25,
+    "patch": 0
+  },
+  "configurePresets": [
+    {
+      "name": "windows-msvc",
+      "displayName": "Windows x64 native runtime",
+      "generator": "Visual Studio 17 2022",
+      "architecture": "x64",
+      "binaryDir": "${sourceDir}/build/windows-msvc",
+      "cacheVariables": {
+        "CMAKE_CONFIGURATION_TYPES": "Release;RelWithDebInfo",
+        "TENSORRT_ROOT": "$env{TENSORRT_ROOT}",
+        "OpenCV_DIR": "$env{OpenCV_DIR}"
+      }
+    },
+    {
+      "name": "cpu-tests",
+      "displayName": "CPU tests without CUDA or TensorRT",
+      "generator": "Visual Studio 17 2022",
+      "architecture": "x64",
+      "binaryDir": "${sourceDir}/build/cpu-tests",
+      "cacheVariables": {
+        "CUAJONE_BUILD_RUNTIME": "OFF",
+        "CUAJONE_BUILD_TESTS": "ON",
+        "OpenCV_DIR": "$env{OpenCV_DIR}"
+      }
+    }
+  ],
+  "buildPresets": [
+    {
+      "name": "windows-msvc-release",
+      "configurePreset": "windows-msvc",
+      "configuration": "Release"
+    },
+    {
+      "name": "cpu-tests-release",
+      "configurePreset": "cpu-tests",
+      "configuration": "Release"
+    }
+  ],
+  "testPresets": [
+    {
+      "name": "cpu-tests-release",
+      "configurePreset": "cpu-tests",
+      "configuration": "Release",
+      "output": { "outputOnFailure": true }
+    }
+  ]
+}
