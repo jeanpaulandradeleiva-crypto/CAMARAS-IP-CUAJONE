@@ -10,6 +10,8 @@ param(
     [string]$CertificateThumbprint = $env:CUAJONE_CERTIFICATE_SHA1,
     [string]$TrustedSigningDlib = $env:CUAJONE_TRUSTED_SIGNING_DLIB,
     [string]$TrustedSigningMetadata = $env:CUAJONE_TRUSTED_SIGNING_METADATA,
+    [switch]$AllowInternalPilotTrust = ($env:CUAJONE_ALLOW_INTERNAL_PILOT_TRUST -ceq "1"),
+    [string]$PilotRootCertificatePath = $env:CUAJONE_PILOT_ROOT_CER,
     [switch]$VerifyOnly
 )
 
@@ -22,9 +24,128 @@ function Assert-File([string]$Path, [string]$Description) {
     }
 }
 
+function Assert-InternalPilotSignature(
+    [string]$Path,
+    [System.Management.Automation.Signature]$Signature,
+    [string]$ExpectedThumbprint,
+    [string]$RootCertificatePath
+) {
+    Assert-File $RootCertificatePath "Internal pilot root public certificate"
+    if ([System.IO.Path]::GetExtension($RootCertificatePath) -cne ".cer") {
+        throw "Internal pilot root must be supplied as a public .cer file"
+    }
+    if ($ExpectedThumbprint -notmatch '^[0-9A-Fa-f]{40}$') {
+        throw "Internal pilot verification requires CUAJONE_CERTIFICATE_SHA1"
+    }
+    if ($null -eq $Signature.SignerCertificate -or
+        $Signature.SignerCertificate.Thumbprint -cne $ExpectedThumbprint) {
+        throw "Authenticode signer does not match the configured internal pilot leaf certificate"
+    }
+    if ($null -eq $Signature.TimeStamperCertificate) {
+        throw "Internal pilot signature is missing its RFC 3161 timestamp"
+    }
+
+    if ($Signature.Status -ne [System.Management.Automation.SignatureStatus]::Valid) {
+        if ($Signature.Status -notin @(
+            [System.Management.Automation.SignatureStatus]::NotTrusted,
+            [System.Management.Automation.SignatureStatus]::UnknownError
+        )) {
+            throw "Internal pilot signature has a non-trust failure: $($Signature.Status)"
+        }
+
+        $defaultChain = [System.Security.Cryptography.X509Certificates.X509Chain]::new()
+        try {
+            $defaultChain.ChainPolicy.RevocationMode = [System.Security.Cryptography.X509Certificates.X509RevocationMode]::NoCheck
+            $defaultChain.Build($Signature.SignerCertificate) | Out-Null
+            $defaultStatuses = @(
+                $defaultChain.ChainStatus |
+                    ForEach-Object { $_.Status } |
+                    Sort-Object -Unique
+            )
+            if ($defaultStatuses.Count -ne 1 -or
+                $defaultStatuses[0] -ne [System.Security.Cryptography.X509Certificates.X509ChainStatusFlags]::UntrustedRoot) {
+                $statusNames = @($defaultStatuses | ForEach-Object { $_.ToString() }) -join ", "
+                throw "Internal pilot signer has chain failures beyond its untrusted private root: $statusNames"
+            }
+        }
+        finally {
+            $defaultChain.Dispose()
+        }
+    }
+
+    $root = [System.Security.Cryptography.X509Certificates.X509Certificate2]::new(
+        [System.IO.File]::ReadAllBytes((Resolve-Path -LiteralPath $RootCertificatePath).Path)
+    )
+    try {
+        if ($root.HasPrivateKey) {
+            throw "Internal pilot root input must not contain a private key"
+        }
+        $constraints = $root.Extensions |
+            Where-Object { $_ -is [System.Security.Cryptography.X509Certificates.X509BasicConstraintsExtension] } |
+            Select-Object -First 1
+        if ($null -eq $constraints -or -not $constraints.CertificateAuthority) {
+            throw "Internal pilot root input is not a CA certificate"
+        }
+        $ekuOids = @(
+            $Signature.SignerCertificate.Extensions |
+                Where-Object { $_ -is [System.Security.Cryptography.X509Certificates.X509EnhancedKeyUsageExtension] } |
+                ForEach-Object { $_.EnhancedKeyUsages | ForEach-Object { $_.Value } }
+        )
+        if ($ekuOids -notcontains "1.3.6.1.5.5.7.3.3") {
+            throw "Internal pilot signer lacks the Code Signing EKU"
+        }
+
+        $chain = [System.Security.Cryptography.X509Certificates.X509Chain]::new()
+        try {
+            $chain.ChainPolicy.TrustMode = [System.Security.Cryptography.X509Certificates.X509ChainTrustMode]::CustomRootTrust
+            $chain.ChainPolicy.CustomTrustStore.Add($root) | Out-Null
+            $chain.ChainPolicy.ExtraStore.Add($root) | Out-Null
+            $chain.ChainPolicy.RevocationMode = [System.Security.Cryptography.X509Certificates.X509RevocationMode]::NoCheck
+            if (-not $chain.Build($Signature.SignerCertificate) -or
+                $chain.ChainElements[$chain.ChainElements.Count - 1].Certificate.Thumbprint -cne $root.Thumbprint) {
+                $statuses = @($chain.ChainStatus | ForEach-Object { $_.Status.ToString() }) -join ", "
+                throw "Internal pilot signer does not chain to the supplied root: $statuses"
+            }
+        }
+        finally {
+            $chain.Dispose()
+        }
+    }
+    finally {
+        $root.Dispose()
+    }
+
+    [pscustomobject]@{
+        File = $Path
+        SHA256 = (Get-FileHash -Algorithm SHA256 -LiteralPath $Path).Hash.ToLowerInvariant()
+        SignatureStatus = "ValidForInternalPilot"
+        Signer = $Signature.SignerCertificate.Subject
+        SignerThumbprint = $Signature.SignerCertificate.Thumbprint
+        TrustScope = "Private pilot root supplied explicitly; not publicly trusted"
+        TimestampCertificate = if ($Signature.TimeStamperCertificate) {
+            $Signature.TimeStamperCertificate.Subject
+        } else {
+            $null
+        }
+    }
+}
+
 Assert-File $FilePath "PE file"
 Assert-File $SignToolPath "Microsoft signtool"
 $target = (Resolve-Path -LiteralPath $FilePath).Path
+
+if ($AllowInternalPilotTrust -and [string]::IsNullOrWhiteSpace($PilotRootCertificatePath)) {
+    throw "Internal pilot trust requires CUAJONE_PILOT_ROOT_CER or -PilotRootCertificatePath"
+}
+if ($AllowInternalPilotTrust) {
+    if ($CertificateThumbprint -notmatch '^[0-9A-Fa-f]{40}$') {
+        throw "Internal pilot trust requires CUAJONE_CERTIFICATE_SHA1"
+    }
+    if (-not [string]::IsNullOrWhiteSpace($TrustedSigningDlib) -or
+        -not [string]::IsNullOrWhiteSpace($TrustedSigningMetadata)) {
+        throw "Internal pilot trust supports only the configured Windows certificate-store leaf"
+    }
+}
 
 if (-not $VerifyOnly) {
     if ([string]::IsNullOrWhiteSpace($TimestampUrl) -or
@@ -64,14 +185,22 @@ if (-not $VerifyOnly) {
     }
 }
 
-& $SignToolPath verify /pa /all /v $target
-if ($LASTEXITCODE -ne 0) {
-    throw "signtool verify failed with exit code $LASTEXITCODE"
-}
+$verifyOutput = @(& $SignToolPath verify /pa /all /v $target 2>&1)
+$verifyExitCode = $LASTEXITCODE
+$verifyOutput | ForEach-Object { Write-Host $_ }
 
 $signature = Get-AuthenticodeSignature -LiteralPath $target
-if ($signature.Status -ne [System.Management.Automation.SignatureStatus]::Valid) {
-    throw "Authenticode signature is not trusted: $($signature.Status)"
+if ($AllowInternalPilotTrust) {
+    if ($verifyExitCode -ne 0 -and
+        $signature.Status -eq [System.Management.Automation.SignatureStatus]::Valid) {
+        throw "signtool verification failed unexpectedly for a trusted internal pilot signature"
+    }
+    Assert-InternalPilotSignature $target $signature $CertificateThumbprint $PilotRootCertificatePath
+    return
+}
+if ($verifyExitCode -ne 0 -or
+    $signature.Status -ne [System.Management.Automation.SignatureStatus]::Valid) {
+    throw "Trusted Authenticode verification failed: signtool=$verifyExitCode status=$($signature.Status)"
 }
 
 [pscustomobject]@{

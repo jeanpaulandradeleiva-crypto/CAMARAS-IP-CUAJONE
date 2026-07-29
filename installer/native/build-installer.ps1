@@ -147,12 +147,19 @@ $gitStatus = @(& git -C $projectRoot status --porcelain=v1 --untracked-files=all
 $isDirty = $gitStatus.Count -gt 0
 $isSignedBuild = -not [string]::IsNullOrWhiteSpace($PeSignCommand)
 $hasInnoSigning = -not [string]::IsNullOrWhiteSpace($SignToolCommand)
+$isInternalPilotSigning = $env:CUAJONE_ALLOW_INTERNAL_PILOT_TRUST -ceq "1"
 
 if ([string]::IsNullOrWhiteSpace($SignToolCommand) -xor [string]::IsNullOrWhiteSpace($SignToolName)) {
     throw "SignToolName and SignToolCommand must be supplied together"
 }
 if ($isSignedBuild -xor $hasInnoSigning) {
     throw "Project executable and Inno installer/uninstaller signing must be configured together"
+}
+if ($isInternalPilotSigning -and $BuildMode -ne "Preview") {
+    throw "Internal pilot signing is permitted only for Preview builds; Release requires public trust"
+}
+if ($isInternalPilotSigning -and -not $isSignedBuild) {
+    throw "Internal pilot trust was enabled without a configured signing command"
 }
 if ($BuildMode -eq "Release") {
     if (-not $isSignedBuild -or [string]::IsNullOrWhiteSpace($SignToolName)) {
@@ -407,7 +414,7 @@ $metadata = [ordered]@{
     releaseStatus = if ($BuildMode -eq "Release") {
         "Open-source release with exact source archives and trusted Authenticode required"
     } else {
-        "Explicit internal preview; unsigned output permitted only by switch; real-engine operation not validated"
+        "Internal preview; public trust is not implied; real-engine operation not validated"
     }
     buildMode = $BuildMode
     sourceRepository = $sourceRepository
@@ -421,7 +428,13 @@ $metadata = [ordered]@{
     ffmpegUpstreamVersion = "n4.4.6"
     ffmpegOpenCvBinariesCommit = "ea9240e39bc0d6a69d2b1f0ba4513bdc7612a41e"
     projectLicenseSha256 = (Get-FileHash -Algorithm SHA256 -LiteralPath (Join-Path $projectRoot "LICENSE")).Hash.ToLowerInvariant()
-    signingPolicy = if ($isSignedBuild) { "Trusted Authenticode required and verified" } else { "Explicit unsigned internal preview" }
+    signingPolicy = if ($isInternalPilotSigning) {
+        "Private Authenticode for enrolled internal pilot machines"
+    } elseif ($isSignedBuild) {
+        "Publicly trusted Authenticode required and verified"
+    } else {
+        "Explicit unsigned internal preview"
+    }
     thirdPartyBinariesResigned = $false
     acceptanceScope = "Loader and --help only; no engines, cameras, preflight, or inference"
     stagedBinaries = @($resolved.GetEnumerator() | ForEach-Object {
@@ -507,7 +520,11 @@ if ($originalFilename -cne $setupOriginalFilename) {
     Installer = $installerPath
     SHA256 = $installerHash
     SizeBytes = (Get-Item -LiteralPath $installerPath).Length
-    SignatureStatus = $signature.Status
+    SignatureStatus = if ($isInternalPilotSigning) {
+        "ValidForInternalPilot"
+    } else {
+        $signature.Status
+    }
     FileVersion = $versionInfo.FileVersion.TrimEnd()
     ProductVersion = $versionInfo.ProductVersion.TrimEnd()
     OriginalFilename = $originalFilename

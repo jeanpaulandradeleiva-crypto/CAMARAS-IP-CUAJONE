@@ -56,6 +56,173 @@ interno `NotSigned`.
 Admite un certificado del almacen de Windows o Microsoft Trusted Signing. No
 acepta PFX ni contrasenas y no vuelve a firmar DLL de terceros.
 
+### Firma privada para el piloto interno
+
+Esta ruta es **solo para equipos piloto enrolados**. Usa una CA raiz privada y un
+certificado hoja separado con EKU Code Signing. Ambas claves privadas permanecen
+como no exportables en `Cert:\CurrentUser\My` del usuario firmante; el repositorio
+no recibe PFX, PEM, claves, contrasenas ni secretos.
+
+En la maquina de firma:
+
+```powershell
+$certs = .\installer\native\New-InternalPilotSigningCertificates.ps1
+$env:CUAJONE_CERTIFICATE_SHA1 = $certs.LeafThumbprint
+$env:CUAJONE_PILOT_ROOT_CER = $certs.RootPublicCertificate
+$env:CUAJONE_ALLOW_INTERNAL_PILOT_TRUST = "1"
+$env:CUAJONE_SIGNTOOL_PATH = "C:\Program Files (x86)\Windows Kits\10\bin\10.0.26100.0\x64\signtool.exe"
+$env:CUAJONE_TIMESTAMP_URL = "http://timestamp.acs.microsoft.com"
+$env:CUAJONE_PE_SIGN_COMMAND = (Resolve-Path .\installer\native\sign-release.ps1).Path
+$env:PATH = "$(Split-Path $env:CUAJONE_SIGNTOOL_PATH);$env:PATH"
+$env:CUAJONE_SIGNTOOL_NAME = "CuajonePilotSign"
+$env:CUAJONE_SIGNTOOL_COMMAND = "signtool.exe sign /v /fd SHA256 /tr $env:CUAJONE_TIMESTAMP_URL /td SHA256 /sha1 $env:CUAJONE_CERTIFICATE_SHA1 `$f"
+.\installer\native\build-installer.ps1 -BuildMode Preview
+```
+
+El ajuste de `PATH` anterior afecta solo al proceso PowerShell actual. Permite que
+Inno firme setup y desinstalador sin modificar el `PATH` global.
+
+La creacion es idempotente: reutiliza solo certificados validos que coincidan con
+la identidad piloto, la cadena y la politica no exportable. Ante ambiguedad,
+expiracion proxima o un archivo CER distinto, falla sin reemplazar nada. Solo
+exporta estos certificados publicos bajo `D:\DevTools\CuajoneNative\signing`:
+
+- `Cuajone-PPE-Monitor-Internal-Pilot-Root-CA-2026.cer`
+- `Cuajone-PPE-Monitor-Internal-Pilot-Code-Signing-2026.cer`
+
+### Instalación del piloto firmado en un equipo objetivo
+
+Este procedimiento requiere autorización previa del equipo de TI/seguridad del
+cliente.
+
+**1. Obtén y copia el paquete aprobado.** El operador debe disponer de:
+
+- el instalador, los dos CER públicos y los valores SHA-256 y huellas digitales
+  aprobados, obtenidos por un canal autorizado;
+- una copia del repositorio o, como mínimo,
+  `installer/native/Install-InternalPilotTrust.ps1` junto con ambos CER;
+- una cuenta con permisos administrativos. Incluso `-ValidateOnly` requiere una
+  sesión de PowerShell elevada.
+
+Los valores esperados deben llegar por el medio aprobado por seguridad, de forma
+independiente de los archivos.
+
+**2. Abre PowerShell como Administrador y verifica el paquete** antes de modificar
+los almacenes:
+
+```powershell
+$packageDir = "D:\<RUTA_PAQUETE_PILOTO>"
+$installer = Join-Path $packageDir "CuajonePPEMonitor-0.1.0-internal.3-x64-Internal-Setup.exe"
+$rootCer = Join-Path $packageDir "Cuajone-PPE-Monitor-Internal-Pilot-Root-CA-2026.cer"
+$leafCer = Join-Path $packageDir "Cuajone-PPE-Monitor-Internal-Pilot-Code-Signing-2026.cer"
+$trustScript = "D:\<RUTA_SCRIPT>\Install-InternalPilotTrust.ps1"
+
+$expectedHashes = @(
+    [pscustomobject]@{ Path = $installer; SHA256 = "<SHA256_INSTALADOR>" }
+    [pscustomobject]@{ Path = $rootCer; SHA256 = "<SHA256_CER_RAIZ>" }
+    [pscustomobject]@{ Path = $leafCer; SHA256 = "<SHA256_CER_HOJA>" }
+)
+foreach ($item in $expectedHashes) {
+    $actual = (Get-FileHash -LiteralPath $item.Path -Algorithm SHA256).Hash
+    if ($actual -cne $item.SHA256.ToUpperInvariant()) {
+        throw "SHA-256 no coincide: $($item.Path)"
+    }
+}
+
+$expectedRootThumbprint = "<HUELLA_SHA1_RAIZ_SIN_ESPACIOS>".ToUpperInvariant()
+$expectedLeafThumbprint = "<HUELLA_SHA1_HOJA_SIN_ESPACIOS>".ToUpperInvariant()
+$rootCertificate = [System.Security.Cryptography.X509Certificates.X509Certificate2]::new($rootCer)
+$leafCertificate = [System.Security.Cryptography.X509Certificates.X509Certificate2]::new($leafCer)
+try {
+    if ($rootCertificate.Thumbprint -cne $expectedRootThumbprint) { throw "Huella raíz no coincide" }
+    if ($leafCertificate.Thumbprint -cne $expectedLeafThumbprint) { throw "Huella hoja no coincide" }
+}
+finally {
+    $rootCertificate.Dispose()
+    $leafCertificate.Dispose()
+}
+```
+
+**3. Valida los certificados sin importarlos:**
+
+```powershell
+& $trustScript -RootCertificatePath $rootCer -LeafCertificatePath $leafCer -ValidateOnly
+```
+
+**4. Realiza el enrolamiento:**
+
+```powershell
+& $trustScript -RootCertificatePath $rootCer -LeafCertificatePath $leafCer
+```
+
+El script valida identidad, uso y cadena, importa solo la raíz pública a
+`LocalMachine\Root` y la hoja pública a `LocalMachine\TrustedPublisher`, y muestra
+las huellas enroladas.
+
+**5. Verifica la firma y el firmante antes de ejecutar:**
+
+```powershell
+$signature = Get-AuthenticodeSignature -LiteralPath $installer
+if ($signature.Status -ne "Valid") { throw "Firma Authenticode no válida: $($signature.Status)" }
+if ($signature.SignerCertificate.Thumbprint -cne $expectedLeafThumbprint) {
+    throw "El firmante no coincide con la hoja piloto aprobada"
+}
+```
+
+**6. Ejecuta el instalador:**
+
+```powershell
+Start-Process -FilePath $installer -Wait
+```
+
+**7. Realiza la comprobación posterior mínima** con la ruta seleccionada durante
+la instalación:
+
+```powershell
+& "D:\<RUTA_INSTALACION>\bin\cuajone_native.exe" --help
+```
+
+No ejecutes `--preflight`, no abras cámaras y no inicies inferencia como parte de
+esta validación.
+
+El enrolamiento solo establece confianza en ese publicador para los equipos
+enrolados; **no otorga confianza pública**. Tampoco garantiza silencio del
+antivirus/EDR, suprime alertas del SOC, evita SmartScreen o Smart App Control, ni
+invalida políticas de AppLocker, WDAC o Defender. Seguridad debe aprobar o incluir
+en allowlist la instalación y el comportamiento esperado de procesos y red,
+preferentemente por el certificado hoja o por el hash del artefacto cuando su
+herramienta lo permita. No se deben crear exclusiones amplias ni desactivar
+controles de seguridad.
+
+#### Retiro del piloto y de la confianza
+
+1. Desinstala **Cuajone PPE Monitor** desde Aplicaciones instaladas o mediante el
+   desinstalador aprobado.
+2. Confirma con TI/seguridad que ningún otro despliegue piloto en esta máquina
+   depende de estos certificados.
+3. En PowerShell como Administrador, inspecciona y elimina únicamente las huellas
+   exactas aprobadas:
+
+```powershell
+$leafThumbprint = "<HUELLA_SHA1_HOJA_SIN_ESPACIOS>"
+$rootThumbprint = "<HUELLA_SHA1_RAIZ_SIN_ESPACIOS>"
+
+Get-Item -LiteralPath "Cert:\LocalMachine\TrustedPublisher\$leafThumbprint"
+Get-Item -LiteralPath "Cert:\LocalMachine\Root\$rootThumbprint"
+
+Remove-Item -LiteralPath "Cert:\LocalMachine\TrustedPublisher\$leafThumbprint"
+Remove-Item -LiteralPath "Cert:\LocalMachine\Root\$rootThumbprint"
+```
+
+No elimines otros certificados y no retires la raíz mientras otro despliegue
+autorizado todavía dependa de ella.
+
+`CUAJONE_ALLOW_INTERNAL_PILOT_TRUST=1` es un opt-in explicito y esta desactivado
+por defecto. `build-installer.ps1` lo admite solo con `-BuildMode Preview`; un
+`Release` publico sigue fallando cerrado y exige confianza publica. Fuera de los
+equipos enrolados, esta firma privada no es confiable y no elimina advertencias de
+SmartScreen.
+
 Ejemplo con certificado del almacen:
 
 ```powershell
@@ -78,7 +245,7 @@ debe usar `$f` como marcador de archivo y mantener `/fd SHA256`, un `/tr` RFC
 
 Lista de firma:
 
-1. Configura un certificado publico confiable o Trusted Signing; nunca generes un certificado autofirmado de produccion.
+1. Configura un certificado publico confiable o Trusted Signing; la CA privada anterior es exclusiva del piloto y nunca es una credencial de produccion.
 2. Firma `cuajone_native.exe` antes del staging mediante `CUAJONE_PE_SIGN_COMMAND`.
 3. Configura el SignTool de Inno para setup y `SignedUninstaller`.
 4. Ejecuta el build `Release` con revision, URL y SHA-256 de los archivos fuente del proyecto y FFmpeg.
@@ -127,8 +294,9 @@ No ejecutes `--preflight`: selecciona CUDA y deserializa engines. Tampoco abras 
 ## Distribucion
 
 Estado de licencia del proyecto: **codigo abierto AGPL-3.0-only**. El artefacto
-actual sigue siendo un preview interno sin firma y sin validacion con engines
-reales. La distribucion externa permanece bloqueada hasta publicar fuente exacta
+actual sigue siendo un preview interno sin validacion con engines reales. Una
+firma privada piloto, si se aplica, solo es confiable en equipos enrolados. La
+distribucion externa permanece bloqueada hasta publicar fuente exacta
 del proyecto y del plugin FFmpeg, usar Authenticode confiable y validar la licencia
 aplicable del compilador Inno Setup instalado, que informa `Non-commercial use
 only`. Nada de esto convierte los modelos, datasets ni DLL de terceros a AGPL.

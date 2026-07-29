@@ -24,5 +24,15 @@ Authenticode y una cadena de publicacion estable mejoran trazabilidad y
 reputacion, pero no garantizan cero alertas. La licencia AGPL tampoco evita ni
 reduce por si sola las detecciones antivirus.
 
+La CA privada documentada para el piloto interno no satisface los requisitos de
+una release pública ni debe enrolarse sin autorización previa de TI/seguridad del
+cliente. Solo establece confianza en el publicador para los equipos enrolados: no
+garantiza silencio del antivirus/EDR, suprime alertas del SOC, evita SmartScreen o
+Smart App Control, ni invalida políticas de AppLocker, WDAC o Defender. Seguridad
+debe aprobar la instalación y el comportamiento esperado de procesos y red, y
+aplicar allowlisting por certificado hoja o hash del artefacto cuando su
+herramienta lo permita. No deben usarse exclusiones amplias ni desactivarse
+controles de seguridad.
+
 Consulta [`installer/native/README.md`](installer/native/README.md) para el flujo
 de firma y aceptacion. Esto es documentacion de ingenieria, no asesoramiento legal.

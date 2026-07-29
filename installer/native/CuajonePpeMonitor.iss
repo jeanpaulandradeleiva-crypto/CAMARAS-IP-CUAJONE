@@ -33,7 +33,7 @@ AppPublisherURL=https://github.com/jeanpaulandradeleiva-crypto/CAMARAS-IP-CUAJON
 AppSupportURL=https://github.com/jeanpaulandradeleiva-crypto/CAMARAS-IP-CUAJONE/issues
 AppUpdatesURL=https://github.com/jeanpaulandradeleiva-crypto/CAMARAS-IP-CUAJONE/releases
 #ifdef PreviewBuild
-AppComments=Open-source AGPL-3.0 internal preview. Unsigned preview and real-engine validation limitations apply.
+AppComments=Open-source AGPL-3.0 internal preview. Pilot signing and real-engine validation limitations apply.
 #else
 AppComments=Open-source AGPL-3.0 release. Third-party components retain their own license terms.
 #endif
