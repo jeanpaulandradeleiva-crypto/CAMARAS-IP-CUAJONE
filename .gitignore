@@ -16,6 +16,7 @@
 __pycache__/
 *.py[cod]
 *$py.class
+*.egg-info/
 
 # Generated model deployment artifacts
 *.pt
@@ -29,8 +30,13 @@ __pycache__/
 /native/build/
 /native/out/
 /native/.vs/
+/native/python/
 /installer/native/stage/
 /installer/native/output/
+
+# Development/QA parity receipts and annotated outputs
+/parity-receipts/
+/qa-output/
 
 # Reports, evidence, and Office temporary files
 /Evidencias/

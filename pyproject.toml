@@ -5,6 +5,7 @@ description = "RTSP safety analytics for PPE compliance and optional fall detect
 readme = "README.md"
 requires-python = ">=3.12,<3.13"
 dependencies = [
+    "jsonschema==4.25.1",
     "numpy>=1.26,<3",
     "opencv-python>=4.9,<5",
     "openpyxl>=3.1,<4",
@@ -14,11 +15,32 @@ dependencies = [
     "ultralytics>=8.3,<9",
 ]
 
+[project.scripts]
+cuajone-qa = "cuajone_qa.cli:main"
+
+[project.optional-dependencies]
+cvat = [
+    "cvat-sdk==2.71.0",
+]
+supervision = [
+    "supervision==0.29.1",
+]
+
 [dependency-groups]
 dev = [
     "pytest>=8,<10",
 ]
+bindings = [
+    "pybind11==3.0.4",
+]
+
+[build-system]
+requires = ["setuptools==80.9.0"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["cuajone_qa*"]
 
 [tool.uv]
-package = false
+package = true
 default-groups = ["dev"]

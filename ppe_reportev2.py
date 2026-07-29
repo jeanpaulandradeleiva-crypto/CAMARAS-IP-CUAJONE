@@ -52,7 +52,8 @@ def resolve_runtime_path(
 SCRIPT_DIR = Path(__file__).resolve().parent
 RUNTIME_DIR = SCRIPT_DIR
 ENV_PATH = RUNTIME_DIR / ".env"
-load_dotenv(dotenv_path=ENV_PATH, override=False)
+if os.getenv("CUAJONE_SKIP_DOTENV") != "1":
+    load_dotenv(dotenv_path=ENV_PATH, override=False)
 
 CAMERA_ID = os.getenv("CAMERA_ID", "CAM_P01_ADM")
 RTSP_URL = os.getenv("RTSP_URL")
