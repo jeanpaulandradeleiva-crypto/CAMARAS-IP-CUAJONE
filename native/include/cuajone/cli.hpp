@@ -21,6 +21,7 @@ struct RuntimeConfig {
     bool preflight{};
     bool show_window{};
     bool allow_nonperson_pose_class{};
+    AnalyticsMode analytics_mode{AnalyticsMode::PpeFall};
     std::string source;
     std::string source_label;
     std::filesystem::path ppe_engine;

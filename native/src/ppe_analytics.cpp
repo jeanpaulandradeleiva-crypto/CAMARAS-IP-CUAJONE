@@ -235,4 +235,8 @@ void PpeAnalyzer::prune(std::chrono::steady_clock::time_point now) {
     });
 }
 
+void PpeAnalyzer::reset() noexcept {
+    states_.clear();
+}
+
 }  // namespace cuajone

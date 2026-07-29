@@ -1,0 +1,8 @@
+{
+  "contract_version": "1.0.0",
+  "semantics": {
+    "person": ["person", "persona"],
+    "helmet": ["hard_hat", "hardhat", "helmet", "safety_helmet", "casco"],
+    "vest": ["vest", "safety_vest", "reflective_vest", "chaleco", "chaleco_reflectivo"]
+  }
+}

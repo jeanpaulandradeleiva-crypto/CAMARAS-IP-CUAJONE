@@ -49,6 +49,7 @@ public:
         int frame_height,
         std::chrono::steady_clock::time_point now);
     void prune(std::chrono::steady_clock::time_point now);
+    void reset() noexcept;
 
 private:
     struct State {

@@ -1,0 +1,180 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://cuajone.example/contracts/v1/parity-receipt.schema.json",
+  "title": "Cuajone parity receipt v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "receipt_version",
+    "contract_version",
+    "source_commit",
+    "generated_at",
+    "scope",
+    "tracker_profiles",
+    "numeric_tolerances",
+    "event_normalization",
+    "stages",
+    "full_model_parity_claimed",
+    "passed"
+  ],
+  "properties": {
+    "receipt_version": {"const": 1},
+    "contract_version": {"const": "1.0.0"},
+    "source_commit": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+    "generated_at": {"type": "string", "format": "date-time"},
+    "scope": {"enum": ["synthetic-only", "authorized-engine-data"]},
+    "authorization_reference": {"$ref": "#/$defs/identity"},
+    "approved_inputs": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/approvedInput"},
+      "uniqueItems": true
+    },
+    "tracker_profiles": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["production_sim", "experimental_live"],
+      "properties": {
+        "production_sim": {"const": "native-iou"},
+        "experimental_live": {"const": "ultralytics-bytetrack-not-equivalent"}
+      }
+    },
+    "numeric_tolerances": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["box_absolute", "keypoint_absolute", "confidence_absolute"],
+      "properties": {
+        "box_absolute": {"const": 0.0001},
+        "keypoint_absolute": {"const": 0.0001},
+        "confidence_absolute": {"const": 0.00001}
+      }
+    },
+    "event_normalization": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["fields", "order_by", "confidence_digits"],
+      "properties": {
+        "fields": {
+          "type": "array",
+          "prefixItems": [
+            {"const": "id"},
+            {"const": "source"},
+            {"const": "type"},
+            {"const": "time"},
+            {"const": "subject"},
+            {"const": "frame_id"},
+            {"const": "monotonic_timestamp_ms"},
+            {"const": "track_id"},
+            {"const": "status"},
+            {"const": "confidence"},
+            {"const": "evidence"}
+          ],
+          "items": false,
+          "minItems": 11,
+          "maxItems": 11
+        },
+        "order_by": {
+          "type": "array",
+          "prefixItems": [
+            {"const": "frame_id"},
+            {"const": "track_id"},
+            {"const": "type"},
+            {"const": "id"}
+          ],
+          "items": false,
+          "minItems": 4,
+          "maxItems": 4
+        },
+        "confidence_digits": {"const": 6}
+      }
+    },
+    "stages": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/stage"},
+      "minItems": 6,
+      "maxItems": 6
+    },
+    "full_model_parity_claimed": {"type": "boolean"},
+    "passed": {"type": "boolean"}
+  },
+  "$defs": {
+    "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "identity": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$"
+    },
+    "approvedInput": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["identity", "sha256"],
+      "properties": {
+        "identity": {"$ref": "#/$defs/identity"},
+        "sha256": {"$ref": "#/$defs/sha256"}
+      }
+    },
+    "evidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "identity", "sha256"],
+      "properties": {
+        "kind": {"enum": ["contract", "fixture", "comparison", "artifact", "authorized-input"]},
+        "identity": {"$ref": "#/$defs/identity"},
+        "sha256": {"$ref": "#/$defs/sha256"}
+      }
+    },
+    "stage": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "status", "comparisons"],
+      "properties": {
+        "name": {
+          "enum": [
+            "contracts-defaults",
+            "preprocess-letterbox",
+            "detections-keypoints-canonicalization",
+            "tracking-ppe-fall-determinism",
+            "canonical-events",
+            "authorized-engine-video-end-to-end"
+          ]
+        },
+        "status": {"enum": ["passed", "failed", "skipped"]},
+        "comparisons": {"type": "integer", "minimum": 0},
+        "failures": {"type": "integer", "minimum": 0},
+        "reason": {"type": "string", "minLength": 1},
+        "authorization_reference": {"$ref": "#/$defs/identity"},
+        "evidence": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/evidence"}
+        }
+      }
+    }
+  },
+  "allOf": [
+    {
+      "if": {"properties": {"scope": {"const": "synthetic-only"}}},
+      "then": {"properties": {"full_model_parity_claimed": {"const": false}}}
+    },
+    {
+      "if": {"properties": {"scope": {"const": "authorized-engine-data"}}},
+      "then": {
+        "required": ["authorization_reference", "approved_inputs"],
+        "properties": {
+          "approved_inputs": {"minItems": 2},
+          "full_model_parity_claimed": {"const": true},
+          "passed": {"const": true},
+          "stages": {
+            "items": {
+              "required": ["evidence"],
+              "properties": {
+                "status": {"const": "passed"},
+                "comparisons": {"minimum": 1},
+                "evidence": {"minItems": 1}
+              }
+            }
+          }
+        }
+      }
+    }
+  ]
+}

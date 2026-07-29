@@ -20,4 +20,10 @@ struct LetterboxTransform {
     [[nodiscard]] Box restore(Box box) const noexcept;
 };
 
+LetterboxTransform makeLetterboxTransform(
+    int source_width,
+    int source_height,
+    int model_width,
+    int model_height);
+
 }  // namespace cuajone

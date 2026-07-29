@@ -1,0 +1,10 @@
+{
+  "contract_version": "1.0.0",
+  "source_id": "SYNTHETIC_QA_01",
+  "frame_id": 7,
+  "monotonic_timestamp_ms": 700,
+  "observed_at": "2026-01-01T00:00:00.700Z",
+  "frame": {"width": 640, "height": 480},
+  "people": [{"track_id": 1, "box": [100, 50, 300, 450], "confidence": 0.9, "ppe_evaluable": true, "ppe_status": "Evaluating PPE", "fall_active": false, "keypoints": []}],
+  "events": []
+}

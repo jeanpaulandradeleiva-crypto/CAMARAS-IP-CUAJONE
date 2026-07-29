@@ -1,0 +1,81 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://cuajone.example/contracts/v1/frame-result.schema.json",
+  "title": "Cuajone canonical frame result v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["contract_version", "source_id", "frame_id", "monotonic_timestamp_ms", "observed_at", "frame", "people", "events"],
+  "properties": {
+    "contract_version": {"const": "1.0.0"},
+    "source_id": {"type": "string", "minLength": 1, "maxLength": 128, "not": {"pattern": "[Rr][Tt][Ss][Pp][Ss]?://|@|[Pp][Aa][Ss][Ss][Ww][Oo][Rr][Dd]"}},
+    "frame_id": {"type": "integer", "minimum": 0},
+    "monotonic_timestamp_ms": {"type": "integer", "minimum": 0},
+    "observed_at": {"type": "string", "format": "date-time"},
+    "frame": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["width", "height"],
+      "properties": {
+        "width": {"type": "integer", "minimum": 1},
+        "height": {"type": "integer", "minimum": 1}
+      }
+    },
+    "people": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/person"}
+    },
+    "events": {
+      "type": "array",
+      "items": {"type": "string", "pattern": "^evt-[A-Za-z0-9._:-]+$"}
+    }
+  },
+  "$defs": {
+    "box": {
+      "description": "Coordinates use float32 semantics and canonical JSON uses at most six decimal places.",
+      "x-canonical-decimal-digits": 6,
+      "type": "array",
+      "prefixItems": [
+        {"type": "number"},
+        {"type": "number"},
+        {"type": "number"},
+        {"type": "number"}
+      ],
+      "items": false,
+      "minItems": 4,
+      "maxItems": 4
+    },
+    "keypoint": {
+      "description": "Keypoints use float32 semantics and canonical JSON uses at most six decimal places.",
+      "x-canonical-decimal-digits": 6,
+      "type": "array",
+      "prefixItems": [
+        {"type": "number"},
+        {"type": "number"},
+        {"type": "number", "minimum": 0, "maximum": 1}
+      ],
+      "items": false,
+      "minItems": 3,
+      "maxItems": 3
+    },
+    "person": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["track_id", "box", "confidence", "ppe_evaluable", "ppe_status", "fall_active", "keypoints"],
+      "properties": {
+        "track_id": {"type": "integer", "minimum": 1},
+        "box": {"$ref": "#/$defs/box"},
+        "confidence": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1,
+          "description": "Canonical float32 confidence rounded to at most six decimal places.",
+          "x-canonical-decimal-digits": 6
+        },
+        "ppe_evaluable": {"type": "boolean"},
+        "ppe_status": {"enum": ["Evaluating PPE", "PPE not evaluable", "EPP Completo", "Falta Chaleco", "Falta Casco", "Sin Casco y Chaleco"]},
+        "fall_active": {"type": "boolean"},
+        "keypoints": {"type": "array", "items": {"$ref": "#/$defs/keypoint"}}
+      }
+    }
+  }
+}

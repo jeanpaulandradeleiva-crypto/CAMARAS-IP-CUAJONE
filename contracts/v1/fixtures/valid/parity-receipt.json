@@ -1,0 +1,36 @@
+{
+  "receipt_version": 1,
+  "contract_version": "1.0.0",
+  "source_commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "generated_at": "2026-07-29T12:00:00Z",
+  "scope": "authorized-engine-data",
+  "authorization_reference": "AUTH-QA-001",
+  "approved_inputs": [
+    {"identity": "ppe-engine", "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},
+    {"identity": "authorized-video", "sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"}
+  ],
+  "tracker_profiles": {
+    "production_sim": "native-iou",
+    "experimental_live": "ultralytics-bytetrack-not-equivalent"
+  },
+  "numeric_tolerances": {
+    "box_absolute": 0.0001,
+    "keypoint_absolute": 0.0001,
+    "confidence_absolute": 0.00001
+  },
+  "event_normalization": {
+    "fields": ["id", "source", "type", "time", "subject", "frame_id", "monotonic_timestamp_ms", "track_id", "status", "confidence", "evidence"],
+    "order_by": ["frame_id", "track_id", "type", "id"],
+    "confidence_digits": 6
+  },
+  "stages": [
+    {"name": "contracts-defaults", "status": "passed", "comparisons": 1, "evidence": [{"kind": "contract", "identity": "contracts-defaults", "sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"}]},
+    {"name": "preprocess-letterbox", "status": "passed", "comparisons": 1, "evidence": [{"kind": "comparison", "identity": "preprocess-letterbox", "sha256": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"}]},
+    {"name": "detections-keypoints-canonicalization", "status": "passed", "comparisons": 1, "evidence": [{"kind": "comparison", "identity": "detections-keypoints", "sha256": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"}]},
+    {"name": "tracking-ppe-fall-determinism", "status": "passed", "comparisons": 1, "evidence": [{"kind": "comparison", "identity": "tracking-ppe-fall", "sha256": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"}]},
+    {"name": "canonical-events", "status": "passed", "comparisons": 1, "evidence": [{"kind": "comparison", "identity": "canonical-events", "sha256": "1111111111111111111111111111111111111111111111111111111111111111"}]},
+    {"name": "authorized-engine-video-end-to-end", "status": "passed", "comparisons": 1, "failures": 0, "authorization_reference": "AUTH-QA-001", "evidence": [{"kind": "authorized-input", "identity": "authorized-end-to-end", "sha256": "2222222222222222222222222222222222222222222222222222222222222222"}]}
+  ],
+  "full_model_parity_claimed": true,
+  "passed": true
+}

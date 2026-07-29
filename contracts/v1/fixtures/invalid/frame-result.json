@@ -1,0 +1,11 @@
+{
+  "contract_version": "1.0.0",
+  "source_id": "rtsp://user:password@example.invalid/live",
+  "frame_id": -1,
+  "monotonic_timestamp_ms": 700,
+  "observed_at": "not-a-time",
+  "frame": {"width": 0, "height": 480},
+  "people": [],
+  "events": [],
+  "credentials": "forbidden"
+}

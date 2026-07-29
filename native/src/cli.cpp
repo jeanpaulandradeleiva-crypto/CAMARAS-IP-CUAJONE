@@ -83,6 +83,12 @@ RtspTransport parseRtspTransport(std::string_view text) {
     throw std::invalid_argument("--rtsp-transport must be default, tcp, or udp");
 }
 
+AnalyticsMode parseAnalyticsMode(std::string_view text) {
+    if (text == "ppe-only") return AnalyticsMode::PpeOnly;
+    if (text == "ppe-fall") return AnalyticsMode::PpeFall;
+    throw std::invalid_argument("--mode must be ppe-only or ppe-fall");
+}
+
 struct ParsedRtspSource {
     std::string host;
 };
@@ -155,8 +161,10 @@ ParsedRtspSource parseRtspSource(const std::string& source) {
 
 void validate(RuntimeConfig& config) {
     if (config.help) return;
-    if (config.source.empty() || config.ppe_engine.empty() || config.pose_engine.empty() || config.output.empty()) {
-        throw std::invalid_argument("--source, --ppe-engine, --pose-engine, and --output are required");
+    if (config.source.empty() || config.ppe_engine.empty() || config.output.empty()
+        || (config.analytics_mode == AnalyticsMode::PpeFall && config.pose_engine.empty())) {
+        throw std::invalid_argument(
+            "--source, --ppe-engine, and --output are required; --pose-engine is required in ppe-fall mode");
     }
     validateRtspSource(config.source);
     if (config.source_label.empty()) config.source_label = defaultSourceLabel(config.source);
@@ -213,6 +221,7 @@ RuntimeConfig parseCommandLine(int argc, char** argv) {
         else if (option == "--preflight") config.preflight = true;
         else if (option == "--show") config.show_window = true;
         else if (option == "--allow-nonperson-pose-class") config.allow_nonperson_pose_class = true;
+        else if (option == "--mode") config.analytics_mode = parseAnalyticsMode(requireValue(index, argc, argv, option));
         else if (option == "--source") config.source = requireValue(index, argc, argv, option);
         else if (option == "--source-label") config.source_label = requireValue(index, argc, argv, option);
         else if (option == "--ppe-engine") config.ppe_engine = requireValue(index, argc, argv, option);
@@ -260,11 +269,12 @@ void printHelp(std::ostream& output) {
         "Required:\n"
         "  --source <rtsp-or-file>       RTSP URL, video, or image\n"
         "  --ppe-engine <file.engine>   PPE detection TensorRT engine\n"
-        "  --pose-engine <file.engine>  Pose TensorRT engine\n"
+        "  --pose-engine <file.engine>  Pose TensorRT engine (required for ppe-fall)\n"
         "  --output <directory>         Evidence and append-only CSV directory\n\n"
         "Diagnostics and identity:\n"
         "  --help                       Show this help without runtime startup\n"
         "  --preflight                  Validate everything without opening the source\n"
+        "  --mode <mode>                ppe-only or ppe-fall (default: ppe-fall)\n"
         "  --device <index>             CUDA device index (default: 0)\n"
         "  --source-label <label>       Non-secret source label used in events\n"
         "  --ppe-labels <a,b,c>         Class labels for a raw engine without metadata\n"

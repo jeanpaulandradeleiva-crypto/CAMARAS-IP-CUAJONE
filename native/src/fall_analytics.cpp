@@ -171,4 +171,8 @@ void FallAnalyzer::prune(std::chrono::steady_clock::time_point now) {
     });
 }
 
+void FallAnalyzer::reset() noexcept {
+    states_.clear();
+}
+
 }  // namespace cuajone

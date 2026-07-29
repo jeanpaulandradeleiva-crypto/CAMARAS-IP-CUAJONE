@@ -1,0 +1,32 @@
+{
+  "fixture_version": 1,
+  "description": "Synthetic PPE-only sequence without images, models, or operational data",
+  "frames": [
+    {
+      "contract_version": "1.0.0",
+      "source_id": "SYNTHETIC_QA_01",
+      "frame_id": 1,
+      "monotonic_timestamp_ms": 100,
+      "observed_at": "2026-01-01T00:00:00.100Z",
+      "frame": {"width": 640, "height": 720},
+      "ppe_classes": {"person_ids": [0], "helmet_ids": [1], "vest_ids": [2]},
+      "ppe_detections": [
+        {"box": [100, 100, 300, 500], "confidence": 0.9, "class_id": 0}
+      ],
+      "pose_detections": []
+    },
+    {
+      "contract_version": "1.0.0",
+      "source_id": "SYNTHETIC_QA_01",
+      "frame_id": 2,
+      "monotonic_timestamp_ms": 200,
+      "observed_at": "2026-01-01T00:00:00.200Z",
+      "frame": {"width": 640, "height": 720},
+      "ppe_classes": {"person_ids": [0], "helmet_ids": [1], "vest_ids": [2]},
+      "ppe_detections": [
+        {"box": [100, 100, 300, 500], "confidence": 0.9, "class_id": 0}
+      ],
+      "pose_detections": []
+    }
+  ]
+}

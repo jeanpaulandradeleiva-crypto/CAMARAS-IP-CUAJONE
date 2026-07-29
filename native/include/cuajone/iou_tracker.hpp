@@ -23,6 +23,7 @@ public:
     // IDs are aligned with detections. -1 means the bounded tracker was full.
     std::vector<int> update(std::span<const Box> detections);
     [[nodiscard]] std::size_t activeTrackCount() const noexcept;
+    void reset() noexcept;
 
 private:
     struct Track {

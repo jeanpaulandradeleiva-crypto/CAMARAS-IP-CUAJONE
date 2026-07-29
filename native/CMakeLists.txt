@@ -6,6 +6,7 @@ project(cuajone_native LANGUAGES CXX)
 
 option(CUAJONE_BUILD_RUNTIME "Build the Windows TensorRT runtime" ON)
 option(CUAJONE_BUILD_TESTS "Build pure CPU unit tests" ON)
+option(CUAJONE_BUILD_PYTHON_BINDINGS "Build the development/QA pybind11 module" OFF)
 option(CUAJONE_ENABLE_TRT_INTEGRATION_TESTS "Build opt-in TensorRT integration tests" OFF)
 
 set(CMAKE_CXX_STANDARD 20)
@@ -22,24 +23,78 @@ endif()
 
 find_package(OpenCV 4.8 REQUIRED COMPONENTS core imgproc)
 
-add_library(cuajone_core
-    src/cli.cpp
-    src/engine_reader.cpp
+add_library(cuajone_contracts
+    src/contracts.cpp
+)
+target_include_directories(cuajone_contracts PUBLIC include)
+target_compile_features(cuajone_contracts PUBLIC cxx_std_20)
+
+add_library(cuajone_analytics
+    src/analytics_pipeline.cpp
     src/fall_analytics.cpp
     src/iou_tracker.cpp
     src/letterbox.cpp
     src/ppe_analytics.cpp
-    src/preprocess.cpp
     src/types.cpp
+)
+target_include_directories(cuajone_analytics PUBLIC include)
+target_link_libraries(cuajone_analytics PUBLIC cuajone_contracts)
+target_compile_features(cuajone_analytics PUBLIC cxx_std_20)
+
+add_library(cuajone_inference
+    src/engine_reader.cpp
+    src/preprocess.cpp
     src/yolo_decode.cpp
 )
+target_include_directories(cuajone_inference PUBLIC include)
+target_link_libraries(cuajone_inference PUBLIC cuajone_analytics opencv_core opencv_imgproc)
+target_compile_features(cuajone_inference PUBLIC cxx_std_20)
+
+add_library(cuajone_core
+    src/cli.cpp
+)
 target_include_directories(cuajone_core PUBLIC include)
-target_link_libraries(cuajone_core PUBLIC opencv_core opencv_imgproc)
+target_link_libraries(cuajone_core PUBLIC cuajone_contracts cuajone_analytics cuajone_inference)
 target_compile_features(cuajone_core PUBLIC cxx_std_20)
 if(MSVC)
-    target_compile_options(cuajone_core PRIVATE /W4 /permissive- /EHsc)
+    foreach(target cuajone_contracts cuajone_analytics cuajone_inference cuajone_core)
+        target_compile_options(${target} PRIVATE /W4 /permissive- /EHsc)
+    endforeach()
 else()
-    target_compile_options(cuajone_core PRIVATE -Wall -Wextra -Wpedantic)
+    foreach(target cuajone_contracts cuajone_analytics cuajone_inference cuajone_core)
+        target_compile_options(${target} PRIVATE -Wall -Wextra -Wpedantic)
+    endforeach()
+endif()
+
+if(CUAJONE_BUILD_PYTHON_BINDINGS)
+    set(CUAJONE_PYBIND11_ROOT "" CACHE PATH
+        "Pinned pybind11 3.0.4 CMake package root from a D:-hosted Python environment")
+    set(CUAJONE_PYTHON_OUTPUT_DIR "${CMAKE_BINARY_DIR}/python" CACHE PATH
+        "Output directory for the development/QA Python extension")
+    if(NOT CUAJONE_PYBIND11_ROOT)
+        message(FATAL_ERROR
+            "CUAJONE_PYBIND11_ROOT is required for bindings; use the pybind11 3.0.4 package under a D:-hosted Python 3.12 environment")
+    endif()
+    if(WIN32)
+        file(TO_CMAKE_PATH "${CUAJONE_PYBIND11_ROOT}" _cuajone_pybind11_root)
+        if(NOT _cuajone_pybind11_root MATCHES "^[Dd]:/")
+            message(FATAL_ERROR "CUAJONE_PYBIND11_ROOT must remain on D: for this Windows build")
+        endif()
+    endif()
+    find_package(Python 3.12 EXACT COMPONENTS Interpreter Development.Module REQUIRED)
+    set(PYBIND11_FINDPYTHON ON)
+    find_package(pybind11 3.0.4 EXACT CONFIG REQUIRED
+        PATHS "${CUAJONE_PYBIND11_ROOT}" NO_DEFAULT_PATH)
+    pybind11_add_module(cuajone_python MODULE src/python_bindings.cpp)
+    target_link_libraries(cuajone_python PRIVATE cuajone_analytics)
+    target_compile_features(cuajone_python PRIVATE cxx_std_20)
+    set_target_properties(cuajone_python PROPERTIES
+        OUTPUT_NAME cuajone_native
+        LIBRARY_OUTPUT_DIRECTORY "${CUAJONE_PYTHON_OUTPUT_DIR}"
+        RUNTIME_OUTPUT_DIRECTORY "${CUAJONE_PYTHON_OUTPUT_DIR}")
+    if(MSVC)
+        target_compile_options(cuajone_python PRIVATE /W4 /permissive- /EHsc)
+    endif()
 endif()
 
 if(CUAJONE_BUILD_TESTS)
@@ -47,6 +102,11 @@ if(CUAJONE_BUILD_TESTS)
     add_executable(cuajone_cpu_tests tests/cpu_tests.cpp)
     target_link_libraries(cuajone_cpu_tests PRIVATE cuajone_core)
     add_test(NAME cuajone_cpu_tests COMMAND cuajone_cpu_tests)
+    if(WIN32)
+        set_tests_properties(cuajone_cpu_tests PROPERTIES
+            ENVIRONMENT_MODIFICATION
+                "PATH=path_list_prepend:$<TARGET_FILE_DIR:opencv_core>")
+    endif()
 endif()
 
 if(CUAJONE_BUILD_RUNTIME)
@@ -145,6 +205,7 @@ if(CUAJONE_BUILD_RUNTIME)
 
     add_library(cuajone_runtime
         src/capture.cpp
+        src/engine_pipeline.cpp
         src/evidence.cpp
         src/tensorrt_runtime.cpp
     )
@@ -155,6 +216,11 @@ if(CUAJONE_BUILD_RUNTIME)
         PRIVATE "${TENSORRT_NVINFER_LIBRARY}"
             opencv_imgcodecs opencv_videoio opencv_highgui)
     target_compile_options(cuajone_runtime PRIVATE /W4 /permissive- /EHsc)
+
+    if(TARGET cuajone_python)
+        target_compile_definitions(cuajone_python PRIVATE CUAJONE_PYTHON_WITH_ENGINE_RUNTIME=1)
+        target_link_libraries(cuajone_python PRIVATE cuajone_runtime)
+    endif()
 
     add_executable(cuajone_native src/main.cpp)
     target_link_libraries(cuajone_native PRIVATE cuajone_runtime)

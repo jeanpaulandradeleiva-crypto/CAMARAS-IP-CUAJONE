@@ -1,0 +1,8 @@
+{
+  "contract_version": "1.0.0",
+  "analytics": {"mode": "ppe-only", "backend": "experimental"},
+  "thresholds": {"ppe_confidence": 0.3, "pose_confidence": 0.35, "nms_iou": 0.45, "maximum_detections": 300},
+  "tracker": {"profile": "native-iou", "minimum_iou": 0.3, "maximum_age": 30, "maximum_tracks": 128},
+  "ppe": {"window": 20, "minimum_samples": 12, "present_ratio": 0.35, "alert_cooldown_ms": 60000, "track_ttl_ms": 5000},
+  "fall": {"confirm_frames": 12, "reset_frames": 20, "alert_cooldown_ms": 120000, "track_ttl_ms": 5000, "aspect_ratio": 1.05, "torso_angle_degrees": 55, "descent_ratio": 0.12, "near_floor_ratio": 0.65}
+}

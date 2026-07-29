@@ -22,20 +22,16 @@ PreprocessedFrame LetterboxPreprocessor::process(const cv::Mat& bgr_frame) {
         throw std::invalid_argument("Preprocessing requires a non-empty CV_8UC3 frame");
     }
 
-    const float ratio = std::min(
-        static_cast<float>(model_width_) / static_cast<float>(bgr_frame.cols),
-        static_cast<float>(model_height_) / static_cast<float>(bgr_frame.rows));
-    const int resized_width = std::max(1, static_cast<int>(std::round(bgr_frame.cols * ratio)));
-    const int resized_height = std::max(1, static_cast<int>(std::round(bgr_frame.rows * ratio)));
-    const float half_padding_x = static_cast<float>(model_width_ - resized_width) / 2.0F;
-    const float half_padding_y = static_cast<float>(model_height_ - resized_height) / 2.0F;
-    const int left = static_cast<int>(std::round(half_padding_x - 0.1F));
-    const int top = static_cast<int>(std::round(half_padding_y - 0.1F));
+    const LetterboxTransform transform = makeLetterboxTransform(
+        bgr_frame.cols, bgr_frame.rows, model_width_, model_height_);
+    const int resized_width = static_cast<int>(std::round(bgr_frame.cols * transform.scale_x));
+    const int resized_height = static_cast<int>(std::round(bgr_frame.rows * transform.scale_y));
 
     cv::resize(bgr_frame, resized_, cv::Size(resized_width, resized_height), 0.0, 0.0, cv::INTER_LINEAR);
     canvas_.create(model_height_, model_width_, CV_8UC3);
     canvas_.setTo(cv::Scalar(114, 114, 114));
-    resized_.copyTo(canvas_(cv::Rect(left, top, resized_width, resized_height)));
+    resized_.copyTo(canvas_(cv::Rect(
+        transform.padding_left, transform.padding_top, resized_width, resized_height)));
 
     const std::size_t plane = static_cast<std::size_t>(model_width_ * model_height_);
     for (int y = 0; y < model_height_; ++y) {
@@ -50,16 +46,7 @@ PreprocessedFrame LetterboxPreprocessor::process(const cv::Mat& bgr_frame) {
 
     return {
         packed_,
-        {
-            bgr_frame.cols,
-            bgr_frame.rows,
-            model_width_,
-            model_height_,
-            static_cast<float>(resized_width) / static_cast<float>(bgr_frame.cols),
-            static_cast<float>(resized_height) / static_cast<float>(bgr_frame.rows),
-            left,
-            top,
-        },
+        transform,
     };
 }
 

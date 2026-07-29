@@ -3,6 +3,7 @@
 #pragma once
 
 #include <cstddef>
+#include <cstdint>
 #include <string>
 #include <vector>
 
@@ -12,6 +13,11 @@ enum class RtspTransport {
     Default,
     Tcp,
     Udp,
+};
+
+enum class AnalyticsMode {
+    PpeOnly,
+    PpeFall,
 };
 
 struct Point {

@@ -1,0 +1,72 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://cuajone.example/contracts/v1/engine-manifest.schema.json",
+  "title": "Cuajone external engine manifest v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["contract_version", "engine", "labels", "input", "output", "compatibility"],
+  "properties": {
+    "contract_version": {"const": "1.0.0"},
+    "engine": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["task", "sha256", "format"],
+      "properties": {
+        "task": {"enum": ["detect", "pose"]},
+        "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "format": {"const": "tensorrt-plan"}
+      }
+    },
+    "labels": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "name", "semantic"],
+        "properties": {
+          "id": {"type": "integer", "minimum": 0},
+          "name": {"type": "string", "minLength": 1},
+          "semantic": {"enum": ["person", "helmet", "vest", "other"]}
+        }
+      }
+    },
+    "input": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["layout", "dtype", "width", "height", "color_space"],
+      "properties": {
+        "layout": {"const": "NCHW"},
+        "dtype": {"enum": ["float16", "float32"]},
+        "width": {"type": "integer", "minimum": 1},
+        "height": {"type": "integer", "minimum": 1},
+        "color_space": {"const": "RGB"}
+      }
+    },
+    "output": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["layout", "keypoint_shape"],
+      "properties": {
+        "layout": {"enum": ["channels-first", "predictions-first"]},
+        "keypoint_shape": {
+          "type": ["array", "null"],
+          "prefixItems": [{"type": "integer", "minimum": 1}, {"type": "integer", "minimum": 3}],
+          "items": false,
+          "minItems": 2,
+          "maxItems": 2
+        }
+      }
+    },
+    "compatibility": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["tensorrt_major", "cuda_major", "compute_capability"],
+      "properties": {
+        "tensorrt_major": {"type": "integer", "minimum": 1},
+        "cuda_major": {"type": "integer", "minimum": 1},
+        "compute_capability": {"type": "string", "pattern": "^[0-9]+\\.[0-9]+$"}
+      }
+    }
+  }
+}

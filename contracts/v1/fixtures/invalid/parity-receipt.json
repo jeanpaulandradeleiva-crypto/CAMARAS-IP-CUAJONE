@@ -1,0 +1,10 @@
+{
+  "receipt_version": 1,
+  "contract_version": "2.0.0",
+  "source_commit": "not-a-commit",
+  "generated_at": "not-a-timestamp",
+  "scope": "authorized-engine-data",
+  "stages": [],
+  "full_model_parity_claimed": true,
+  "passed": true
+}

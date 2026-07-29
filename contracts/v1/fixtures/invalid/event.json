@@ -1,0 +1,12 @@
+{
+  "specversion": "1.0",
+  "id": "evt-unsafe",
+  "source": "rtsp://user:password@example.invalid/live",
+  "type": "com.cuajone.safety.ppe.violation.v1",
+  "time": "2026-01-01T00:00:00.700Z",
+  "datacontenttype": "application/json",
+  "dataschema": "https://cuajone.example/contracts/v1/event.schema.json",
+  "subject": "track/1",
+  "contractversion": "1.0.0",
+  "data": {"contract_version": "1.0.0", "frame_id": 7, "monotonic_timestamp_ms": 700, "track_id": 1, "status": "Falta Casco", "confidence": 0.8, "evidence": [{"ref": "rtsp://user:password@example.invalid/frame", "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}]}
+}

@@ -82,4 +82,9 @@ std::size_t IoUTracker::activeTrackCount() const noexcept {
     return tracks_.size();
 }
 
+void IoUTracker::reset() noexcept {
+    tracks_.clear();
+    next_id_ = 1;
+}
+
 }  // namespace cuajone

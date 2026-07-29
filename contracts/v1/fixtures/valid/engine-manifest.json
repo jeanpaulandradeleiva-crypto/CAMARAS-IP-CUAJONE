@@ -1,0 +1,12 @@
+{
+  "contract_version": "1.0.0",
+  "engine": {"task": "detect", "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "format": "tensorrt-plan"},
+  "labels": [
+    {"id": 0, "name": "Person", "semantic": "person"},
+    {"id": 1, "name": "Hard_hat", "semantic": "helmet"},
+    {"id": 2, "name": "Vest", "semantic": "vest"}
+  ],
+  "input": {"layout": "NCHW", "dtype": "float32", "width": 640, "height": 640, "color_space": "RGB"},
+  "output": {"layout": "channels-first", "keypoint_shape": null},
+  "compatibility": {"tensorrt_major": 11, "cuda_major": 12, "compute_capability": "7.5"}
+}

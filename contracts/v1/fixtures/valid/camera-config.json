@@ -1,0 +1,6 @@
+{
+  "contract_version": "1.0.0",
+  "camera_id": "SYNTHETIC_QA_01",
+  "display_name": "Synthetic QA source",
+  "source": {"kind": "rtsp", "environment_variable": "AUTHORIZED_RTSP_URL"}
+}

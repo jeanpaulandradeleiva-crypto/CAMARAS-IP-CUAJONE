@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
 #include "cuajone/cli.hpp"
+#include "cuajone/analytics_pipeline.hpp"
+#include "cuajone/contracts.hpp"
 #include "cuajone/fall_analytics.hpp"
 #include "cuajone/iou_tracker.hpp"
 #include "cuajone/ppe_analytics.hpp"
@@ -269,6 +271,15 @@ void testCliUrlsAndInvariantDefense() {
     auto invalid_capacity = base;
     invalid_capacity.insert(invalid_capacity.end(), {"--tracker-max-tracks", "0"});
     requireThrows([&] { parse(invalid_capacity); }, "CLI accepted zero tracker capacity");
+    const std::vector<std::string> ppe_only{
+        "cuajone_native", "--mode", "ppe-only", "--source", "video.mp4",
+        "--ppe-engine", "ppe.engine", "--output", "out",
+    };
+    require(parse(ppe_only).analytics_mode == AnalyticsMode::PpeOnly,
+        "PPE-only unexpectedly required a pose engine");
+    auto invalid_mode = ppe_only;
+    invalid_mode[2] = "unknown";
+    requireThrows([&] { parse(invalid_mode); }, "Unknown analytics mode was accepted");
 
     requireThrows(
         [] { IoUTracker({0.3F, 0, 1}); },
@@ -367,6 +378,107 @@ void testFallConfirmationRecoveryAndCooldown() {
     require(analyzer.update(9, fallen, pose, 720, start + std::chrono::seconds(25)).confirmed_now, "Fall cooldown did not reopen");
 }
 
+ObservationFrame syntheticPpeFrame(std::uint64_t frame_id, std::int64_t timestamp_ms) {
+    return {
+        std::string(kContractVersion),
+        "SYNTHETIC_QA_01",
+        frame_id,
+        timestamp_ms,
+        frame_id == 1 ? "2026-01-01T00:00:00.100Z" : "2026-01-01T00:00:00.200Z",
+        640,
+        720,
+        {{{100, 100, 300, 500}, 0.9F, 0}},
+        {},
+        {{0}, {1}, {2}},
+    };
+}
+
+void testPoseFilteringPreservesTrackerIdentity() {
+    AnalyticsPipelineConfig config;
+    config.mode = AnalyticsMode::PpeFall;
+    config.ppe = {1, 1, 0.5F, std::chrono::seconds(60), std::chrono::seconds(5)};
+    AnalyticsPipeline pipeline(config);
+
+    PoseDetection invalid;
+    invalid.box = {10, 10, 80, 180};
+    invalid.confidence = 0.9F;
+    PoseDetection valid;
+    valid.box = {100, 100, 300, 600};
+    valid.confidence = 0.9F;
+    valid.keypoints = uprightPose();
+    ObservationFrame frame{
+        std::string(kContractVersion),
+        "POSE_ORDER_QA",
+        1,
+        100,
+        "2026-01-01T00:00:00.100Z",
+        640,
+        720,
+        {{{100, 100, 300, 600}, 0.9F, 0}},
+        {invalid, valid},
+        {{0}, {1}, {2}},
+    };
+
+    const auto result = pipeline.process(frame);
+    require(result.canonical.people.size() == 1, "Invalid pose was not filtered after tracking");
+    require(result.canonical.people.front().track_id == 2,
+        "Filtering invalid pose before tracker update renumbered the valid identity");
+    require(result.canonical.events.size() == 1
+            && result.canonical.events.front().track_id == 2
+            && result.canonical.events.front().id == "evt-POSE_ORDER_QA-1-2-0",
+        "Pose filtering changed the pre-refactor event identity");
+}
+
+void testCanonicalContractsAndDeterministicPipeline() {
+    AnalyticsPipelineConfig config;
+    config.mode = AnalyticsMode::PpeOnly;
+    config.ppe = {2, 2, 0.5F, std::chrono::seconds(60), std::chrono::seconds(5)};
+    AnalyticsPipeline pipeline(config);
+    require(pipeline.contractVersion() == "1.0.0", "Pipeline contract version changed");
+    require(runtimeDefaultsJson().find("\"profile\":\"native-iou\"") != std::string::npos,
+        "Canonical defaults lost the native tracker profile");
+
+    const auto first = pipeline.process(syntheticPpeFrame(1, 100));
+    require(first.canonical.people.size() == 1 && first.canonical.events.empty(),
+        "PPE pipeline emitted before the minimum sample count");
+    const auto second = pipeline.process(syntheticPpeFrame(2, 200));
+    require(second.canonical.events.size() == 1, "PPE pipeline did not emit deterministically");
+    const std::string expected = canonicalJson(second.canonical);
+    require(expected.find("INCUMPLIMIENTO_EPP") == std::string::npos,
+        "Frame result leaked the legacy event name instead of canonical references");
+    require(expected.find("evt-SYNTHETIC_QA_01-2-1-0") != std::string::npos,
+        "Canonical event ID changed");
+    const std::string event_json = canonicalJson(second.canonical.events.front());
+    require(event_json.find("\"specversion\":\"1.0\"") != std::string::npos,
+        "CloudEvents version is missing");
+    require(event_json.find("rtsp://") == std::string::npos,
+        "Canonical event exposed an RTSP URL");
+    requireThrows([&] { pipeline.process(syntheticPpeFrame(2, 300)); },
+        "Duplicate frame_id was accepted");
+
+    pipeline.reset();
+    pipeline.process(syntheticPpeFrame(1, 100));
+    require(canonicalJson(pipeline.process(syntheticPpeFrame(2, 200)).canonical) == expected,
+        "Reset did not reproduce byte-stable canonical output");
+    auto unsupported = syntheticPpeFrame(3, 300);
+    unsupported.contract_version = "2.0.0";
+    requireThrows([&] { pipeline.process(unsupported); },
+        "Unsupported contract version was accepted");
+
+    AnalyticsPipeline accepted_source(config);
+    auto accepted = syntheticPpeFrame(1, 100);
+    accepted.source_id = "ZONE/A 01";
+    accepted_source.process(accepted);
+    for (const std::string source : {
+             "prefix-rtsp://camera", "prefix-rtsps://camera", "camera-password", "name@host"}) {
+        AnalyticsPipeline rejected_source(config);
+        auto forbidden = syntheticPpeFrame(1, 100);
+        forbidden.source_id = source;
+        requireThrows([&] { rejected_source.process(forbidden); },
+            "Secret-like source ID was accepted: " + source);
+    }
+}
+
 }  // namespace
 
 int main() {
@@ -379,6 +491,8 @@ int main() {
         {"IoU tracker", testTrackerContinuityAndExpiry},
         {"PPE analytics", testPpeAssociationVotingAndCooldown},
         {"fall analytics", testFallConfirmationRecoveryAndCooldown},
+        {"pose filtering tracker compatibility", testPoseFilteringPreservesTrackerIdentity},
+        {"canonical deterministic pipeline", testCanonicalContractsAndDeterministicPipeline},
     };
     int failures = 0;
     for (const auto& [name, test] : tests) {

@@ -11,7 +11,7 @@
       "displayName": "Windows x64 native runtime",
       "generator": "Visual Studio 17 2022",
       "architecture": "x64",
-      "binaryDir": "${sourceDir}/build/windows-msvc",
+      "binaryDir": "D:/DevTools/CuajoneNative/build/presets/windows-msvc",
       "cacheVariables": {
         "CMAKE_CONFIGURATION_TYPES": "Release;RelWithDebInfo",
         "TENSORRT_ROOT": "$env{TENSORRT_ROOT}",
@@ -23,10 +23,31 @@
       "displayName": "CPU tests without CUDA or TensorRT",
       "generator": "Visual Studio 17 2022",
       "architecture": "x64",
-      "binaryDir": "${sourceDir}/build/cpu-tests",
+      "binaryDir": "D:/DevTools/CuajoneNative/build/presets/cpu-tests",
       "cacheVariables": {
         "CUAJONE_BUILD_RUNTIME": "OFF",
         "CUAJONE_BUILD_TESTS": "ON",
+        "OpenCV_DIR": "$env{OpenCV_DIR}"
+      }
+    },
+    {
+      "name": "python-bindings",
+      "displayName": "Python 3.12 development/QA binding with native runtime",
+      "generator": "Visual Studio 17 2022",
+      "architecture": "x64",
+      "binaryDir": "D:/DevTools/CuajoneNative/build/presets/python-bindings",
+      "cacheVariables": {
+        "CMAKE_CONFIGURATION_TYPES": "Release;RelWithDebInfo",
+        "CUAJONE_BUILD_RUNTIME": "ON",
+        "CUAJONE_BUILD_TESTS": "ON",
+        "CUAJONE_BUILD_PYTHON_BINDINGS": "ON",
+        "CUAJONE_PYBIND11_ROOT": "$env{CUAJONE_PYBIND11_ROOT}",
+        "CUAJONE_PYTHON_OUTPUT_DIR": "D:/DevTools/CuajoneNative/build/presets/python-bindings/python",
+        "Python_EXECUTABLE": "$env{CUAJONE_PYTHON_EXECUTABLE}",
+        "TENSORRT_ROOT": "$env{TENSORRT_ROOT}",
+        "CUDA_RUNTIME_ROOT": "$env{CUDA_RUNTIME_ROOT}",
+        "CUDA_COMPILER_HEADERS_ROOT": "$env{CUDA_COMPILER_HEADERS_ROOT}",
+        "CUDA_CCCL_HEADERS_ROOT": "$env{CUDA_CCCL_HEADERS_ROOT}",
         "OpenCV_DIR": "$env{OpenCV_DIR}"
       }
     }
@@ -41,12 +62,23 @@
       "name": "cpu-tests-release",
       "configurePreset": "cpu-tests",
       "configuration": "Release"
+    },
+    {
+      "name": "python-bindings-release",
+      "configurePreset": "python-bindings",
+      "configuration": "Release"
     }
   ],
   "testPresets": [
     {
       "name": "cpu-tests-release",
       "configurePreset": "cpu-tests",
+      "configuration": "Release",
+      "output": { "outputOnFailure": true }
+    },
+    {
+      "name": "python-bindings-release",
+      "configurePreset": "python-bindings",
       "configuration": "Release",
       "output": { "outputOnFailure": true }
     }

@@ -1,0 +1,5 @@
+{
+  "contract_version": "1.0.0",
+  "camera_id": "SYNTHETIC_QA_01",
+  "source": {"kind": "rtsp", "path": "rtsp://user:password@example.invalid/live"}
+}

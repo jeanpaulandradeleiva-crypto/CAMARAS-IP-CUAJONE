@@ -69,6 +69,7 @@ public:
         std::chrono::steady_clock::time_point now);
     [[nodiscard]] std::optional<std::string> currentStatus(int track_id) const;
     void prune(std::chrono::steady_clock::time_point now);
+    void reset() noexcept;
 
 private:
     struct State {
