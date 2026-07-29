@@ -10,7 +10,8 @@ de forma opcional, ejecuta heurísticas de caída basadas en pose.
 
 Para instalar el MSI sin usar comandos, sigue la
 [guía simple de instalación para Windows](INSTALACION_WINDOWS.md). La preparación
-de confianza del equipo, cuando sea necesaria, corresponde a TI.
+de confianza del equipo, cuando sea necesaria, corresponde a TI y se resume en el
+[runbook Para TI](PARA_TI_WINDOWS.md).
 
 ## Licencia
 
@@ -56,6 +57,10 @@ python -m pip install -r requirements-dev.txt
 generadas desde `uv.lock`; no deben editarse manualmente. La exportación de
 desarrollo incluye dependencias de ejecución y pruebas, mientras que
 `requirements.txt` contiene solo las dependencias de ejecución.
+
+`jsonschema` es una dependencia requerida del runtime Python de `cuajone_qa` para
+validar contratos. Sigue excluida del ejecutable nativo y del MSI. CVAT y
+Supervision permanecen como extras opcionales con imports diferidos.
 
 ## Instalación con uv
 
@@ -271,6 +276,15 @@ para conocer la implementación actual en servidor, los criterios de viabilidad
 para Axis ACAP en el dispositivo y las rutas priorizadas de integración con
 Milestone XProtect.
 
+El acoplamiento de desarrollo/QA entre Python y C++ se documenta en
+[`docs/python-cpp-coupling.md`](docs/python-cpp-coupling.md). Usa contratos JSON
+v1 y un binding opcional; no agrega Python, `.pyd`, CVAT, Supervision, fixtures,
+modelos ni recibos de paridad al MSI.
+
+La [evaluación de integrabilidad ACAP](docs/acap-integrability.md) separa los
+contratos y semántica reutilizables de los componentes Windows no portables. No se
+afirma compatibilidad en cámara sin inventario de modelo, AXIS OS, SoC y APIs.
+
 ## Exportación y evaluación TensorRT desde Python
 
 La ruta Python continúa admitiendo modelos `.pt` y `.engine`. Genera primero un
@@ -298,7 +312,9 @@ combinaciones arbitrarias de GPU, TensorRT, CUDA y controlador.
 El primer candidato Windows x64 sin Python/PyTorch en runtime se encuentra en
 [`native/`](native/README.md). Incluye EPP y pose/caídas con dos engines TensorRT
 externos, pruebas CPU y preflight. La instalación para usuarios se explica en
-[`INSTALACION_WINDOWS.md`](INSTALACION_WINDOWS.md). La construcción, firma,
-administración y aceptación del MSI se documentan en la
-[guía para TI](installer/native/README.md). `ppe_reportev2.py` continúa siendo la
-referencia de comportamiento y el fallback operativo.
+[`INSTALACION_WINDOWS.md`](INSTALACION_WINDOWS.md). La verificación, instalación
+y mantenimiento del piloto se documentan en la
+[guía breve Para TI](PARA_TI_WINDOWS.md). La construcción, firma y validación
+avanzada permanecen en [`installer/native/README.md`](installer/native/README.md).
+`ppe_reportev2.py` continúa siendo la referencia de comportamiento y el fallback
+operativo.

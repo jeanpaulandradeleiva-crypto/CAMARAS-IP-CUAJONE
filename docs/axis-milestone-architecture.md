@@ -4,6 +4,9 @@ This document separates repository facts from deployment recommendations. It doe
 not assert that any Cuajone camera supports ACAP, a DLPU, containers, or an
 existing metadata producer without an exact camera and VMS inventory.
 
+The scored decision and reuse boundary are documented in the Spanish
+[ACAP integrability evaluation](acap-integrability.md).
+
 ## Decision Summary
 
 | Horizon | Decision |
@@ -11,6 +14,12 @@ existing metadata producer without an exact camera and VMS inventory.
 | CURRENT | Run one server worker per selected stream with one decoder and a replaceable latest-frame slot. |
 | NEAR-TERM | Keep inference on the server and publish deduplicated XProtect Analytics Events. |
 | FUTURE | Evaluate native Axis edge inference or Milestone AI Bridge only after hardware, AXIS OS, XProtect, installation, support, and licensing discovery. |
+
+Current site information is provisional: the deployed VMS is believed to be an
+XProtect 2023 version and the user expects it to be upgraded. This is not a
+compatibility claim. Re-inventory the exact edition, version, licensing, Event
+Server configuration, and API availability after that upgrade before selecting an
+integration endpoint.
 
 ## CURRENT
 
@@ -149,6 +158,7 @@ the additional lifecycle cost.
 Axis:
 
 - [ACAP developer documentation](https://developer.axis.com/acap/)
+- [Supported APIs, including Axevent, Larod, and VDO](https://developer.axis.com/acap/reference/supported-apis/)
 - [Supported languages](https://developer.axis.com/acap/reference/supported-languages/)
 - [Axis devices and compatibility](https://developer.axis.com/acap/reference/axis-devices-and-compatibility/)
 - [Larod API overview](https://developer.axis.com/acap/api/src/api/larod/html/index.html)
@@ -165,5 +175,5 @@ Milestone:
 - [MIP AI Bridge samples](https://github.com/milestonesys/MIP-AIBridge-samples)
 - [MIP SDK documentation](https://doc.developer.milestonesys.com/)
 
-Sources were reviewed on 2026-07-25. Re-check product/version documentation during
+Sources were reviewed on 2026-07-29. Re-check product/version documentation during
 inventory because camera and XProtect capabilities evolve.

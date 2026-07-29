@@ -31,6 +31,9 @@ deserializa ambos engines de forma secuencial y valida sus tensores.
 | `iou_tracker` | IDs temporales mediante asociación IoU determinista, edad máxima y capacidad acotada. |
 | `ppe_analytics` | Anclas `Person`, asociación anatómica casco/chaleco, votación temporal y cooldown. |
 | `fall_analytics` | Validación de keypoints, geometría, descenso, confirmación, recuperación y cooldown. |
+| `contracts` | Versiones, CloudEvents y serialización JSON canónica sin secretos. |
+| `analytics_pipeline` | Composición reutilizable, timestamps/frame IDs inyectables, orden estricto y reset. |
+| `engine_pipeline` | Inferencia TensorRT y analítica compartidas por ejecutable y binding QA. |
 | `capture` | Un único slot reemplazable, reinicio sin frame obsoleto, fallback de apertura y reconexión RTSP con transporte configurable. |
 | `evidence` | JPEG anotado y CSV append-only; no genera Excel. |
 
@@ -43,6 +46,10 @@ dos engines todavía debe validarse en la GTX 1650 Ti de 4 GiB.
 Los videos offline se drenan al FPS declarado por el archivo para que el productor
 no salte inmediatamente al último frame. Si la inferencia es más lenta, se siguen
 descartando frames intermedios y se conserva solo el más reciente.
+
+El descarte pertenece exclusivamente a `LatestFrameCapture`. Las llamadas directas
+a `AnalyticsPipeline` y el runner offline no usan ese slot: procesan cada llamada
+en orden y rechazan IDs o timestamps que retrocedan hasta ejecutar `reset()`.
 
 ## Prerrequisitos
 
@@ -223,6 +230,13 @@ cmake -S . -B build\trt-smoke `
 
 No ejecutes esa ruta hasta validar toolchain, SDK, GPU y engine en el host destino.
 
+### Binding Python de QA
+
+`CUAJONE_BUILD_PYTHON_BINDINGS` vale `OFF` por defecto. Con `ON`, CMake exige
+Python 3.12 y `pybind11` 3.0.4 desde una ruta explícita en D:. El ejecutable no
+enlaza Python. Consulta la [guía de acoplamiento](../docs/python-cpp-coupling.md)
+para compilación, API sintética, runtime externo y paridad.
+
 ## Salidas
 
 ```text
@@ -252,8 +266,8 @@ de esos componentes; todavía no se midió y no se estima aquí.
 
 - El tracker es IoU determinista. NO ofrece paridad ByteTrack y puede cambiar IDs
   ante oclusiones, cruces o movimiento rápido.
-- No existe todavía una comparación frame a frame contra `ppe_reportev2.py` ni una
-  prueba en la GTX 1650 Ti.
+- Existe comparación sintética por etapas, pero no una comparación de modelos
+  reales ni una prueba en la GTX 1650 Ti.
 - Los defaults de una clase y 17 keypoints para pose raw deben confirmarse contra
   el exportador real.
 - No se soportan NMS fusionado, múltiples heads/outputs ni outputs dinámicos.

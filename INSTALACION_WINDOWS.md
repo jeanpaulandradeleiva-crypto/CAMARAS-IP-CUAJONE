@@ -59,4 +59,6 @@ cámaras.
 TI debe preparar la confianza del certificado cuando corresponda y verificar el
 paquete antes de instalarlo. Los pasos técnicos, el despliegue silencioso, los
 registros y el mantenimiento están en la
-[guía para TI](installer/native/README.md).
+[guía breve Para TI](PARA_TI_WINDOWS.md). La referencia de construcción y
+validación avanzada permanece en
+[`installer/native/README.md`](installer/native/README.md).

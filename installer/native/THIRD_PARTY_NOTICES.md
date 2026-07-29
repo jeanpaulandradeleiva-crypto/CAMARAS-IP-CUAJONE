@@ -14,6 +14,9 @@ Este indice identifica los componentes redistribuidos por el instalador interno.
 
 No se incluye `nvinfer_plugin_11.dll`: el ejecutable no lo importa ni llama `initLibNvInferPlugins`, y la carga de plugins externos no esta implementada. Los engines que dependan de plugins no forman parte del contrato validado.
 
+Las dependencias de desarrollo/QA `jsonschema`, `pybind11`, Supervision y
+`cvat-sdk` se documentan en `LICENSES.md`, pero no se redistribuyen en este MSI.
+
 ## Estado
 
 El codigo original del proyecto se publica como `AGPL-3.0-only`; este cambio no

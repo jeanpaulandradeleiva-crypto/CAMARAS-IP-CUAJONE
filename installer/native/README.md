@@ -1,8 +1,9 @@
-# Para TI: MSI Windows del runtime nativo
+# Referencia avanzada: MSI Windows del runtime nativo
 
-Esta es la guía técnica para preparar, verificar, instalar y mantener el MSI x64
-por máquina. La persona usuaria debe seguir la
-[guía simple de instalación](../../INSTALACION_WINDOWS.md).
+Esta es la referencia de ingeniería para construir, firmar y validar el MSI x64.
+Para el piloto operativo usa primero el
+[runbook breve Para TI](../../PARA_TI_WINDOWS.md). La persona usuaria debe seguir
+la [guía simple de instalación](../../INSTALACION_WINDOWS.md).
 
 ## Secuencia recomendada
 
@@ -19,6 +20,11 @@ por máquina. La persona usuaria debe seguir la
 El MSI está construido con WiX Toolset. Instala el ejecutable propio, las DLL
 runtime demostradas, licencias, avisos, hashes y procedencia. No incluye engines,
 modelos, credenciales, SDK, configuración de cámaras ni datos operativos.
+
+También falla cerrado si staging o extracción contienen Python, `.py`, `.pyc`,
+`.pyd`, runtime Python, PyTorch, Ultralytics, CVAT, Supervision, datasets, fixtures,
+modelos/engines, JSONL o recibos de paridad. El binding y `cuajone_qa` son solo de
+desarrollo/QA.
 
 El instalador no fija el producto a una cámara. La configuración ocurre después y
 los datos mutables permanecen bajo `C:\ProgramData\Cuajone PPE Monitor`, separados
@@ -181,6 +187,15 @@ $env:CUAJONE_SIGN_COMMAND = (Resolve-Path .\installer\native\sign-release.ps1).P
 .\installer\native\build-installer.ps1 -BuildMode Preview
 ```
 
+El siguiente candidato local usa `0.1.0-internal.4`; `v0.1.0-internal.3` y sus
+assets publicados son inmutables. Un build `Release` exige además
+`CUAJONE_PARITY_RECEIPT` con contrato `1.0.0`, commit exacto y paridad completa
+sobre engines/video autorizados. El recibo debe cumplir el esquema compartido,
+identificar y hashear al menos dos inputs aprobados, aportar evidencia hash y
+comparaciones positivas para las seis etapas, y referenciar la autorización. Su
+timestamp RFC3339 debe estar en UTC: se toleran cinco minutos hacia el futuro y el
+recibo vence después de siete días. Un recibo sintético no atraviesa ese gate.
+
 El MSI, su `.sha256`, staging, temporales y evidencia de verificación quedan bajo
 `D:\DevTools\CuajoneNative\installer`. El script firma primero
 `cuajone_native.exe`, construye el MSI, firma el MSI y realiza extracción
@@ -235,6 +250,8 @@ determinista por ruta staged; ese archivo no se versiona.
    contra su fuente actual del repositorio, build o toolchain.
 6. Verificación de firma del MSI y del `.exe` propio, seguida únicamente por
    `--help`.
+7. Rechazo de cualquier artefacto Python/QA mediante la política compartida
+   `payload-policy.ps1`.
 
 ```powershell
 .\installer\native\test-installer.ps1 `
