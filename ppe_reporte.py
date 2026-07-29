@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+
 """Deprecated prototype. Use ppe_reportev2.py for production monitoring."""
 
 from ultralytics import YOLO

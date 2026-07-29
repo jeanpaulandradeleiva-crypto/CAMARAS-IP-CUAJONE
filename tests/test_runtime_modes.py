@@ -1,5 +1,9 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+
 from __future__ import annotations
 
+from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import numpy as np
@@ -93,6 +97,155 @@ def test_cli_mode_overrides_environment() -> None:
     assert args.mode == "ppe-only"
 
 
+def test_help_exits_without_runtime_startup(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    monkeypatch.setattr(
+        app,
+        "load_analytics_models",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("help must not load models")
+        ),
+    )
+
+    with pytest.raises(SystemExit) as exc_info:
+        app.main(["--help"])
+
+    assert exc_info.value.code == 0
+    assert "--preflight" in capsys.readouterr().out
+
+
+def test_relative_model_resolution_uses_source_directory(tmp_path: Path) -> None:
+    source_script = tmp_path / "source" / "ppe_reportev2.py"
+    source_base = source_script.parent.resolve()
+
+    assert app.resolve_runtime_path("models/ppe.engine", base_dir=source_base) == (
+        source_script.parent / "models" / "ppe.engine"
+    ).resolve()
+
+
+def test_absolute_model_path_is_preserved(tmp_path: Path) -> None:
+    absolute = (tmp_path / "external" / "ppe.engine").resolve()
+
+    assert app.resolve_runtime_path(absolute, base_dir=tmp_path / "ignored") == absolute
+
+
+def test_preflight_reports_engine_prerequisites_without_startup(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    engine = tmp_path / "ppe.engine"
+    engine.write_bytes(b"synthetic-engine")
+    monkeypatch.setattr(app, "PPE_MODEL_PATH", str(engine))
+    monkeypatch.setattr(app, "YOLO_DEVICE", "cuda:0")
+    monkeypatch.setattr(app.torch.cuda, "is_available", lambda: True)
+    monkeypatch.setattr(
+        app,
+        "load_analytics_models",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("preflight must not load models")
+        ),
+    )
+    monkeypatch.setattr(
+        app,
+        "LatestFrameCapture",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("preflight must not open RTSP")
+        ),
+    )
+    imported: list[str] = []
+
+    def importer(name: str) -> object:
+        imported.append(name)
+        return object()
+
+    monkeypatch.setattr(app.importlib, "import_module", importer)
+
+    assert app.main(["--mode", "ppe-only", "--preflight"]) == 0
+
+    output = capsys.readouterr()
+    assert "Modo de analítica: ppe-only" in output.out
+    assert f"Modelo EPP: {engine}" in output.out
+    assert "Backend: TensorRT" in output.out
+    assert "Importación TensorRT: OK (requerida)" in output.out
+    assert "Preflight: OK" in output.out
+    assert output.err == ""
+    assert imported == ["tensorrt"]
+
+
+def test_preflight_fails_clearly_when_engine_dependencies_are_missing(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    engine = tmp_path / "ppe.engine"
+    engine.write_bytes(b"synthetic-engine")
+    monkeypatch.setattr(app, "PPE_MODEL_PATH", str(engine))
+    monkeypatch.setattr(app, "YOLO_DEVICE", "cuda:0")
+    monkeypatch.setattr(app.torch.cuda, "is_available", lambda: False)
+
+    def missing_tensorrt(_name: str) -> object:
+        raise ImportError("not installed")
+
+    monkeypatch.setattr(app.importlib, "import_module", missing_tensorrt)
+
+    assert app.main(["--mode", "ppe-only", "--preflight"]) == 1
+
+    output = capsys.readouterr()
+    assert "CUDA disponible: no" in output.out
+    assert "Importación TensorRT: FALTA (requerida)" in output.out
+    assert "TensorRT .engine requiere CUDA" in output.err
+    assert "Preflight: ERROR" in output.err
+
+
+def test_preflight_rejects_engine_when_device_is_explicitly_cpu(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    engine = tmp_path / "ppe.engine"
+    engine.write_bytes(b"synthetic-engine")
+    monkeypatch.setattr(app, "PPE_MODEL_PATH", str(engine))
+    monkeypatch.setattr(app, "YOLO_DEVICE", "cpu")
+    monkeypatch.setattr(app.torch.cuda, "is_available", lambda: True)
+    monkeypatch.setattr(app.importlib, "import_module", lambda _name: object())
+
+    assert app.main(["--mode", "ppe-only", "--preflight"]) == 1
+
+    output = capsys.readouterr()
+    assert "CUDA disponible: sí" in output.out
+    assert "Dispositivo seleccionado: cpu" in output.out
+    assert "requiere YOLO_DEVICE" in output.err
+
+
+def test_preflight_reports_missing_model_without_touching_pose_or_tensorrt(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    missing = tmp_path / "missing-ppe.pt"
+    monkeypatch.setattr(app, "PPE_MODEL_PATH", str(missing))
+    monkeypatch.setattr(app, "POSE_MODEL_PATH", str(tmp_path / "missing-pose.engine"))
+    monkeypatch.setattr(app.torch.cuda, "is_available", lambda: False)
+    monkeypatch.setattr(
+        app.importlib,
+        "import_module",
+        lambda _name: (_ for _ in ()).throw(
+            AssertionError("ppe-only .pt must not import TensorRT")
+        ),
+    )
+
+    assert app.main(["--mode", "ppe-only", "--preflight"]) == 1
+
+    output = capsys.readouterr()
+    assert f"Modelo EPP: {missing}" in output.out
+    assert "Modelo pose:" not in output.out
+    assert "Importación TensorRT: no requerida" in output.out
+    assert f"Falta el modelo EPP: {missing}" in output.err
+
+
 @pytest.mark.parametrize(
     ("argv", "environ"),
     [([], {"ANALYTICS_MODE": "unknown"}), (["--mode", "unknown"], {})],
@@ -112,8 +265,9 @@ def test_ppe_only_does_not_construct_pose_and_ignores_invalid_path(
     ppe_model = FakePPEModel(ppe_result_with_people())
     constructed_paths: list[str] = []
 
-    def factory(path: str) -> FakePPEModel:
+    def factory(path: str, *, task: str) -> FakePPEModel:
         constructed_paths.append(path)
+        assert task == "detect"
         if path != app.PPE_MODEL_PATH:
             raise AssertionError("Pose model was constructed.")
         return ppe_model
@@ -130,7 +284,91 @@ def test_model_without_recognized_person_fails_early() -> None:
         names = {0: "Hard_hat", 1: "Vest"}
 
     with pytest.raises(RuntimeError, match="clase Person reconocida"):
-        app.load_analytics_models("ppe-only", yolo_factory=lambda _path: NoPersonModel())
+        app.load_analytics_models(
+            "ppe-only",
+            yolo_factory=lambda _path, *, task: NoPersonModel(),
+        )
+
+
+def test_ppe_fall_constructs_explicit_detect_and_pose_tasks(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[tuple[str, str]] = []
+
+    def factory(path: str, *, task: str) -> Any:
+        calls.append((path, task))
+        return SimpleNamespace(names={0: "Person", 1: "Hard_hat", 2: "Vest"})
+
+    monkeypatch.setattr(app, "PPE_MODEL_PATH", "ppe.pt")
+    monkeypatch.setattr(app, "POSE_MODEL_PATH", "pose.pt")
+
+    app.load_analytics_models("ppe-fall", yolo_factory=factory)
+
+    assert calls == [("ppe.pt", "detect"), ("pose.pt", "pose")]
+
+
+def test_engine_defers_names_until_first_result_and_caches_person_ids(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class LazyEngine:
+        def __getattr__(self, name: str) -> Any:
+            if name == "names":
+                raise AssertionError("Engine names must not be read at construction.")
+            raise AttributeError(name)
+
+    monkeypatch.setattr(app, "PPE_MODEL_PATH", "ppe.engine")
+    monkeypatch.setattr(app, "YOLO_DEVICE", "cuda:0")
+    monkeypatch.setattr(app.torch.cuda, "is_available", lambda: True)
+    models = app.load_analytics_models(
+        "ppe-only",
+        yolo_factory=lambda _path, *, task: LazyEngine(),
+    )
+    result = ppe_result_with_people()
+
+    app.cache_ppe_result_names(models, result)
+    result.names = {0: "Hard_hat"}
+    app.cache_ppe_result_names(models, result)
+
+    assert models.person_class_ids == (0,)
+    assert models.ppe_names == {0: "Person", 1: "Hard_hat", 2: "Vest"}
+
+
+def test_engine_missing_person_fails_on_first_result_not_construction(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(app, "PPE_MODEL_PATH", "ppe.engine")
+    monkeypatch.setattr(app, "YOLO_DEVICE", "cuda:0")
+    monkeypatch.setattr(app.torch.cuda, "is_available", lambda: True)
+    models = app.load_analytics_models(
+        "ppe-only",
+        yolo_factory=lambda _path, *, task: SimpleNamespace(),
+    )
+
+    with pytest.raises(RuntimeError, match="clase Person reconocida"):
+        app.cache_ppe_result_names(
+            models,
+            FakeResult(FakeBoxes([], [], [], []), names={0: "Hard_hat"}),
+        )
+
+
+@pytest.mark.parametrize(
+    ("device", "cuda_available"),
+    [("cpu", True), ("cuda:0", False), (None, False)],
+)
+def test_engine_rejects_runtime_without_actual_cuda(
+    monkeypatch: pytest.MonkeyPatch,
+    device: str | None,
+    cuda_available: bool,
+) -> None:
+    monkeypatch.setattr(app, "PPE_MODEL_PATH", "ppe.engine")
+    monkeypatch.setattr(app, "YOLO_DEVICE", device)
+    monkeypatch.setattr(app.torch.cuda, "is_available", lambda: cuda_available)
+
+    with pytest.raises(RuntimeError, match="requieren una GPU NVIDIA con CUDA activa"):
+        app.load_analytics_models(
+            "ppe-only",
+            yolo_factory=lambda _path, *, task: SimpleNamespace(),
+        )
 
 
 @pytest.mark.parametrize(
@@ -167,6 +405,21 @@ def test_inference_kwargs_pass_explicit_cuda_device_to_tracking_and_prediction(
     assert ppe_kwargs["device"] == "cuda:0"
     assert pose_kwargs is not None
     assert pose_kwargs["device"] == "cuda:0"
+
+
+def test_compiled_engines_do_not_receive_runtime_quantization(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(app, "PPE_MODEL_PATH", "ppe.engine")
+    monkeypatch.setattr(app, "POSE_MODEL_PATH", "pose.engine")
+    monkeypatch.setattr(app, "USE_FP16", True)
+    monkeypatch.setattr(app.torch.cuda, "is_available", lambda: True)
+
+    ppe_kwargs, pose_kwargs = app.inference_kwargs_for_mode("ppe-fall")
+
+    assert "quantize" not in ppe_kwargs
+    assert pose_kwargs is not None
+    assert "quantize" not in pose_kwargs
 
 
 def test_ppe_only_uses_tracking_ids_from_person_detections() -> None:
@@ -215,6 +468,37 @@ def test_ppe_only_skips_fall_evaluation_and_pose_drawing(
     assert all(event["type"] != "POSIBLE_CAIDA" for event in events)
 
 
+def test_process_analytics_frame_annotates_consumer_frame_in_place(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    frame = np.zeros((100, 100, 3), dtype=np.uint8)
+    person = {
+        "track_id": 73,
+        "box": np.array([10, 10, 50, 80], dtype=float),
+        "confidence": 0.91,
+        "keypoints": None,
+        "epp_evaluable": False,
+    }
+    monkeypatch.setattr(
+        app,
+        "infer_people_and_ppe",
+        lambda *_args, **_kwargs: ([person], []),
+    )
+
+    annotated, _ = app.process_analytics_frame(
+        frame=frame,
+        mode="ppe-only",
+        models=SimpleNamespace(),
+        states={},
+        ppe_kwargs={},
+        pose_kwargs=None,
+        now_monotonic=1.0,
+    )
+
+    assert annotated is frame
+    assert np.count_nonzero(frame) > 0
+
+
 def test_inference_throttle_is_unlimited_at_zero() -> None:
     throttle = app.InferenceThrottle(0)
     assert throttle.ready(0.0)
@@ -234,3 +518,164 @@ def test_inference_throttle_skips_until_monotonic_deadline() -> None:
 def test_inference_throttle_rejects_invalid_values(target_fps: float) -> None:
     with pytest.raises(ValueError, match="TARGET_INFERENCE_FPS"):
         app.InferenceThrottle(target_fps)
+
+
+def test_latest_frame_capture_returns_stable_reference_without_copy() -> None:
+    capture = app.LatestFrameCapture("rtsp://example.invalid/stream")
+    first_frame = np.zeros((4, 5, 3), dtype=np.uint8)
+    second_frame = np.ones((4, 5, 3), dtype=np.uint8)
+
+    with capture.lock:
+        capture.frame = first_frame
+        capture.frame_number = 1
+
+    has_frame, returned_frame, frame_number = capture.read_latest(0)
+
+    assert has_frame
+    assert returned_frame is first_frame
+    assert frame_number == 1
+
+    with capture.lock:
+        capture.frame = second_frame
+        capture.frame_number = 2
+
+    assert returned_frame is first_frame
+    assert np.count_nonzero(returned_frame) == 0
+    has_newer_frame, newer_frame, newer_frame_number = capture.read_latest(1)
+    assert has_newer_frame
+    assert newer_frame is second_frame
+    assert newer_frame_number == 2
+
+
+def configure_runtime(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Any,
+    failure: BaseException | None,
+) -> tuple[Any, Any]:
+    frame = np.zeros((2, 2, 3), dtype=np.uint8)
+    camera = SimpleNamespace(stopped=False)
+    camera.start = lambda: True
+    camera.read_latest = lambda _previous: (True, frame, 1)
+    camera.is_disconnected = lambda: False
+    camera.stop = lambda: setattr(camera, "stopped", True)
+    logger = SimpleNamespace(exported=False, windows_destroyed=False)
+    logger.export_excel = lambda: setattr(logger, "exported", True)
+    models = app.AnalyticsModels(
+        ppe=SimpleNamespace(names={0: "Person", 1: "Hard_hat", 2: "Vest"}),
+        pose=None,
+        person_class_ids=(0,),
+    )
+
+    app.STOP_EVENT.clear()
+    monkeypatch.setattr(app, "RTSP_URL", "rtsp://example.invalid/stream")
+    monkeypatch.setattr(app, "EVIDENCE_DIR", tmp_path)
+    monkeypatch.setattr(app, "SHOW_WINDOW", False)
+    monkeypatch.setattr(app, "TARGET_INFERENCE_FPS", 0)
+    monkeypatch.setattr(app, "parse_args", lambda _argv: SimpleNamespace(mode="ppe-only"))
+    monkeypatch.setattr(app, "EventLogger", lambda *_args: logger)
+    monkeypatch.setattr(app, "diagnose_rtsp_endpoint", lambda _url: None)
+    monkeypatch.setattr(app, "validate_runtime_prerequisites", lambda _mode: None)
+    monkeypatch.setattr(app, "load_analytics_models", lambda _mode: models)
+    monkeypatch.setattr(app, "selected_device", lambda: "cpu")
+    monkeypatch.setattr(app, "install_signal_handlers", lambda: None)
+    monkeypatch.setattr(app, "LatestFrameCapture", lambda _url: camera)
+    monkeypatch.setattr(
+        app.cv2,
+        "destroyAllWindows",
+        lambda: setattr(logger, "windows_destroyed", True),
+    )
+
+    def run_analytics(**kwargs: Any) -> tuple[np.ndarray, list[dict[str, Any]]]:
+        if failure is not None:
+            raise failure
+        app.request_stop()
+        return kwargs["frame"], []
+
+    monkeypatch.setattr(app, "process_analytics_frame", run_analytics)
+    return camera, logger
+
+
+def test_normal_exit_stops_camera_and_reports_success(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Any,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    camera, logger = configure_runtime(monkeypatch, tmp_path, None)
+
+    assert app.main([]) == 0
+
+    output = capsys.readouterr()
+    assert camera.stopped
+    assert logger.exported
+    assert logger.windows_destroyed
+    assert "Monitoreo finalizado correctamente" in output.out
+    assert "memoria insuficiente" not in output.err
+
+
+def test_memory_error_stops_camera_and_reports_failed_shutdown(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Any,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    camera, logger = configure_runtime(
+        monkeypatch,
+        tmp_path,
+        MemoryError("sin memoria"),
+    )
+
+    assert app.main([]) == 1
+
+    output = capsys.readouterr()
+    assert camera.stopped
+    assert logger.exported
+    assert logger.windows_destroyed
+    assert "ERROR: memoria insuficiente durante el monitoreo" in output.err
+    assert "reduce la resolución del stream o los FPS de inferencia" in output.err
+    assert "Monitoreo finalizado correctamente" not in output.out
+
+
+def test_runtime_prerequisite_error_is_reported_without_starting_camera(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    monkeypatch.setattr(app, "RTSP_URL", "rtsp://example.invalid/stream")
+    monkeypatch.setattr(
+        app,
+        "validate_runtime_prerequisites",
+        lambda _mode: (_ for _ in ()).throw(
+            app.RuntimePrerequisiteError("falta ppe.engine")
+        ),
+    )
+    monkeypatch.setattr(
+        app,
+        "LatestFrameCapture",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("camera must not start")
+        ),
+    )
+
+    assert app.main(["--mode", "ppe-only"]) == 2
+
+    output = capsys.readouterr()
+    assert output.out == ""
+    assert output.err.strip() == "ERROR: falta ppe.engine"
+
+
+def test_unrelated_runtime_error_propagates_after_stopping_camera(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Any,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    camera, logger = configure_runtime(
+        monkeypatch,
+        tmp_path,
+        RuntimeError("fallo analítico"),
+    )
+
+    with pytest.raises(RuntimeError, match="fallo analítico"):
+        app.main([])
+
+    assert camera.stopped
+    assert logger.exported
+    assert logger.windows_destroyed
+    assert "Monitoreo finalizado correctamente" not in capsys.readouterr().out

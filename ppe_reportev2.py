@@ -1,11 +1,16 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+
 from __future__ import annotations
 
 import argparse
 import csv
+import importlib
 import math
 import os
+import platform
 import signal
 import socket
+import sys
 import threading
 import time
 import uuid
@@ -25,25 +30,41 @@ from dotenv import load_dotenv
 from ultralytics import YOLO
 
 
+class RuntimePrerequisiteError(RuntimeError):
+    pass
+
+
+def resolve_runtime_path(
+    configured_path: str | Path,
+    *,
+    base_dir: Path | None = None,
+) -> Path:
+    """Resolve relative external files without depending on the working directory."""
+    path = Path(configured_path).expanduser()
+    if not path.is_absolute():
+        path = (base_dir or RUNTIME_DIR) / path
+    return path.resolve(strict=False)
+
+
 # ============================================================
 # CONFIGURACIÓN
 # ============================================================
-# Carga el archivo .env ubicado junto a este script.
 SCRIPT_DIR = Path(__file__).resolve().parent
-ENV_PATH = SCRIPT_DIR / ".env"
+RUNTIME_DIR = SCRIPT_DIR
+ENV_PATH = RUNTIME_DIR / ".env"
 load_dotenv(dotenv_path=ENV_PATH, override=False)
 
 CAMERA_ID = os.getenv("CAMERA_ID", "CAM_P01_ADM")
 RTSP_URL = os.getenv("RTSP_URL")
-PPE_MODEL_PATH = os.getenv("PPE_MODEL_PATH", "best_ppe.pt")
-POSE_MODEL_PATH = os.getenv("POSE_MODEL_PATH", "yolo26s-pose.pt")
+PPE_MODEL_PATH = str(resolve_runtime_path(os.getenv("PPE_MODEL_PATH", "best_ppe.pt")))
+POSE_MODEL_PATH = str(resolve_runtime_path(os.getenv("POSE_MODEL_PATH", "yolo26s-pose.pt")))
 YOLO_DEVICE = os.getenv("YOLO_DEVICE")  # Vacío: selecciona CUDA si existe.
 TARGET_INFERENCE_FPS = float(os.getenv("TARGET_INFERENCE_FPS", "0"))
 
 DEFAULT_ANALYTICS_MODE = "ppe-fall"
 VALID_ANALYTICS_MODES = (DEFAULT_ANALYTICS_MODE, "ppe-only")
 
-BASE_DIR = Path(os.getenv("OUTPUT_DIR", str(SCRIPT_DIR))).expanduser()
+BASE_DIR = resolve_runtime_path(os.getenv("OUTPUT_DIR", str(RUNTIME_DIR)))
 EVIDENCE_DIR = BASE_DIR / "Evidencias"
 CSV_PATH = BASE_DIR / "Reporte_Eventos_Seguridad.csv"
 EXCEL_PATH = BASE_DIR / "Reporte_Eventos_Seguridad.xlsx"
@@ -150,6 +171,11 @@ def parse_args(
         choices=VALID_ANALYTICS_MODES,
         help="Sobrescribe ANALYTICS_MODE para esta ejecución.",
     )
+    parser.add_argument(
+        "--preflight",
+        action="store_true",
+        help="Valida configuración y prerrequisitos sin abrir la cámara ni inferir.",
+    )
     args = parser.parse_args(argv)
     try:
         args.mode = resolve_analytics_mode(args.mode, environ)
@@ -184,13 +210,14 @@ class TrackState:
     recent_descent_until: float = 0.0
 
 
-@dataclass(frozen=True)
+@dataclass
 class AnalyticsModels:
     """Modelos realmente disponibles; `pose=None` garantiza aislamiento PPE-only."""
 
     ppe: Any
     pose: Any | None
-    person_class_ids: tuple[int, ...]
+    person_class_ids: tuple[int, ...] | None
+    ppe_names: Any | None = None
 
 
 @dataclass
@@ -292,6 +319,8 @@ class EventLogger:
             temporary_path.replace(self.excel_path)
             self.events_since_export = 0
             print(f"Reporte Excel actualizado: {self.excel_path}")
+        except MemoryError:
+            raise
         except Exception as exc:
             # El CSV conserva los eventos; el Excel puede estar abierto o bloqueado.
             print(f"No se pudo actualizar Excel: {exc}")
@@ -817,31 +846,183 @@ def recognized_person_class_ids(model_names: Any) -> tuple[int, ...]:
     )
 
 
+def validate_ppe_names(model_names: Any) -> tuple[int, ...]:
+    person_class_ids = recognized_person_class_ids(model_names)
+    if not person_class_ids:
+        recognized = ", ".join(sorted(PERSON_LABELS))
+        raise RuntimeError(
+            "El modelo EPP no contiene una clase Person reconocida. "
+            f"Nombres aceptados: {recognized}. Clases encontradas: {model_names}"
+        )
+    return person_class_ids
+
+
+def is_engine_model(path: str) -> bool:
+    return Path(path).suffix.lower() == ".engine"
+
+
+def active_model_paths(mode: str) -> tuple[tuple[str, str], ...]:
+    models = [("EPP", PPE_MODEL_PATH)]
+    if mode == DEFAULT_ANALYTICS_MODE:
+        models.append(("pose", POSE_MODEL_PATH))
+    return tuple(models)
+
+
+def model_backend(path: str) -> str:
+    return "TensorRT" if is_engine_model(path) else "PyTorch"
+
+
+def validate_model_files(mode: str) -> None:
+    missing = [
+        f"{name}: {path}"
+        for name, path in active_model_paths(mode)
+        if not Path(path).is_file()
+    ]
+    if missing:
+        raise RuntimePrerequisiteError(
+            "No se encontraron los archivos de modelo requeridos: " + "; ".join(missing)
+        )
+
+
+def ensure_tensorrt_importable(
+    model_paths: Sequence[str],
+    importer: Any | None = None,
+) -> None:
+    if not any(is_engine_model(path) for path in model_paths):
+        return
+    importer = importer or importlib.import_module
+    try:
+        importer("tensorrt")
+    except Exception as exc:
+        raise RuntimePrerequisiteError(
+            "Hay un modelo .engine configurado, pero TensorRT no se puede importar. "
+            "Instala una versión de TensorRT compatible con el engine, CUDA, el "
+            "controlador NVIDIA y esta distribución."
+        ) from exc
+
+
+def ensure_engine_cuda(model_paths: Sequence[str]) -> None:
+    engine_paths = [path for path in model_paths if is_engine_model(path)]
+    if not engine_paths:
+        return
+
+    device = selected_device()
+    if not torch.cuda.is_available() or not device.lower().startswith("cuda:"):
+        paths = ", ".join(engine_paths)
+        raise RuntimePrerequisiteError(
+            "Los modelos TensorRT .engine requieren una GPU NVIDIA con CUDA activa; "
+            "no se permite continuar en CPU. Verifica el driver/CUDA, instala una "
+            "versión de PyTorch con CUDA y configura YOLO_DEVICE=cuda:0. "
+            f"Modelos: {paths}"
+        )
+
+
+def validate_runtime_prerequisites(mode: str) -> None:
+    paths = [path for _name, path in active_model_paths(mode)]
+    validate_model_files(mode)
+    ensure_engine_cuda(paths)
+    ensure_tensorrt_importable(paths)
+
+
+def run_preflight(mode: str, importer: Any | None = None) -> int:
+    """Print safe diagnostics without constructing models or touching RTSP."""
+    models = active_model_paths(mode)
+    importer = importer or importlib.import_module
+    engine_paths = [path for _name, path in models if is_engine_model(path)]
+    errors: list[str] = []
+
+    print("Modo de ejecución: source")
+    print(f"Python: {platform.python_version()} ({sys.executable})")
+    print(f"Plataforma: {platform.platform()}")
+    print(f"Modo de analítica: {mode}")
+    for name, path in models:
+        exists = Path(path).is_file()
+        print(
+            f"Modelo {name}: {path} | Backend: {model_backend(path)} | "
+            f"Archivo: {'OK' if exists else 'FALTA'}"
+        )
+        if not exists:
+            errors.append(f"Falta el modelo {name}: {path}")
+
+    try:
+        cuda_available = bool(torch.cuda.is_available())
+    except Exception as exc:
+        cuda_available = False
+        errors.append(f"No se pudo consultar CUDA: {type(exc).__name__}.")
+    print(f"CUDA disponible: {'sí' if cuda_available else 'no'}")
+    device = selected_device()
+    print(f"Dispositivo seleccionado: {device}")
+    if engine_paths and not cuda_available:
+        errors.append("TensorRT .engine requiere CUDA disponible en PyTorch.")
+    if engine_paths and not device.lower().startswith("cuda:"):
+        errors.append(
+            "TensorRT .engine requiere YOLO_DEVICE en un dispositivo CUDA, "
+            "por ejemplo cuda:0."
+        )
+
+    if engine_paths:
+        try:
+            ensure_tensorrt_importable(engine_paths, importer)
+            print("Importación TensorRT: OK (requerida)")
+        except RuntimeError as exc:
+            print("Importación TensorRT: FALTA (requerida)")
+            errors.append(str(exc))
+    else:
+        print("Importación TensorRT: no requerida")
+
+    if errors:
+        for error in errors:
+            print(f"ERROR: {error}", file=sys.stderr)
+        print("Preflight: ERROR", file=sys.stderr)
+        return 1
+    print("Preflight: OK")
+    return 0
+
+
+def cache_ppe_result_names(models: AnalyticsModels, ppe_result: Any) -> None:
+    """Valida una sola vez los nombres que un backend exportado entrega al inferir."""
+    if models.person_class_ids is not None:
+        return
+    model_names = getattr(ppe_result, "names", None)
+    if model_names is None:
+        raise RuntimeError(
+            "El resultado del modelo EPP no incluye nombres de clases; no se puede "
+            "identificar Person ni asociar el EPP."
+        )
+    models.person_class_ids = validate_ppe_names(model_names)
+    models.ppe_names = model_names
+
+
 def load_analytics_models(
     mode: str,
     yolo_factory: Any = YOLO,
 ) -> AnalyticsModels:
     """Carga pose solo en ppe-fall; PPE-only nunca toca su ruta ni constructor."""
     mode = resolve_analytics_mode(mode, {})
+    active_paths = [PPE_MODEL_PATH]
+    if mode == DEFAULT_ANALYTICS_MODE:
+        active_paths.append(POSE_MODEL_PATH)
+    ensure_engine_cuda(active_paths)
+
     print(f"Cargando modelo EPP: {PPE_MODEL_PATH}")
-    ppe_model = yolo_factory(PPE_MODEL_PATH)
-    person_class_ids = recognized_person_class_ids(ppe_model.names)
-    if not person_class_ids:
-        recognized = ", ".join(sorted(PERSON_LABELS))
-        raise RuntimeError(
-            "El modelo EPP no contiene una clase Person reconocida. "
-            f"Nombres aceptados: {recognized}. Clases encontradas: {ppe_model.names}"
-        )
+    ppe_model = yolo_factory(PPE_MODEL_PATH, task="detect")
+    ppe_names = None
+    person_class_ids = None
+    if not is_engine_model(PPE_MODEL_PATH):
+        ppe_names = getattr(ppe_model, "names", None)
+        if ppe_names is not None:
+            person_class_ids = validate_ppe_names(ppe_names)
 
     pose_model = None
     if mode == DEFAULT_ANALYTICS_MODE:
         print(f"Cargando modelo pose: {POSE_MODEL_PATH}")
-        pose_model = yolo_factory(POSE_MODEL_PATH)
+        pose_model = yolo_factory(POSE_MODEL_PATH, task="pose")
 
     return AnalyticsModels(
         ppe=ppe_model,
         pose=pose_model,
         person_class_ids=person_class_ids,
+        ppe_names=ppe_names,
     )
 
 
@@ -850,18 +1031,24 @@ def inference_kwargs_for_mode(
 ) -> tuple[dict[str, Any], dict[str, Any] | None]:
     """Construye una vez los argumentos inmutables que reutiliza el bucle."""
     common_kwargs = model_kwargs()
+    ppe_runtime_kwargs = dict(common_kwargs)
+    if is_engine_model(PPE_MODEL_PATH):
+        ppe_runtime_kwargs.pop("quantize", None)
     ppe_kwargs: dict[str, Any] = {
         "conf": PPE_CONF,
         "iou": IOU_THRESHOLD,
         "imgsz": PPE_IMGSZ,
         "verbose": False,
-        **common_kwargs,
+        **ppe_runtime_kwargs,
     }
     pose_kwargs: dict[str, Any] | None = None
 
     if mode == "ppe-only":
         ppe_kwargs.update({"persist": True, "tracker": TRACKER})
     else:
+        pose_runtime_kwargs = dict(common_kwargs)
+        if is_engine_model(POSE_MODEL_PATH):
+            pose_runtime_kwargs.pop("quantize", None)
         pose_kwargs = {
             "persist": True,
             "tracker": TRACKER,
@@ -870,7 +1057,7 @@ def inference_kwargs_for_mode(
             "classes": [0],
             "imgsz": POSE_IMGSZ,
             "verbose": False,
-            **common_kwargs,
+            **pose_runtime_kwargs,
         }
     return ppe_kwargs, pose_kwargs
 
@@ -1066,8 +1253,10 @@ class LatestFrameCapture:
     Lee el RTSP continuamente en un hilo independiente.
 
     Este objeto es el único propietario del VideoCapture y de la reconexión local.
-    El lector publica bajo lock una instantánea numerada; el consumidor nunca toca
-    el capture directamente.
+    El lector publica bajo lock una referencia numerada; el consumidor nunca toca
+    el capture directamente. Después de publicar un ndarray, el productor no lo
+    modifica ni reutiliza: cada lectura nueva reemplaza el slot con otro ndarray.
+    Así, el consumidor conserva una referencia estable sin copiar el frame completo.
 
     No conserva una cola de frames:
     siempre reemplaza el frame anterior por el más reciente.
@@ -1079,7 +1268,7 @@ class LatestFrameCapture:
         self.rtsp_url = rtsp_url
         self.capture: cv2.VideoCapture | None = None
 
-        self.frame = None
+        self.frame: np.ndarray | None = None
         self.frame_number = 0
 
         self.lock = threading.Lock()
@@ -1123,8 +1312,9 @@ class LatestFrameCapture:
                 break
 
             with self.lock:
-                # El nuevo frame reemplaza al anterior.
-                # No se forma una cola.
+                # Publicar cede el contenido de este ndarray al consumidor. El
+                # productor sólo reemplaza la referencia; nunca muta un frame
+                # publicado, por lo que no se necesita copiarlo bajo el lock.
                 self.frame = frame
                 self.frame_number += 1
 
@@ -1133,11 +1323,12 @@ class LatestFrameCapture:
     def read_latest(
         self,
         previous_frame_number: int,
-    ) -> tuple[bool, object | None, int]:
+    ) -> tuple[bool, np.ndarray | None, int]:
         """
-        Devuelve una copia consistente solamente cuando existe un frame más nuevo.
-        Copiar dentro del lock evita que el productor reemplace la referencia a
-        mitad de la entrega, sin bloquearlo durante la inferencia.
+        Devuelve una referencia estable solamente cuando existe un frame más nuevo.
+
+        La referencia y su número se capturan juntos bajo el lock. El productor
+        puede reemplazar el slot después, pero no muta el ndarray ya publicado.
         """
 
         with self.lock:
@@ -1147,7 +1338,7 @@ class LatestFrameCapture:
             if self.frame_number == previous_frame_number:
                 return False, None, previous_frame_number
 
-            return True, self.frame.copy(), self.frame_number
+            return True, self.frame, self.frame_number
 
     def is_disconnected(self) -> bool:
         return self.disconnected_event.is_set()
@@ -1184,12 +1375,15 @@ def infer_people_and_ppe(
         # En este modo los IDs nacen del tracker del modelo EPP, no de pose ni de
         # una asociación espacial posterior.
         ppe_result = models.ppe.track(source=frame, **ppe_kwargs)[0]
+        cache_ppe_result_names(models, ppe_result)
+        assert models.person_class_ids is not None
         people = extract_tracked_ppe_people(ppe_result, models.person_class_ids)
     else:
         if models.pose is None or pose_kwargs is None:
             raise RuntimeError("El modo ppe-fall requiere el modelo de pose.")
         pose_result = models.pose.track(source=frame, **pose_kwargs)[0]
         ppe_result = models.ppe.predict(source=frame, **ppe_kwargs)[0]
+        cache_ppe_result_names(models, ppe_result)
         raw_people = extract_people(pose_result)
         all_ppe_detections = extract_ppe_detections(ppe_result)
         ppe_person_boxes = [
@@ -1233,7 +1427,14 @@ def process_analytics_frame(
     pose_kwargs: dict[str, Any] | None,
     now_monotonic: float,
 ) -> tuple[np.ndarray, list[dict[str, Any]]]:
-    """Anota el frame completo y devuelve eventos; la persistencia ocurre después."""
+    """Anota en sitio el frame del consumidor; la persistencia ocurre después.
+
+    ``LatestFrameCapture`` conserva el ndarray publicado sólo como referencia de
+    último frame; su hilo productor nunca vuelve a acceder a su contenido. ``main``
+    es el único consumidor: tras completar la inferencia y extraer sus resultados,
+    este frame le pertenece para anotarlo sin reservar otro buffer de resolución
+    completa.
+    """
     people, ppe_detections = infer_people_and_ppe(
         frame,
         mode,
@@ -1242,7 +1443,7 @@ def process_analytics_frame(
         pose_kwargs,
     )
     associations = associate_ppe_to_people(people, ppe_detections)
-    annotated = frame.copy()
+    annotated = frame
     pending_events: list[dict[str, Any]] = []
 
     for person in people:
@@ -1355,15 +1556,18 @@ def process_analytics_frame(
 # ============================================================
 # PROGRAMA PRINCIPAL
 # ============================================================
-def main(argv: Sequence[str] | None = None) -> None:
+def _run_monitoring(argv: Sequence[str] | None = None) -> int:
     args = parse_args(argv)
     mode = args.mode
+    if getattr(args, "preflight", False):
+        return run_preflight(mode)
     throttle = InferenceThrottle(TARGET_INFERENCE_FPS)
     if not RTSP_URL:
-        raise RuntimeError(
+        raise RuntimePrerequisiteError(
             f"Falta RTSP_URL. Configúrala en el archivo {ENV_PATH}. "
             "Puedes copiar .env.example como .env y completar la URL."
         )
+    validate_runtime_prerequisites(mode)
 
     EVIDENCE_DIR.mkdir(parents=True, exist_ok=True)
     logger = EventLogger(CSV_PATH, EXCEL_PATH)
@@ -1373,32 +1577,41 @@ def main(argv: Sequence[str] | None = None) -> None:
     diagnose_rtsp_endpoint(RTSP_URL)
     models = load_analytics_models(mode)
 
-    print("Clases del modelo EPP:")
-    print(models.ppe.names)
+    if models.ppe_names is not None:
+        print("Clases del modelo EPP:")
+        print(models.ppe_names)
+    else:
+        print("Clases del modelo EPP: pendientes de la primera inferencia.")
     device = selected_device()
     # Son constantes durante toda la ejecución y no deben reconstruirse por frame.
     ppe_inference_kwargs, pose_inference_kwargs = inference_kwargs_for_mode(mode)
-    fp16_enabled = ppe_inference_kwargs.get("quantize") in {16, "fp16"}
+    backend = model_backend(PPE_MODEL_PATH)
+    precision = (
+        "desconocida (compilada en el engine)"
+        if backend == "TensorRT"
+        else "FP16" if ppe_inference_kwargs.get("quantize") in {16, "fp16"} else "FP32"
+    )
     loaded_models = "PPE" if models.pose is None else "PPE, pose"
 
     print(f"Modo efectivo: {mode} | Modelos cargados: {loaded_models}")
     print(
-        f"Dispositivo: {device} | "
-        f"FP16: {fp16_enabled} | "
+        f"Dispositivo: {device} | Backend EPP: {backend} | "
+        f"Precisión: {precision} | "
         f"FPS objetivo: {TARGET_INFERENCE_FPS or 'sin límite'}"
     )
     print(f"Tracker temporal: {TRACKER}")
 
-    model_names = (
-        models.ppe.names.values()
-        if isinstance(models.ppe.names, dict)
-        else models.ppe.names
-    )
-    normalized_model_names = {normalize_label(str(name)) for name in model_names}
-    if not normalized_model_names.intersection(HELMET_LABELS):
-        print("ADVERTENCIA: no se reconoció ninguna clase de casco. Ajusta HELMET_LABELS.")
-    if not normalized_model_names.intersection(VEST_LABELS):
-        print("ADVERTENCIA: no se reconoció ninguna clase de chaleco. Ajusta VEST_LABELS.")
+    if models.ppe_names is not None:
+        model_names = (
+            models.ppe_names.values()
+            if isinstance(models.ppe_names, dict)
+            else models.ppe_names
+        )
+        normalized_model_names = {normalize_label(str(name)) for name in model_names}
+        if not normalized_model_names.intersection(HELMET_LABELS):
+            print("ADVERTENCIA: no se reconoció ninguna clase de casco. Ajusta HELMET_LABELS.")
+        if not normalized_model_names.intersection(VEST_LABELS):
+            print("ADVERTENCIA: no se reconoció ninguna clase de chaleco. Ajusta VEST_LABELS.")
 
     states: dict[int, TrackState] = {}
     install_signal_handlers()
@@ -1406,6 +1619,7 @@ def main(argv: Sequence[str] | None = None) -> None:
     if SHOW_WINDOW:
         cv2.namedWindow(WINDOW_NAME, cv2.WINDOW_NORMAL)
 
+    camera: LatestFrameCapture | None = None
     try:
         while not STOP_EVENT.is_set():
             if SHOW_WINDOW and window_was_closed():
@@ -1453,8 +1667,8 @@ def main(argv: Sequence[str] | None = None) -> None:
                     continue
                 now_monotonic = time.monotonic()
                 if not throttle.ready(now_monotonic):
-                    # read_latest ya avanzó el número de frame. Al continuar se
-                    # descarta esta copia y la captura sigue reemplazando su slot.
+                    # El número ya avanzó; al continuar se descarta la referencia
+                    # y la captura sigue reemplazando su único slot.
                     continue
 
                 annotated, pending_events = process_analytics_frame(
@@ -1490,6 +1704,8 @@ def main(argv: Sequence[str] | None = None) -> None:
                         )
                         logger.append(event)
                         print("EVENTO:", event)
+                    except MemoryError:
+                        raise
                     except Exception as exc:
                         print(f"Error guardando evento: {exc}")
 
@@ -1511,6 +1727,7 @@ def main(argv: Sequence[str] | None = None) -> None:
                     cv2.imshow(WINDOW_NAME, annotated)
 
             camera.stop()
+            camera = None
 
             if not STOP_EVENT.is_set():
                 STOP_EVENT.wait(RECONNECT_DELAY_S)
@@ -1518,10 +1735,31 @@ def main(argv: Sequence[str] | None = None) -> None:
     except KeyboardInterrupt:
         request_stop()
     finally:
-        logger.export_excel()
-        cv2.destroyAllWindows()
-        print("Monitoreo finalizado correctamente.")
+        if camera is not None:
+            camera.stop()
+        try:
+            logger.export_excel()
+        finally:
+            cv2.destroyAllWindows()
+    print("Monitoreo finalizado correctamente.")
+    return 0
+
+
+def main(argv: Sequence[str] | None = None) -> int:
+    try:
+        return _run_monitoring(argv)
+    except RuntimePrerequisiteError as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        return 2
+    except MemoryError:
+        print(
+            "ERROR: memoria insuficiente durante el monitoreo. "
+            "Cierra otras aplicaciones y reinicia; si persiste, reduce la "
+            "resolución del stream o los FPS de inferencia.",
+            file=sys.stderr,
+        )
+        return 1
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())
