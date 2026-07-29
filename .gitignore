@@ -1,10 +1,39 @@
+# Secrets and local configuration
 .env
-yolo11n.pt
-/Evidencias
-.venv312/
-.venv*/
+.env.*
+!.env.example
+*.key
+*.pem
+*.pfx
+*.p12
+
+# Local environments, registries, and caches
 .venv/
+.venv*/
+.atl/
+.deepeval/
+.pytest_cache/
 __pycache__/
-*.xlsx
-Reporte_Eventos_Seguridad.xlsx
+*.py[cod]
+*$py.class
+
+# Generated model deployment artifacts
+*.pt
+*.engine
+*.engine.manifest.json
+*.onnx
+
+# Generated native, packaging, and installer output
+/build/
+/dist/
+/native/build/
+/native/out/
+/native/.vs/
+/installer/native/stage/
+/installer/native/output/
+
+# Reports, evidence, and Office temporary files
+/Evidencias/
 *.csv
+*.xlsx
+~$*

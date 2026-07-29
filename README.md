@@ -6,6 +6,15 @@ de forma opcional, ejecuta heurísticas de caída basadas en pose.
 
 `ppe_reporte.py` es un prototipo obsoleto. No debe utilizarse en operación.
 
+## Licencia
+
+El codigo fuente original del proyecto se distribuye exclusivamente bajo
+[`AGPL-3.0-only`](LICENSE). Las dependencias de terceros conservan sus propias
+licencias. Los pesos de modelos, incluidos los derivados de Ultralytics, y los
+datasets no se relicencian: deben usarse conforme a sus terminos de origen y
+procedencia. Consulta [`LICENSES.md`](LICENSES.md) para el alcance completo y
+[`SECURITY.md`](SECURITY.md) para la politica de releases firmadas.
+
 ## Inicio rápido
 
 Utiliza Python 3.12. El entorno local del repositorio siempre es `.venv`.
@@ -92,17 +101,17 @@ compatible cambia con el tiempo.
 Con `.venv` activado, la ruta pip usa este patrón:
 
 ```powershell
-python -m pip install --reinstall torch torchvision --index-url https://download.pytorch.org/whl/cuXXX
+python -m pip install --reinstall torch torchvision --index-url https://download.pytorch.org/whl/cu126
 ```
 
 Para uv, indica explícitamente el intérprete de `.venv`:
 
 ```powershell
-uv pip install --python .venv\Scripts\python.exe --reinstall torch torchvision --index-url https://download.pytorch.org/whl/cuXXX
+uv pip install --python .venv\Scripts\python.exe --reinstall torch torchvision --index-url https://download.pytorch.org/whl/cu126
 ```
 
 ```bash
-uv pip install --python .venv/bin/python --reinstall torch torchvision --index-url https://download.pytorch.org/whl/cuXXX
+uv pip install --python .venv/bin/python --reinstall torch torchvision --index-url https://download.pytorch.org/whl/cu126
 ```
 
 `cuXXX` es un marcador y DEBE reemplazarse por el valor indicado por el selector
@@ -142,10 +151,10 @@ inicio, pero la credencial continúa presente en la configuración del proceso.
 
 ## Modos de ejecución
 
-| Modo | Modelos cargados | Seguimiento de personas | Comportamiento de caídas |
-|---|---|---|---|
-| `ppe-fall` | EPP y pose | IDs del rastreador de pose | Evaluación de pose y caídas, con dibujo del esqueleto |
-| `ppe-only` | Solo EPP | IDs de `Person` del rastreador del modelo EPP | Sin carga, inferencia ni dibujo de pose; no genera eventos de caída |
+| Modo       | Modelos cargados | Seguimiento de personas                       | Comportamiento de caídas                                            |
+| ---------- | ---------------- | --------------------------------------------- | ------------------------------------------------------------------- |
+| `ppe-fall` | EPP y pose       | IDs del rastreador de pose                    | Evaluación de pose y caídas, con dibujo del esqueleto               |
+| `ppe-only` | Solo EPP         | IDs de `Person` del rastreador del modelo EPP | Sin carga, inferencia ni dibujo de pose; no genera eventos de caída |
 
 `ppe-fall` es el valor predeterminado compatible con el comportamiento anterior.
 Configura el modo mediante `ANALYTICS_MODE` o sobrescríbelo para una ejecución con
@@ -200,6 +209,9 @@ python ppe_reportev2.py
 # Solo EPP, independientemente de ANALYTICS_MODE
 python ppe_reportev2.py --mode ppe-only
 
+# Diagnóstico sin cámara ni inferencia
+python ppe_reportev2.py --mode ppe-only --preflight
+
 # Ejemplo de ppe-only sin interfaz gráfica
 $env:SHOW_WINDOW = "0"
 $env:TARGET_INFERENCE_FPS = "5"
@@ -252,3 +264,34 @@ Consulta [`docs/axis-milestone-architecture.md`](docs/axis-milestone-architectur
 para conocer la implementación actual en servidor, los criterios de viabilidad
 para Axis ACAP en el dispositivo y las rutas priorizadas de integración con
 Milestone XProtect.
+
+## Exportación y evaluación TensorRT desde Python
+
+La ruta Python continúa admitiendo modelos `.pt` y `.engine`. Genera primero un
+plan verificable sin cargar modelos ni CUDA:
+
+```powershell
+python tools\export_tensorrt.py best_ppe.pt --task detect --dry-run
+```
+
+Quita `--dry-run` únicamente en un host de exportación con PyTorch CUDA, TensorRT
+y Ultralytics compatibles. El exportador genera el `.engine` junto con un manifest
+de hashes. Evalúa el detector `.pt` y su `.engine` contra el mismo dataset etiquetado:
+
+```powershell
+python tools\evaluate_detection.py best_ppe.pt --data PPE\data.yaml --device cuda:0
+python tools\evaluate_detection.py best_ppe.engine --data PPE\data.yaml --device cuda:0
+```
+
+El mAP resultante mide detección de objetos; no demuestra asociación persona-EPP,
+cumplimiento por persona ni detección de caídas. Los engines no son portables entre
+combinaciones arbitrarias de GPU, TensorRT, CUDA y controlador.
+
+## Candidato nativo C++
+
+El primer candidato Windows x64 sin Python/PyTorch en runtime se encuentra en
+[`native/`](native/README.md). Incluye EPP y pose/caídas con dos engines TensorRT
+externos, pruebas CPU y preflight. El instalador interno, su procedimiento de build
+y la aceptación limitada a loader/`--help` se documentan en
+[`installer/native/`](installer/native/README.md). `ppe_reportev2.py` continúa
+siendo la referencia de comportamiento y el fallback operativo.

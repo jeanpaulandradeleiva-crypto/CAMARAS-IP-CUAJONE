@@ -375,6 +375,10 @@ También puede usarse una ruta:
 PPE_MODEL_PATH=modelos/best_ppe.pt
 ```
 
+Las rutas absolutas se conservan. Una ruta relativa se resuelve desde la carpeta
+de `ppe_reportev2.py`. Se admiten modelos `.pt` y engines TensorRT `.engine`; estos
+últimos requieren CUDA y una importación funcional de TensorRT.
+
 ---
 
 ## `POSE_MODEL_PATH`
@@ -397,6 +401,8 @@ POSE_MODEL_PATH=yolo26s-pose.pt
 
 - `n`: más rápido y ligero.
 - `s`: más preciso, pero consume más GPU.
+
+La resolución de rutas sigue las mismas reglas que `PPE_MODEL_PATH`.
 
 Para una Quadro T2000 de 4 GB, empieza con `yolo26s-pose.pt` a 512 px. Si falta memoria, usa `yolo26n-pose.pt`.
 
