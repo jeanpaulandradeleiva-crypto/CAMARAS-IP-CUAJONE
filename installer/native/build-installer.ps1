@@ -3,10 +3,10 @@
 [CmdletBinding()]
 param(
     [ValidatePattern('^\d+\.\d+\.\d+(-[0-9A-Za-z.-]+)?$')]
-    [string]$Version = "0.1.0-internal.3",
+    [string]$Version = "0.1.0-internal.4",
 
     [ValidatePattern('^\d+\.\d+\.\d+\.\d+$')]
-    [string]$FileVersion = "0.1.0.3",
+    [string]$FileVersion = "0.1.0.4",
 
     [ValidateSet("Preview", "Release")]
     [string]$BuildMode = "Release",
@@ -26,6 +26,7 @@ param(
     [string]$SourceArchiveSha256 = $env:CUAJONE_SOURCE_ARCHIVE_SHA256,
     [string]$FfmpegSourceArchiveUrl = $env:CUAJONE_FFMPEG_SOURCE_ARCHIVE_URL,
     [string]$FfmpegSourceArchiveSha256 = $env:CUAJONE_FFMPEG_SOURCE_ARCHIVE_SHA256,
+    [string]$ParityReceiptPath = $env:CUAJONE_PARITY_RECEIPT,
     [string]$SignToolPath = $env:CUAJONE_SIGNTOOL_PATH,
     [string]$SignCommand = $env:CUAJONE_SIGN_COMMAND
 )
@@ -40,6 +41,8 @@ $packageProject = Join-Path $scriptRoot "CuajonePpeMonitor.wixproj"
 $iconGenerator = Join-Path $scriptRoot "generate-icon.ps1"
 $signatureVerifier = Join-Path $scriptRoot "sign-release.ps1"
 $packageVerifier = Join-Path $scriptRoot "test-installer.ps1"
+$payloadPolicy = Join-Path $scriptRoot "payload-policy.ps1"
+$releaseGates = Join-Path $scriptRoot "release-gates.ps1"
 $sourceRepository = "https://github.com/jeanpaulandradeleiva-crypto/CAMARAS-IP-CUAJONE"
 $upgradeCode = "88A886C2-8F6D-4669-B6FB-7DFC1E7B0397"
 
@@ -125,27 +128,6 @@ function Find-Dependency([string]$Name, [string[]]$SearchDirectories) {
     return $null
 }
 
-function Assert-NoForbiddenFiles([string]$Root) {
-    $patterns = @(
-        '(^|[\\/])\.env($|\.)',
-        '\.(pt|engine|onnx|csv|xlsx|xls|pkl|pickle|weights)$',
-        '(^|[\\/])(datasets?|weights?|\.atl|caches?|__pycache__)([\\/]|$)',
-        '\.(cpp|cxx|cc|h|hpp|lib|pdb|obj|py|pyc)$'
-    )
-    $violations = foreach ($file in Get-ChildItem -LiteralPath $Root -Recurse -File) {
-        $relative = [System.IO.Path]::GetRelativePath($Root, $file.FullName)
-        foreach ($pattern in $patterns) {
-            if ($relative -match $pattern) {
-                $relative
-                break
-            }
-        }
-    }
-    if ($violations) {
-        throw "Forbidden files entered the installer stage: $($violations -join ', ')"
-    }
-}
-
 function Get-StableHex([string]$Value) {
     $bytes = [System.Text.Encoding]::UTF8.GetBytes($Value.ToLowerInvariant())
     $hash = [System.Security.Cryptography.SHA256]::HashData($bytes)
@@ -222,7 +204,11 @@ Assert-File $packageProject "WiX project"
 Assert-File $iconGenerator "Icon generator"
 Assert-File $signatureVerifier "Authenticode signing helper"
 Assert-File $packageVerifier "MSI verification helper"
+Assert-File $payloadPolicy "Installer payload policy"
+Assert-File $releaseGates "Release parity gate"
 Assert-File (Join-Path $projectRoot "LICENSE") "Project AGPL license"
+. $payloadPolicy
+. $releaseGates
 
 $gitHead = (& git -C $projectRoot rev-parse HEAD).Trim()
 if ($LASTEXITCODE -ne 0 -or $gitHead -notmatch '^[0-9a-f]{40}$') {
@@ -232,6 +218,7 @@ $gitStatus = @(& git -C $projectRoot status --porcelain=v1 --untracked-files=all
 $isDirty = $gitStatus.Count -gt 0
 $isSignedBuild = -not [string]::IsNullOrWhiteSpace($SignCommand)
 $isInternalPilotSigning = $env:CUAJONE_ALLOW_INTERNAL_PILOT_TRUST -ceq "1"
+$productionParityReceipt = $null
 
 if ($isInternalPilotSigning -and $BuildMode -ne "Preview") {
     throw "Internal pilot signing is permitted only for Preview builds; Release requires public trust"
@@ -258,6 +245,7 @@ if ($BuildMode -eq "Release") {
     Assert-Sha256 $SourceArchiveSha256 "Project source archive hash"
     Assert-HttpsUrl $FfmpegSourceArchiveUrl "FFmpeg corresponding-source archive URL"
     Assert-Sha256 $FfmpegSourceArchiveSha256 "FFmpeg corresponding-source archive hash"
+    $productionParityReceipt = Assert-ProductionParityReceipt $ParityReceiptPath $gitHead "1.0.0"
 } else {
     if (-not $isSignedBuild -and -not $AllowUnsignedPreview) {
         throw "Unsigned preview builds require the explicit -AllowUnsignedPreview switch"
@@ -621,6 +609,20 @@ $metadata = [ordered]@{
     }
     thirdPartyBinariesResigned = $false
     acceptanceScope = "MSI database, administrative extraction, loader, and --help only; no install, engines, cameras, preflight, or inference"
+    parityGate = if ($BuildMode -eq "Release") {
+        [ordered]@{
+            receiptVersion = $productionParityReceipt.receipt_version
+            contractVersion = $productionParityReceipt.contract_version
+            sourceCommit = $productionParityReceipt.source_commit
+            scope = $productionParityReceipt.scope
+            receiptSha256 = (Get-FileHash -Algorithm SHA256 -LiteralPath $ParityReceiptPath).Hash.ToLowerInvariant()
+        }
+    } else {
+        [ordered]@{
+            required = $false
+            reason = "Preview does not claim authorized engine/model parity"
+        }
+    }
     stagingProvenanceVersion = 1
     sourceRoots = $sourceRoots
     sourceProvenance = @($stagedSources)
@@ -644,7 +646,7 @@ $metadata = [ordered]@{
 }
 $metadata | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath (Join-Path $StageDir "build-metadata.json") -Encoding UTF8
 
-Assert-NoForbiddenFiles $StageDir
+Assert-NoForbiddenPayloadFiles $StageDir "installer stage"
 $manifestPath = Join-Path $StageDir "SHA256SUMS.txt"
 $manifestLines = foreach ($file in Get-ChildItem -LiteralPath $StageDir -Recurse -File | Sort-Object FullName) {
     if ($file.FullName -eq $manifestPath) {
@@ -654,7 +656,7 @@ $manifestLines = foreach ($file in Get-ChildItem -LiteralPath $StageDir -Recurse
     "{0}  {1}" -f (Get-FileHash -Algorithm SHA256 -LiteralPath $file.FullName).Hash.ToLowerInvariant(), $relative
 }
 $manifestLines | Set-Content -LiteralPath $manifestPath -Encoding ASCII
-Assert-NoForbiddenFiles $StageDir
+Assert-NoForbiddenPayloadFiles $StageDir "installer stage"
 
 $licenseText = Get-Content -LiteralPath (Join-Path $projectRoot "LICENSE") -Raw
 $rtfText = $licenseText.Replace('\', '\\').Replace('{', '\{').Replace('}', '\}')

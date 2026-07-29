@@ -1,0 +1,172 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+
+[CmdletBinding()]
+param(
+    [string]$TestRoot = "D:\DevTools\CuajoneNative\temp\release-gate-test"
+)
+
+Set-StrictMode -Version Latest
+$ErrorActionPreference = "Stop"
+. (Join-Path $PSScriptRoot "release-gates.ps1")
+
+function New-TestHash([char]$Character) {
+    (([string]$Character * 64) -join "")
+}
+
+function New-PositiveReceipt([string]$Commit) {
+    $stageNames = @(
+        "contracts-defaults", "preprocess-letterbox",
+        "detections-keypoints-canonicalization", "tracking-ppe-fall-determinism",
+        "canonical-events", "authorized-engine-video-end-to-end"
+    )
+    $stages = for ($index = 0; $index -lt $stageNames.Count; $index++) {
+        $stage = [ordered]@{
+            name = $stageNames[$index]
+            status = "passed"
+            comparisons = 1
+            evidence = @([ordered]@{
+                kind = if ($index -eq 5) { "authorized-input" } else { "comparison" }
+                identity = "stage-$($index + 1)"
+                sha256 = New-TestHash ([char]([int][char]'1' + $index))
+            })
+        }
+        if ($index -eq 5) {
+            $stage["failures"] = 0
+            $stage["authorization_reference"] = "AUTH-QA-001"
+        }
+        $stage
+    }
+    [ordered]@{
+        receipt_version = 1
+        contract_version = "1.0.0"
+        source_commit = $Commit
+        generated_at = [DateTimeOffset]::UtcNow.AddMinutes(-1).ToString(
+            "yyyy-MM-dd'T'HH:mm:ss.ffffff'Z'", [Globalization.CultureInfo]::InvariantCulture)
+        scope = "authorized-engine-data"
+        authorization_reference = "AUTH-QA-001"
+        approved_inputs = @(
+            [ordered]@{ identity = "ppe-engine"; sha256 = New-TestHash 'a' },
+            [ordered]@{ identity = "authorized-video"; sha256 = New-TestHash 'b' }
+        )
+        tracker_profiles = [ordered]@{
+            production_sim = "native-iou"
+            experimental_live = "ultralytics-bytetrack-not-equivalent"
+        }
+        numeric_tolerances = [ordered]@{
+            box_absolute = 0.0001
+            keypoint_absolute = 0.0001
+            confidence_absolute = 0.00001
+        }
+        event_normalization = [ordered]@{
+            fields = @("id", "source", "type", "time", "subject", "frame_id", "monotonic_timestamp_ms", "track_id", "status", "confidence", "evidence")
+            order_by = @("frame_id", "track_id", "type", "id")
+            confidence_digits = 6
+        }
+        stages = @($stages)
+        full_model_parity_claimed = $true
+        passed = $true
+    }
+}
+
+function Copy-Receipt([object]$Receipt) {
+    $Receipt | ConvertTo-Json -Depth 10 | ConvertFrom-Json -DateKind String
+}
+
+function Write-Receipt([object]$Receipt, [string]$Path) {
+    $Receipt | ConvertTo-Json -Depth 10 | Set-Content -LiteralPath $Path -Encoding UTF8
+}
+
+function Assert-Rejected(
+    [string]$Name,
+    [object]$PositiveReceipt,
+    [string]$Path,
+    [string]$Commit,
+    [scriptblock]$Mutation
+) {
+    $candidate = Copy-Receipt $PositiveReceipt
+    & $Mutation $candidate
+    Write-Receipt $candidate $Path
+    try {
+        Assert-ProductionParityReceipt $Path $Commit | Out-Null
+    } catch {
+        return
+    }
+    throw "Adversarial parity receipt was accepted: $Name"
+}
+
+$parent = Split-Path -Parent $TestRoot
+if (-not (Test-Path -LiteralPath $parent -PathType Container)) {
+    throw "Release gate test parent does not exist: $parent"
+}
+if (Test-Path -LiteralPath $TestRoot) {
+    Remove-Item -LiteralPath $TestRoot -Recurse -Force
+}
+New-Item -ItemType Directory -Path $TestRoot | Out-Null
+try {
+    $commit = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    $missingRejected = $false
+    try { Assert-ProductionParityReceipt "" $commit | Out-Null } catch { $missingRejected = $true }
+    if (-not $missingRejected) { throw "Missing parity receipt passed the production gate" }
+
+    $receipt = New-PositiveReceipt $commit
+    $path = Join-Path $TestRoot "receipt.json"
+    Write-Receipt $receipt $path
+    Assert-ProductionParityReceipt $path $commit | Out-Null
+
+    Assert-Rejected "synthetic assertion" $receipt $path $commit {
+        param($value) $value.scope = "synthetic-only"; $value.full_model_parity_claimed = $false
+    }
+    Assert-Rejected "source commit mismatch" $receipt $path $commit {
+        param($value) $value.source_commit = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+    }
+    Assert-Rejected "assertion-only receipt" $receipt $path $commit {
+        param($value)
+        $value.PSObject.Properties.Remove("authorization_reference")
+        $value.PSObject.Properties.Remove("approved_inputs")
+    }
+    Assert-Rejected "future timestamp" $receipt $path $commit {
+        param($value)
+        $value.generated_at = [DateTimeOffset]::UtcNow.AddMinutes(10).ToString("yyyy-MM-dd'T'HH:mm:ss'Z'")
+    }
+    Assert-Rejected "stale timestamp" $receipt $path $commit {
+        param($value)
+        $value.generated_at = [DateTimeOffset]::UtcNow.AddDays(-8).ToString("yyyy-MM-dd'T'HH:mm:ss'Z'")
+    }
+    Assert-Rejected "non-UTC timestamp" $receipt $path $commit {
+        param($value) $value.generated_at = [DateTimeOffset]::UtcNow.ToString("yyyy-MM-dd'T'HH:mm:sszzz")
+    }
+    Assert-Rejected "zero comparisons" $receipt $path $commit {
+        param($value) $value.stages[2].comparisons = 0
+    }
+    Assert-Rejected "missing authorization" $receipt $path $commit {
+        param($value) $value.PSObject.Properties.Remove("authorization_reference")
+    }
+    Assert-Rejected "unknown stage" $receipt $path $commit {
+        param($value) $value.stages[5].name = "forged-stage"
+    }
+    Assert-Rejected "duplicate stage" $receipt $path $commit {
+        param($value) $value.stages[5].name = $value.stages[0].name
+    }
+    Assert-Rejected "missing stage" $receipt $path $commit {
+        param($value) $value.stages = @($value.stages[0..4])
+    }
+    Assert-Rejected "failed stage with receipt assertion" $receipt $path $commit {
+        param($value) $value.stages[3].status = "failed"
+    }
+    Assert-Rejected "receipt pass inconsistent with stages" $receipt $path $commit {
+        param($value) $value.passed = $false
+    }
+    Assert-Rejected "invalid evidence hash" $receipt $path $commit {
+        param($value) $value.stages[1].evidence[0].sha256 = "not-a-hash"
+    }
+    Assert-Rejected "changed numeric tolerance" $receipt $path $commit {
+        param($value) $value.numeric_tolerances.box_absolute = 0.5
+    }
+    Assert-Rejected "duplicate approved input identity" $receipt $path $commit {
+        param($value) $value.approved_inputs[1].identity = $value.approved_inputs[0].identity
+    }
+
+    [pscustomobject]@{ positiveCases = 1; adversarialCases = 17; result = "passed" }
+} finally {
+    Remove-Item -LiteralPath $TestRoot -Recurse -Force
+}

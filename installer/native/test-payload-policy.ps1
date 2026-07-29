@@ -1,0 +1,94 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+
+[CmdletBinding()]
+param(
+    [string]$TestRoot = "D:\DevTools\CuajoneNative\temp\payload-policy-test"
+)
+
+Set-StrictMode -Version Latest
+$ErrorActionPreference = "Stop"
+. (Join-Path $PSScriptRoot "payload-policy.ps1")
+
+$parent = Split-Path -Parent $TestRoot
+if (-not (Test-Path -LiteralPath $parent -PathType Container)) {
+    throw "Payload policy test parent does not exist: $parent"
+}
+if (Test-Path -LiteralPath $TestRoot) {
+    Remove-Item -LiteralPath $TestRoot -Recurse -Force
+}
+New-Item -ItemType Directory -Path $TestRoot | Out-Null
+try {
+    $allowedPaths = @(
+        "bin\cuajone_native.exe",
+        "bin\opencv_world4120.dll",
+        "docs\README.md",
+        "contracts\v1\event.schema.json",
+        "licenses\LICENSE.txt",
+        "build-metadata.json"
+    )
+    foreach ($relative in $allowedPaths) {
+        $candidate = Join-Path $TestRoot $relative
+        $candidateParent = Split-Path -Parent $candidate
+        if (-not (Test-Path -LiteralPath $candidateParent)) {
+            New-Item -ItemType Directory -Path $candidateParent -Force | Out-Null
+        }
+        "allowed" | Set-Content -LiteralPath $candidate -Encoding ASCII
+    }
+    Assert-NoForbiddenPayloadFiles $TestRoot "policy test"
+    $forbiddenPaths = @(
+        "cuajone_native.pyd",
+        "python312.dll",
+        "python311.dll",
+        "python313_d.dll",
+        "python3.dll",
+        "python.exe",
+        "pythonw.exe",
+        "python311.zip",
+        "module.py",
+        "Lib\encodings\aliases.py",
+        "site-packages\native-extension.dll",
+        "fixtures\frame.json",
+        "parity-receipt.json",
+        "cvat\client.txt",
+        "supervision\adapter.txt",
+        "model.engine.manifest.json",
+        "model.plan",
+        "weights.safetensors",
+        "model.onnx",
+        "model.pt",
+        "model.pth",
+        "model.engine",
+        "model.bin",
+        "data\sample.bin",
+        "data\payload.json",
+        "dataset.parquet",
+        "dataset\sample.arrow",
+        "dataset\sample.feather",
+        "models\payload.dat"
+    )
+    foreach ($relative in $forbiddenPaths) {
+        $candidate = Join-Path $TestRoot $relative
+        $candidateParent = Split-Path -Parent $candidate
+        if (-not (Test-Path -LiteralPath $candidateParent)) {
+            New-Item -ItemType Directory -Path $candidateParent -Force | Out-Null
+        }
+        "synthetic" | Set-Content -LiteralPath $candidate -Encoding ASCII
+        $failedClosed = $false
+        try {
+            Assert-NoForbiddenPayloadFiles $TestRoot "policy test"
+        } catch {
+            $failedClosed = $true
+        }
+        if (-not $failedClosed) {
+            throw "Forbidden payload was accepted: $relative"
+        }
+        Remove-Item -LiteralPath $candidate -Force
+    }
+    [pscustomobject]@{
+        allowedCases = $allowedPaths.Count
+        forbiddenCases = $forbiddenPaths.Count
+        result = "passed"
+    }
+} finally {
+    Remove-Item -LiteralPath $TestRoot -Recurse -Force
+}

@@ -25,6 +25,7 @@ $ErrorActionPreference = "Stop"
 
 $upgradeCode = "88A886C2-8F6D-4669-B6FB-7DFC1E7B0397"
 $signatureVerifier = Join-Path $PSScriptRoot "sign-release.ps1"
+$payloadPolicy = Join-Path $PSScriptRoot "payload-policy.ps1"
 
 function Assert-File([string]$Path, [string]$Description) {
     if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) {
@@ -42,27 +43,6 @@ function Assert-DDrivePath([string]$Path, [string]$Description) {
     $fullPath = [System.IO.Path]::GetFullPath($Path)
     if (-not $fullPath.StartsWith("D:\", [System.StringComparison]::OrdinalIgnoreCase)) {
         throw "$Description must remain on D: $fullPath"
-    }
-}
-
-function Assert-NoForbiddenFiles([string]$Root) {
-    $patterns = @(
-        '(^|[\\/])\.env($|\.)',
-        '\.(pt|engine|onnx|csv|xlsx|xls|pkl|pickle|weights)$',
-        '(^|[\\/])(datasets?|weights?|\.atl|caches?|__pycache__)([\\/]|$)',
-        '\.(cpp|cxx|cc|h|hpp|lib|pdb|obj|py|pyc|pfx|p12|pem|key|cer)$'
-    )
-    $violations = foreach ($file in Get-ChildItem -LiteralPath $Root -Recurse -File) {
-        $relative = [System.IO.Path]::GetRelativePath($Root, $file.FullName)
-        foreach ($pattern in $patterns) {
-            if ($relative -match $pattern) {
-                $relative
-                break
-            }
-        }
-    }
-    if ($violations) {
-        throw "Forbidden files were extracted: $($violations -join ', ')"
     }
 }
 
@@ -124,6 +104,8 @@ Assert-File $installer "MSI"
 Assert-Directory $stage "Stage"
 Assert-File $wix "WiX CLI"
 Assert-File $signatureVerifier "Signature verifier"
+Assert-File $payloadPolicy "Installer payload policy"
+. $payloadPolicy
 
 $stageMetadataPath = Join-Path $stage "build-metadata.json"
 Assert-File $stageMetadataPath "Staged build metadata"
@@ -454,7 +436,7 @@ try {
         }
         Start-Sleep -Milliseconds 100
     }
-    Assert-NoForbiddenFiles $extractApp
+    Assert-NoForbiddenPayloadFiles $extractApp "administrative image"
 
     $payloadCount = 0
     foreach ($stagedFile in Get-ChildItem -LiteralPath $stage -Recurse -File) {
