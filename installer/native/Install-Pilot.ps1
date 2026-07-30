@@ -32,6 +32,8 @@ param(
     [string]$ExpectedLeafThumbprint,
 
     [string]$InstallFolder,
+    [ValidateSet("auto", "cuda", "cpu")]
+    [string]$ComputeMode = "auto",
     [string]$LogPath,
     [switch]$Silent,
     [switch]$AuthorizeTrustEnrollment
@@ -135,6 +137,7 @@ if ([string]::IsNullOrWhiteSpace($LogPath)) {
 $resolvedLogPath = [System.IO.Path]::GetFullPath($LogPath)
 
 $arguments = "/i `"$msi`" /norestart /L*V `"$resolvedLogPath`""
+$arguments += " COMPUTE_MODE=$ComputeMode"
 if (-not [string]::IsNullOrWhiteSpace($InstallFolder)) {
     if (-not [System.IO.Path]::IsPathFullyQualified($InstallFolder)) {
         throw "InstallFolder must be an absolute path"
@@ -162,6 +165,7 @@ if ($process.ExitCode -notin @(0, 1641, 3010)) {
     } else {
         $resolvedInstallFolder
     }
+    ComputeMode = $ComputeMode
     Log = $resolvedLogPath
     ExitCode = $process.ExitCode
     RebootRequired = $process.ExitCode -in @(1641, 3010)

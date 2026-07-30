@@ -134,8 +134,9 @@ Assert-File $FilePath "Signable artifact"
 Assert-File $SignToolPath "Microsoft signtool"
 $target = (Resolve-Path -LiteralPath $FilePath).Path
 $extension = [System.IO.Path]::GetExtension($target).ToLowerInvariant()
-if ($extension -notin @(".exe", ".msi")) {
-    throw "Only owned executable and MSI artifacts may be signed: $target"
+if ($extension -notin @(".exe", ".msi") -and
+    (Split-Path -Leaf $target) -cne "CuajoneHardwareProbeCA.dll") {
+    throw "Only the owned executable, hardware-probe custom action, and MSI may be signed: $target"
 }
 
 if ($AllowInternalPilotTrust -and [string]::IsNullOrWhiteSpace($PilotRootCertificatePath)) {

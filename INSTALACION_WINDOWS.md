@@ -18,8 +18,16 @@ PowerShell ni escribir comandos.
 
    La carpeta propuesta es `C:\Program Files\Cuajone PPE Monitor`.
 
-4. Selecciona **Install**.
-5. Cuando termine, selecciona **Finish**.
+4. Elige cómo procesará la aplicación:
+
+   - **Auto (recomendado):** usa GPU NVIDIA si está lista; en caso contrario usa CPU.
+   - **GPU (CUDA):** solo se habilita si se detectan GPU compatible y driver suficientemente reciente.
+   - **CPU:** no requiere GPU NVIDIA.
+
+   El instalador no descarga, instala ni cambia drivers.
+
+5. Selecciona **Install**.
+6. Cuando termine, selecciona **Finish**.
 
 ## Comprobar que abre
 
@@ -53,6 +61,7 @@ cámaras.
 | Windows no confía en el instalador | No cambies la seguridad del equipo. Contacta a TI. |
 | La instalación falla | Pide a TI que genere el registro MSI y envíaselo. |
 | La aplicación abre, pero no aparece una cámara | La cámara todavía debe configurarse. Es un paso posterior a la instalación. |
+| GPU aparece deshabilitado | Elige Auto o CPU y pide a TI revisar hardware/driver por separado. No instales drivers desde el MSI. |
 
 ## Para TI
 

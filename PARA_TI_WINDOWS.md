@@ -7,7 +7,7 @@ para quien solo necesita instalar y comprobar la ayuda.
 ## Primera pantalla
 
 **Propósito:** preparar una VM Windows enrolada, verificar el paquete aprobado,
-instalarlo con registro y comprobar únicamente `--help`.
+instalarlo con registro, elegir cómputo y comprobar `--help`/probe sin modelos.
 
 **Archivos que recibe TI:**
 
@@ -34,7 +34,7 @@ engines y no inicia inferencia.
 | Elemento | Estado |
 | --- | --- |
 | `v0.1.0-internal.3` | Release interna publicada que TI puede evaluar con el paquete aprobado. |
-| `0.1.0-internal.4` | Candidato de código futuro. No existe un MSI construido y no debe presentarse como instalable. |
+| `0.1.0-internal.4` | Candidato local de ingeniería. No está publicado, aprobado ni autorizado para instalación. |
 | Builds desde fuente | Flujo de ingeniería futuro; requiere firma, revisión y sus propios gates. |
 
 El MSI no instala Python, PyTorch, Ultralytics, CVAT, Supervision, `cuajone_qa`, el
@@ -122,11 +122,19 @@ La variante silenciosa es:
 ```powershell
 msiexec.exe /i "<RUTA_MSI>" /qn /norestart `
   INSTALLFOLDER="<CARPETA_INSTALACION>" `
+  COMPUTE_MODE=auto `
   /L*V "<RUTA_LOG>"
 ```
 
 `INSTALLFOLDER` cambia los binarios; los datos mutables permanecen bajo
 `C:\ProgramData\Cuajone PPE Monitor`.
+
+`COMPUTE_MODE` acepta únicamente `auto`, `cuda` o `cpu`. El valor se persiste en
+HKLM. `cuda` falla si el custom action DXGI/CUDA no confirma hardware y driver;
+`auto` y `cpu` continúan. El MSI no contiene ni instala drivers NVIDIA.
+Para TensorRT 11, el probe exige Driver API CUDA 12.9 (`12090`) y capacidad de
+cómputo SM 7.5 o superior. Un driver anterior aparece como `driver_too_old` y no
+habilita GPU.
 
 ## Logs y aceptación
 

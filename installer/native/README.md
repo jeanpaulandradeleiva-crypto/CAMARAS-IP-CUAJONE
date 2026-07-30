@@ -31,8 +31,8 @@ los datos mutables permanecen bajo `C:\ProgramData\Cuajone PPE Monitor`, separad
 de los binarios instalados. El piloto actual tiene alcance limitado; no se afirma
 soporte runtime para varias cámaras.
 
-> Alcance validado: base MSI, extracción administrativa, carga del ejecutable y
-> `--help`. No se ejecutaron instalación real, cámaras, inferencia, engines ni
+> Alcance validado: base MSI, extracción administrativa, carga del ejecutable,
+> `--help` y probe de hardware. No se ejecutaron instalación real, cámaras, inferencia, engines ni
 > `--preflight` en el host de desarrollo.
 
 ## 2. Preparar la confianza privada del piloto
@@ -75,6 +75,7 @@ Installer.
   -ExpectedRootThumbprint "<HUELLA_SHA1_RAIZ>" `
   -ExpectedLeafThumbprint "<HUELLA_SHA1_HOJA>" `
   -InstallFolder "D:\Apps\Cuajone PPE Monitor" `
+  -ComputeMode auto `
   -LogPath "D:\Logs\cuajone-install.log" `
   -AuthorizeTrustEnrollment
 ```
@@ -109,6 +110,12 @@ carpetas. Los binarios conservan los permisos endurecidos heredados de
 `Program Files`. La instalación crea accesos en el menú Inicio y se registra en
 Aplicaciones instaladas.
 
+La pantalla de cómputo ofrece Auto, GPU (CUDA) y CPU. GPU se deshabilita si DXGI y
+la API del driver CUDA 12.9 (`12090`) no están listos o ningún dispositivo alcanza
+SM 7.5. El MSI repite el gate en la secuencia de
+ejecución para cubrir `/qn`; `COMPUTE_MODE=cuda` falla cerrado. Auto/CPU no instalan
+ni modifican drivers y la selección queda en HKLM para el runtime.
+
 ### Despliegue silencioso y registros
 
 Para el piloto privado, usa el comando de la sección anterior y agrega `-Silent`.
@@ -124,6 +131,7 @@ $log = "D:\Logs\cuajone-install.log"
 
 msiexec.exe /i $msi /qn /norestart `
   INSTALLFOLDER="D:\Apps\Cuajone PPE Monitor" `
+  COMPUTE_MODE=auto `
   /L*V $log
 ```
 
@@ -187,8 +195,8 @@ $env:CUAJONE_SIGN_COMMAND = (Resolve-Path .\installer\native\sign-release.ps1).P
 .\installer\native\build-installer.ps1 -BuildMode Preview
 ```
 
-El siguiente candidato local usa `0.1.0-internal.4`; `v0.1.0-internal.3` y sus
-assets publicados son inmutables. Un build `Release` exige además
+El candidato local usa `0.1.0-internal.4`, no está publicado ni autorizado para
+instalación; `v0.1.0-internal.3` y sus assets publicados son inmutables. Un build `Release` exige además
 `CUAJONE_PARITY_RECEIPT` con contrato `1.0.0`, commit exacto y paridad completa
 sobre engines/video autorizados. El recibo debe cumplir el esquema compartido,
 identificar y hashear al menos dos inputs aprobados, aportar evidencia hash y
@@ -196,14 +204,19 @@ comparaciones positivas para las seis etapas, y referenciar la autorización. Su
 timestamp RFC3339 debe estar en UTC: se toleran cinco minutos hacia el futuro y el
 recibo vence después de siete días. Un recibo sintético no atraviesa ese gate.
 
-El MSI, su `.sha256`, staging, temporales y evidencia de verificación quedan bajo
+El MSI, su `.sha256`, staging, SBOM SPDX 2.3, temporales y evidencia quedan bajo
 `D:\DevTools\CuajoneNative\installer`. El script firma primero
-`cuajone_native.exe`, construye el MSI, firma el MSI y realiza extracción
+`cuajone_native.exe` y `CuajoneHardwareProbeCA.dll`, construye/firma el MSI y realiza extracción
 administrativa en D. Nunca vuelve a firmar DLL de terceros.
+
+Antes de construir, los MSI/sidecars anteriores se mueven desde `output` a un
+subdirectorio fechado de `installer\superseded`. Al terminar, `output` debe contener
+exactamente el MSI actual y su `.sha256`; `test-installer.ps1` vuelve a comprobar
+ese conjunto y el contenido del sidecar.
 
 ## 8. Controlar la firma
 
-`sign-release.ps1` acepta únicamente el `.exe` propio y archivos `.msi`. Usa
+`sign-release.ps1` acepta únicamente el `.exe` propio, el custom action propio y archivos `.msi`. Usa
 SignTool con digest SHA-256, timestamp RFC 3161 y verificación Authenticode. No
 acepta PFX, contraseñas ni claves exportadas.
 
@@ -248,8 +261,8 @@ determinista por ruta staged; ese archivo no se versiona.
 4. Extracción administrativa con `msiexec /a` hacia D.
 5. Comparación SHA-256 de todo el payload contra staging y de cada archivo copiado
    contra su fuente actual del repositorio, build o toolchain.
-6. Verificación de firma del MSI y del `.exe` propio, seguida únicamente por
-   `--help`.
+6. Verificación de firma del MSI y del `.exe` propio, seguida por `--help` y el
+   probe JSON sin modelos.
 7. Rechazo de cualquier artefacto Python/QA mediante la política compartida
    `payload-policy.ps1`.
 
@@ -267,7 +280,8 @@ los controles corporativos activos.
 
 ## 11. Dependencias y distribución
 
-`build-installer.ps1` recorre imports PE con `dumpbin`, agrega explícitamente el
+`build-installer.ps1` recorre imports PE con `dumpbin`, incluye ONNX Runtime 1.25.0
+CPU, agrega explícitamente el
 plugin FFmpeg de OpenCV y rechaza plugins o builders TensorRT no aprobados. Los
 hashes de cada binario se registran en `build-metadata.json` y
 `SHA256SUMS.txt`; las licencias y la procedencia se incluyen como antes.

@@ -19,6 +19,16 @@
     <MediaTemplate EmbedCab="yes" CompressionLevel="high" />
 
     <Property Id="INSTALLFOLDER" Secure="yes" />
+    <Property Id="COMPUTE_MODE" Value="auto" Secure="yes">
+      <RegistrySearch Id="PreviousComputeMode"
+                      Root="HKLM"
+                      Key="SOFTWARE\Cuajone PPE Monitor"
+                      Name="ComputeMode"
+                      Type="raw"
+                      Bitness="always64" />
+    </Property>
+    <Property Id="CUDA_READY" Value="0" Secure="yes" />
+    <Property Id="NVIDIA_STATUS" Value="not_probed" Secure="yes" />
     <Property Id="ARPCOMMENTS" Value="$(var.ArpComments)" />
     <Property Id="ARPHELPLINK" Value="https://github.com/jeanpaulandradeleiva-crypto/CAMARAS-IP-CUAJONE/issues" />
     <Property Id="ARPURLINFOABOUT" Value="https://github.com/jeanpaulandradeleiva-crypto/CAMARAS-IP-CUAJONE" />
@@ -28,9 +38,78 @@
 
     <Launch Condition="Installed OR (VersionNT64 &gt;= 603 AND WindowsBuildNumber &gt;= 17763)"
             Message="Cuajone PPE Monitor requires 64-bit Windows 10 version 1809 or later." />
+    <Launch Condition="Installed OR COMPUTE_MODE=&quot;auto&quot; OR COMPUTE_MODE=&quot;cuda&quot; OR COMPUTE_MODE=&quot;cpu&quot;"
+            Message="COMPUTE_MODE must be auto, cuda, or cpu." />
+
+    <Binary Id="HardwareProbeCA" SourceFile="$(var.HardwareProbeCA)" />
+    <CustomAction Id="DetectComputeHardware"
+                  BinaryRef="HardwareProbeCA"
+                  DllEntry="DetectComputeHardware"
+                  Execute="immediate"
+                  Return="check" />
+    <CustomAction Id="BlockUnavailableCuda"
+                  Error="GPU (CUDA) mode requires a usable NVIDIA adapter, SM 7.5+, and CUDA Driver API 12.9+. Use COMPUTE_MODE=auto or COMPUTE_MODE=cpu; the MSI never installs display drivers." />
+
+    <InstallUISequence>
+      <Custom Action="DetectComputeHardware"
+              After="CostFinalize"
+              Condition="NOT Installed" />
+    </InstallUISequence>
+    <InstallExecuteSequence>
+      <Custom Action="DetectComputeHardware"
+              Before="LaunchConditions"
+              Condition="NOT Installed" />
+      <Custom Action="BlockUnavailableCuda"
+              After="DetectComputeHardware"
+              Condition="NOT Installed AND COMPUTE_MODE=&quot;cuda&quot; AND CUDA_READY&lt;&gt;&quot;1&quot;" />
+    </InstallExecuteSequence>
 
     <ui:WixUI Id="WixUI_InstallDir" InstallDirectory="INSTALLFOLDER" />
     <WixVariable Id="WixUILicenseRtf" Value="$(var.LicenseRtf)" />
+
+    <UI Id="CuajoneComputeUI">
+      <Dialog Id="ComputeDlg" Width="370" Height="270" Title="Cuajone PPE Monitor - Compute">
+        <Control Id="Next" Type="PushButton" X="236" Y="243" Width="56" Height="17" Default="yes" Text="Next">
+          <Publish Event="NewDialog" Value="VerifyReadyDlg" />
+        </Control>
+        <Control Id="Back" Type="PushButton" X="180" Y="243" Width="56" Height="17" Text="Back">
+          <Publish Event="NewDialog" Value="InstallDirDlg" />
+        </Control>
+        <Control Id="Cancel" Type="PushButton" X="304" Y="243" Width="56" Height="17" Cancel="yes" Text="Cancel">
+          <Publish Event="SpawnDialog" Value="CancelDlg" />
+        </Control>
+        <Control Id="Title" Type="Text" X="15" Y="6" Width="260" Height="15" Transparent="yes" NoPrefix="yes"
+                 Text="Choose the compute mode" />
+        <Control Id="Description" Type="Text" X="25" Y="23" Width="320" Height="28" Transparent="yes" NoPrefix="yes"
+                 Text="Auto prefers a ready NVIDIA GPU and otherwise uses CPU. The installer never installs or changes display drivers." />
+        <Control Id="BannerBitmap" Type="Bitmap" X="0" Y="0" Width="370" Height="44" TabSkip="no" Text="WixUI_Bmp_Banner" />
+        <Control Id="BannerLine" Type="Line" X="0" Y="44" Width="373" Height="0" />
+        <Control Id="BottomLine" Type="Line" X="0" Y="234" Width="373" Height="0" />
+        <Control Id="ProbeStatus" Type="Text" X="25" Y="58" Width="320" Height="18" NoPrefix="yes"
+                 Text="NVIDIA/CUDA status: [NVIDIA_STATUS]" />
+        <Control Id="AutoMode" Type="PushButton" X="25" Y="88" Width="95" Height="28" Text="Auto (recommended)">
+          <Publish Property="COMPUTE_MODE" Value="auto" />
+        </Control>
+        <Control Id="CudaMode" Type="PushButton" X="137" Y="88" Width="95" Height="28" Text="GPU (CUDA)"
+                 DisableCondition="CUDA_READY&lt;&gt;&quot;1&quot;"
+                 EnableCondition="CUDA_READY=&quot;1&quot;">
+          <Publish Property="COMPUTE_MODE" Value="cuda" />
+        </Control>
+        <Control Id="CpuMode" Type="PushButton" X="249" Y="88" Width="95" Height="28" Text="CPU">
+          <Publish Property="COMPUTE_MODE" Value="cpu" />
+        </Control>
+        <Control Id="Selection" Type="Text" X="25" Y="132" Width="320" Height="18" NoPrefix="yes"
+                 Text="Selected mode: [COMPUTE_MODE]" />
+        <Control Id="UnavailableWarning" Type="Text" X="25" Y="158" Width="320" Height="38" NoPrefix="yes"
+                 ShowCondition="CUDA_READY&lt;&gt;&quot;1&quot;"
+                 HideCondition="CUDA_READY=&quot;1&quot;"
+                  Text="GPU requires NVIDIA SM 7.5+ and CUDA Driver API 12.9+. Choose Auto or CPU when GPU is unavailable; this installer never changes drivers." />
+      </Dialog>
+      <Publish Dialog="InstallDirDlg" Control="Next" Event="NewDialog" Value="ComputeDlg"
+               Order="5" Condition="NOT Installed" />
+      <Publish Dialog="VerifyReadyDlg" Control="Back" Event="NewDialog" Value="ComputeDlg"
+               Order="3" Condition="NOT Installed" />
+    </UI>
 
     <Feature Id="MainFeature" Title="Cuajone PPE Monitor" Level="1">
       <ComponentGroupRef Id="PayloadComponents" />
@@ -88,6 +167,14 @@
                              CreateFile="yes" CreateChild="yes" Delete="yes" DeleteChild="yes"
                              ReadPermission="yes" Synchronize="yes" Traverse="yes" />
         </CreateFolder>
+      </Component>
+      <Component Id="RuntimeComputeMode" Directory="INSTALLFOLDER" Guid="599B1C29-1D13-46EF-B458-1F778E61A813">
+        <RegistryValue Root="HKLM"
+                       Key="SOFTWARE\Cuajone PPE Monitor"
+                       Name="ComputeMode"
+                       Type="string"
+                       Value="[COMPUTE_MODE]"
+                       KeyPath="yes" />
       </Component>
     </ComponentGroup>
   </Fragment>

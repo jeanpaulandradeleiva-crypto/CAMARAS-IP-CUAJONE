@@ -25,6 +25,11 @@ Los avisos del instalador nativo se mantienen en
 Este documento describe el limite de licencia del repositorio; no sustituye
 asesoramiento legal.
 
+El runtime nativo redistribuye ONNX Runtime 1.25.0 CPU bajo MIT junto con sus
+avisos de terceros. El paquete MSI conserva la licencia upstream, registra el
+asset oficial por URL y SHA-256, e inventaría `onnxruntime.dll` en un SBOM SPDX
+2.3. ONNX Runtime no relicencia los modelos ONNX aportados por el operador.
+
 ## Runtime Python de QA y herramientas opcionales
 
 `jsonschema` 4.25.1 (MIT) es una dependencia requerida del runtime Python de QA

@@ -107,11 +107,62 @@ Assert-File $signatureVerifier "Signature verifier"
 Assert-File $payloadPolicy "Installer payload policy"
 . $payloadPolicy
 
+$sidecarPath = "$installer.sha256"
+Assert-File $sidecarPath "MSI SHA-256 sidecar"
+$expectedActiveNames = @(
+    (Split-Path -Leaf $installer)
+    (Split-Path -Leaf $sidecarPath)
+)
+$activeCandidates = @(Get-ChildItem -LiteralPath (Split-Path -Parent $installer) -File | Where-Object {
+    $_.Name -like 'CuajonePPEMonitor-*-x64*.msi' -or
+    $_.Name -like 'CuajonePPEMonitor-*-x64*.msi.sha256'
+})
+if ($activeCandidates.Count -ne 2 -or @($activeCandidates.Name | Where-Object {
+        $_ -notin $expectedActiveNames
+    }).Count -ne 0) {
+    throw "Active output does not contain exactly the selected MSI and its sidecar"
+}
+$sidecarLine = (Get-Content -LiteralPath $sidecarPath -Raw).Trim()
+$expectedSidecar = "{0}  {1}" -f (
+    (Get-FileHash -Algorithm SHA256 -LiteralPath $installer).Hash.ToLowerInvariant()
+), (Split-Path -Leaf $installer)
+if ($sidecarLine -cne $expectedSidecar) {
+    throw "MSI SHA-256 sidecar does not match the selected installer"
+}
+
 $stageMetadataPath = Join-Path $stage "build-metadata.json"
 Assert-File $stageMetadataPath "Staged build metadata"
 $stageMetadata = Get-Content -LiteralPath $stageMetadataPath -Raw | ConvertFrom-Json
 if ($stageMetadata.stagingProvenanceVersion -ne 1 -or $stageMetadata.sourceProvenance.Count -lt 1) {
     throw "Staged build metadata does not contain supported source provenance"
+}
+if ($stageMetadata.onnxRuntime.version -cne "1.25.0" -or
+    $stageMetadata.onnxRuntime.assetSha256 -cne "da753f762bf2400e7191ec594086b186a7051d5af8dc886f6e2020c2403df738" -or
+    $stageMetadata.onnxRuntime.executionProvider -cne "CPUExecutionProvider") {
+    throw "Staged build metadata does not pin the approved ONNX Runtime CPU package"
+}
+if ($stageMetadata.runtimeSecurityPolicy.hardwareProbeSchemaVersion -ne 2 -or
+    $stageMetadata.runtimeSecurityPolicy.minimumCudaDriverApiVersion -ne 12090 -or
+    $stageMetadata.runtimeSecurityPolicy.minimumTensorRtComputeCapability -cne "7.5" -or
+    $stageMetadata.runtimeSecurityPolicy.onnxManifestSchemaVersion -ne 1 -or
+    $stageMetadata.runtimeSecurityPolicy.onnxExternalDataAllowed -ne $false -or
+    $stageMetadata.runtimeSecurityPolicy.onnxCustomOperatorsAllowed -ne $false -or
+    $stageMetadata.runtimeSecurityPolicy.maximumOnnxModelBytes -ne 268435456 -or
+    $stageMetadata.runtimeSecurityPolicy.maximumTensorRtEngineBytes -ne 1073741824 -or
+    $stageMetadata.runtimeSecurityPolicy.maximumImageDimension -ne 4096 -or
+    $stageMetadata.runtimeSecurityPolicy.maximumOutputElements -ne 16777216 -or
+    $stageMetadata.runtimeSecurityPolicy.maximumTensorBytes -ne 268435456) {
+    throw "Staged build metadata does not record the enforced runtime security policy"
+}
+$sbomPath = Join-Path $stage "docs\sbom.spdx.json"
+Assert-File $sbomPath "SPDX SBOM"
+$sbom = Get-Content -LiteralPath $sbomPath -Raw | ConvertFrom-Json
+if ($sbom.spdxVersion -cne "SPDX-2.3" -or $sbom.dataLicense -cne "CC0-1.0" -or
+    @($sbom.packages | Where-Object {
+        $_.name -ceq "onnxruntime.dll" -and $_.versionInfo -ceq "1.25.0" -and
+        $_.licenseDeclared -ceq "MIT"
+    }).Count -ne 1) {
+    throw "SPDX SBOM does not identify the approved ONNX Runtime package"
 }
 $projectRoot = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot "..\..")).Path
 if ([System.IO.Path]::GetFullPath($stageMetadata.sourceRoots.repository) -cne $projectRoot) {
@@ -268,8 +319,10 @@ try {
         $tableRows = Get-MsiRows $database 'SELECT `Name` FROM `_Tables`' 1
         $tables = @($tableRows | ForEach-Object { $_.Columns[0] })
         $requiredTables = @(
-            "Component", "Directory", "Feature", "FeatureComponents", "File",
-            "InstallExecuteSequence", "Media", "Property", "Shortcut", "Upgrade"
+            "AppSearch", "Binary", "Component", "Control", "ControlCondition", "ControlEvent",
+            "CustomAction", "Dialog", "Directory", "Feature", "FeatureComponents", "File",
+            "InstallExecuteSequence", "InstallUISequence", "Media", "Property", "RegLocator",
+            "Registry", "Shortcut", "Upgrade"
         )
         foreach ($table in $requiredTables) {
             if ($tables -notcontains $table) {
@@ -292,8 +345,14 @@ try {
             throw "MSI is not declared per-machine through ALLUSERS=1"
         }
         $secureProperties = @($properties.SecureCustomProperties -split ';')
-        if ($secureProperties -notcontains "INSTALLFOLDER") {
-            throw "INSTALLFOLDER is not a secure public MSI property"
+        foreach ($secureProperty in @("INSTALLFOLDER", "COMPUTE_MODE", "CUDA_READY", "NVIDIA_STATUS")) {
+            if ($secureProperties -notcontains $secureProperty) {
+                throw "$secureProperty is not a secure public MSI property"
+            }
+        }
+        if ($properties.COMPUTE_MODE -cne "auto" -or $properties.CUDA_READY -cne "0" -or
+            $properties.NVIDIA_STATUS -cne "not_probed") {
+            throw "Compute properties do not have safe defaults"
         }
         if ($properties.ARPPRODUCTICON -cne "ProductIcon") {
             throw "MSI is missing conventional Add/Remove Programs icon metadata"
@@ -331,12 +390,63 @@ try {
         if (@($launchConditions | Where-Object { $_.Columns[0] -match 'WIX_DOWNGRADE_DETECTED' }).Count -ne 1) {
             throw "Downgrade rejection launch condition is missing"
         }
+        if (@($launchConditions | Where-Object {
+            $_.Columns[0] -match 'COMPUTE_MODE' -and $_.Columns[1] -match 'auto, cuda, or cpu'
+        }).Count -ne 1) {
+            throw "Invalid COMPUTE_MODE values are not rejected"
+        }
 
         $sequenceRows = Get-MsiRows $database 'SELECT `Action`, `Condition`, `Sequence` FROM `InstallExecuteSequence`' 3
         $sequenceActions = @($sequenceRows | ForEach-Object { $_.Columns[0] })
         foreach ($action in @("InstallFiles", "RemoveFiles", "RegisterProduct", "PublishProduct", "RemoveExistingProducts")) {
             if ($sequenceActions -notcontains $action) {
                 throw "MSI repair/upgrade/uninstall sequence action is missing: $action"
+            }
+        }
+        foreach ($action in @("DetectComputeHardware", "BlockUnavailableCuda")) {
+            if ($sequenceActions -notcontains $action) {
+                throw "Compute gate is missing from InstallExecuteSequence: $action"
+            }
+        }
+        $detectSequence = @($sequenceRows | Where-Object { $_.Columns[0] -ceq "DetectComputeHardware" })
+        $blockSequence = @($sequenceRows | Where-Object { $_.Columns[0] -ceq "BlockUnavailableCuda" })
+        if ($detectSequence.Count -ne 1 -or $blockSequence.Count -ne 1 -or
+            [int]$detectSequence[0].Columns[2] -ge [int]$blockSequence[0].Columns[2] -or
+            $blockSequence[0].Columns[1] -notmatch 'COMPUTE_MODE="cuda"' -or
+            $blockSequence[0].Columns[1] -notmatch 'CUDA_READY') {
+            throw "Forced CUDA is not blocked after the hardware probe"
+        }
+        $uiSequenceRows = Get-MsiRows $database 'SELECT `Action`, `Condition`, `Sequence` FROM `InstallUISequence`' 3
+        if (@($uiSequenceRows | Where-Object { $_.Columns[0] -ceq "DetectComputeHardware" }).Count -ne 1) {
+            throw "Interactive compute detection is missing from InstallUISequence"
+        }
+
+        $dialogRows = Get-MsiRows $database 'SELECT `Dialog` FROM `Dialog`' 1
+        if (@($dialogRows | Where-Object { $_.Columns[0] -ceq "ComputeDlg" }).Count -ne 1) {
+            throw "Compute selection dialog is missing"
+        }
+        $controlRows = Get-MsiRows $database 'SELECT `Dialog_`, `Control`, `Type`, `Property`, `Text` FROM `Control`' 5
+        foreach ($control in @("AutoMode", "CudaMode", "CpuMode", "ProbeStatus")) {
+            if (@($controlRows | Where-Object {
+                $_.Columns[0] -ceq "ComputeDlg" -and $_.Columns[1] -ceq $control
+            }).Count -ne 1) {
+                throw "Compute dialog control is missing: $control"
+            }
+        }
+        $controlConditionRows = Get-MsiRows $database 'SELECT `Dialog_`, `Control_`, `Action`, `Condition` FROM `ControlCondition`' 4
+        if (@($controlConditionRows | Where-Object {
+            $_.Columns[0] -ceq "ComputeDlg" -and $_.Columns[1] -ceq "CudaMode" -and
+            $_.Columns[2] -ceq "Disable" -and $_.Columns[3] -match 'CUDA_READY'
+        }).Count -ne 1) {
+            throw "GPU selection is not disabled when CUDA is unavailable"
+        }
+        $controlEventRows = Get-MsiRows $database 'SELECT `Dialog_`, `Control_`, `Event`, `Argument`, `Condition`, `Ordering` FROM `ControlEvent`' 6
+        foreach ($mode in @("auto", "cuda", "cpu")) {
+            if (@($controlEventRows | Where-Object {
+                $_.Columns[0] -ceq "ComputeDlg" -and $_.Columns[2] -ceq "[COMPUTE_MODE]" -and
+                $_.Columns[3] -ceq $mode
+            }).Count -ne 1) {
+                throw "Compute dialog does not publish mode: $mode"
             }
         }
 
@@ -379,16 +489,35 @@ try {
             }).Count -ne 0) {
             throw "Runtime ACL rows do not grant the approved Users SID on the four data directories"
         }
-        $customActionRows = Get-MsiRows $database 'SELECT `Action` FROM `CustomAction`' 1
+        $customActionRows = Get-MsiRows $database 'SELECT `Action`, `Type`, `Source`, `Target` FROM `CustomAction`' 4
         $approvedCustomActions = @(
             "Wix4SchedSecureObjects_X64", "Wix4SchedSecureObjectsRollback_X64",
-            "Wix4ExecSecureObjects_X64", "Wix4ExecSecureObjectsRollback_X64"
+            "Wix4ExecSecureObjects_X64", "Wix4ExecSecureObjectsRollback_X64",
+            "DetectComputeHardware", "BlockUnavailableCuda"
         )
         if ($customActionRows.Count -ne $approvedCustomActions.Count -or
             @($customActionRows | Where-Object {
                 $_.Columns[0] -notin $approvedCustomActions
             }).Count -ne 0) {
-            throw "MSI contains a custom action outside WiX declarative ACL support"
+            throw "MSI contains an unapproved custom action"
+        }
+        $probeAction = @($customActionRows | Where-Object { $_.Columns[0] -ceq "DetectComputeHardware" })
+        if ($probeAction.Count -ne 1 -or $probeAction[0].Columns[2] -cne "HardwareProbeCA" -or
+            $probeAction[0].Columns[3] -cne "DetectComputeHardware") {
+            throw "Hardware probe custom action does not reference the approved embedded DLL/export"
+        }
+        $binaryRows = Get-MsiRows $database 'SELECT `Name` FROM `Binary`' 1
+        if (@($binaryRows | Where-Object { $_.Columns[0] -ceq "HardwareProbeCA" }).Count -ne 1) {
+            throw "Hardware probe custom action binary is not embedded exactly once"
+        }
+
+        $registryRows = Get-MsiRows $database 'SELECT `Registry`, `Root`, `Key`, `Name`, `Value`, `Component_` FROM `Registry`' 6
+        if (@($registryRows | Where-Object {
+            $_.Columns[1] -eq "2" -and $_.Columns[2] -ceq "SOFTWARE\Cuajone PPE Monitor" -and
+            $_.Columns[3] -ceq "ComputeMode" -and $_.Columns[4] -ceq "[COMPUTE_MODE]" -and
+            $_.Columns[5] -ceq "RuntimeComputeMode"
+        }).Count -ne 1) {
+            throw "Selected compute mode is not persisted in 64-bit HKLM"
         }
         foreach ($forbiddenTable in @("Certificate", "ServiceInstall")) {
             if ($tables -contains $forbiddenTable) {
@@ -491,10 +620,31 @@ try {
     } finally {
         $env:PATH = $originalPath
     }
-    if ($helpExitCode -ne 0 -or ($helpOutput -join "`n") -notmatch 'Cuajone native TensorRT PPE and fall analytics') {
+    if ($helpExitCode -ne 0 -or ($helpOutput -join "`n") -notmatch 'Cuajone native PPE and fall analytics') {
         throw "Extracted loader/help acceptance failed with exit code $helpExitCode"
     }
     $helpOutput | Set-Content -LiteralPath (Join-Path $runRoot "help-output.txt") -Encoding UTF8
+
+    $originalPath = $env:PATH
+    $env:PATH = "$(Join-Path $extractApp 'bin');$env:SystemRoot\System32;$env:SystemRoot"
+    try {
+        $probeOutput = & $executable --hardware-probe-json 2>&1
+        $probeExitCode = $LASTEXITCODE
+    } finally {
+        $env:PATH = $originalPath
+    }
+    if ($probeExitCode -notin @(0, 10, 11, 12, 13)) {
+        throw "Extracted hardware probe returned an undocumented exit code: $probeExitCode"
+    }
+    $probeJson = ($probeOutput -join "`n") | ConvertFrom-Json
+    if ($probeJson.schema_version -ne 2 -or
+        $probeJson.minimum_driver_version -ne 12090 -or
+        $probeJson.status -notin @("cuda_ready", "no_nvidia_adapter", "driver_unavailable", "driver_too_old", "probe_error") -or
+        $probeJson.cuda_ready -ne ($probeJson.status -ceq "cuda_ready") -or
+        $probeJson.driver_was_loaded -ne $false) {
+        throw "Extracted hardware probe JSON violates the stable schema"
+    }
+    $probeOutput | Set-Content -LiteralPath (Join-Path $runRoot "hardware-probe.json") -Encoding UTF8
 } finally {
     $env:TEMP = $originalTemp
     $env:TMP = $originalTmp
@@ -522,6 +672,10 @@ $result = [ordered]@{
     payloadFilesCompared = $payloadCount
     thirdPartyBytePreservation = "passed"
     helpExitCode = $helpExitCode
+    hardwareProbeExitCode = $probeExitCode
+    hardwareProbeStatus = $probeJson.status
+    cudaDriverEagerlyLoaded = $probeJson.driver_was_loaded
+    computeSelectionContract = "auto-cuda-cpu-persisted-and-fail-closed"
     liveInstallPerformed = $false
     localMachineCertificateStoresModified = $false
     acceptanceRoot = $runRoot

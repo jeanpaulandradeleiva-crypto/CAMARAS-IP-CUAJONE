@@ -16,10 +16,12 @@ param(
     [string]$ToolRoot = "D:\DevTools\CuajoneNative",
     [string]$WixToolRoot = "D:\DevTools\CuajoneNative\wix",
     [string]$WixVersion = "6.0.2",
-    [string]$ReleaseExecutable = "D:\DevTools\CuajoneNative\build\windows-msvc\Release\cuajone_native.exe",
+    [string]$ReleaseExecutable = "D:\DevTools\CuajoneNative\build\presets\windows-msvc\Release\cuajone_native.exe",
+    [string]$HardwareProbeCustomAction = "D:\DevTools\CuajoneNative\build\presets\windows-msvc\Release\CuajoneHardwareProbeCA.dll",
     [string]$StageDir = "D:\DevTools\CuajoneNative\installer\stage",
     [string]$WixBuildDir = "D:\DevTools\CuajoneNative\installer\wix-build",
     [string]$OutputDir = "D:\DevTools\CuajoneNative\installer\output",
+    [string]$SupersededOutputDir = "D:\DevTools\CuajoneNative\installer\superseded",
     [string]$VerificationRoot = "D:\DevTools\CuajoneNative\installer\msi-verification",
     [string]$SourceRevision = $env:CUAJONE_SOURCE_REVISION,
     [string]$SourceArchiveUrl = $env:CUAJONE_SOURCE_ARCHIVE_URL,
@@ -45,6 +47,9 @@ $payloadPolicy = Join-Path $scriptRoot "payload-policy.ps1"
 $releaseGates = Join-Path $scriptRoot "release-gates.ps1"
 $sourceRepository = "https://github.com/jeanpaulandradeleiva-crypto/CAMARAS-IP-CUAJONE"
 $upgradeCode = "88A886C2-8F6D-4669-B6FB-7DFC1E7B0397"
+$onnxRuntimeVersion = "1.25.0"
+$onnxRuntimeAssetUrl = "https://github.com/microsoft/onnxruntime/releases/download/v1.25.0/onnxruntime-win-x64-1.25.0.zip"
+$onnxRuntimeAssetSha256 = "da753f762bf2400e7191ec594086b186a7051d5af8dc886f6e2020c2403df738"
 
 function Assert-File([string]$Path, [string]$Description) {
     if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) {
@@ -193,12 +198,13 @@ function Write-PayloadSource([string]$Root, [string]$OutputPath) {
     $lines | Set-Content -LiteralPath $OutputPath -Encoding UTF8
 }
 
-foreach ($path in @($StageDir, $WixBuildDir, $OutputDir, $VerificationRoot, $WixToolRoot)) {
+foreach ($path in @($StageDir, $WixBuildDir, $OutputDir, $SupersededOutputDir, $VerificationRoot, $WixToolRoot)) {
     Assert-DDrivePath $path "Build path"
 }
 Assert-Directory $ToolRoot "Native tool root"
 Assert-Directory $WixToolRoot "WiX tool root"
 Assert-File $ReleaseExecutable "Release executable"
+Assert-File $HardwareProbeCustomAction "Hardware probe custom action"
 Assert-File $packageSource "WiX package source"
 Assert-File $packageProject "WiX project"
 Assert-File $iconGenerator "Icon generator"
@@ -271,8 +277,10 @@ $openCvBin = Join-Path $ToolRoot "opencv\opencv\build\x64\vc16\bin"
 $cudaBin = Join-Path $ToolRoot "cuda-runtime\nvidia\cuda_runtime\bin"
 $tensorRtRoot = Join-Path $ToolRoot "tensorrt\TensorRT-11.1.0.106"
 $tensorRtBin = Join-Path $tensorRtRoot "bin"
+$onnxRuntimeRoot = Join-Path $ToolRoot "onnxruntime-win-x64-1.25.0"
+$onnxRuntimeBin = Join-Path $onnxRuntimeRoot "lib"
 $msvcCrt = Join-Path $ToolRoot "vs\VC\Redist\MSVC\14.44.35112\x64\Microsoft.VC143.CRT"
-$searchDirectories = @($openCvBin, $cudaBin, $tensorRtBin, $msvcCrt)
+$searchDirectories = @($openCvBin, $cudaBin, $tensorRtBin, $onnxRuntimeBin, $msvcCrt)
 
 Assert-File $dumpbin "MSVC dumpbin"
 Assert-File $wix "WiX CLI"
@@ -314,11 +322,13 @@ $sourceInputs = @(
     (Get-ChildItem -LiteralPath (Join-Path $projectRoot "native\src") -File -Filter "*.cpp").FullName
     (Get-ChildItem -LiteralPath (Join-Path $projectRoot "native\include") -Recurse -File -Include "*.hpp", "*.h").FullName
 )
-$newerSource = $sourceInputs | Where-Object {
-    (Get-Item -LiteralPath $_).LastWriteTimeUtc -gt (Get-Item -LiteralPath $ReleaseExecutable).LastWriteTimeUtc
-}
-if ($newerSource) {
-    throw "The Release executable is older than native source input: $($newerSource -join ', ')"
+foreach ($ownedBinary in @($ReleaseExecutable, $HardwareProbeCustomAction)) {
+    $newerSource = $sourceInputs | Where-Object {
+        (Get-Item -LiteralPath $_).LastWriteTimeUtc -gt (Get-Item -LiteralPath $ownedBinary).LastWriteTimeUtc
+    }
+    if ($newerSource) {
+        throw "$(Split-Path -Leaf $ownedBinary) is older than native source input: $($newerSource -join ', ')"
+    }
 }
 
 if ($isSignedBuild) {
@@ -329,9 +339,17 @@ if ($isSignedBuild) {
         throw "Project executable signing command failed"
     }
     & $signatureVerifier -FilePath $ReleaseExecutable -SignToolPath $SignToolPath -VerifyOnly
+    & $SignCommand -FilePath $HardwareProbeCustomAction
+    if (-not $?) {
+        throw "Hardware probe custom action signing command failed"
+    }
+    & $signatureVerifier -FilePath $HardwareProbeCustomAction -SignToolPath $SignToolPath -VerifyOnly
 } elseif ((Get-AuthenticodeSignature -LiteralPath $ReleaseExecutable).Status -ne
     [System.Management.Automation.SignatureStatus]::NotSigned) {
     throw "Explicit unsigned preview expected the project executable to be NotSigned"
+} elseif ((Get-AuthenticodeSignature -LiteralPath $HardwareProbeCustomAction).Status -ne
+    [System.Management.Automation.SignatureStatus]::NotSigned) {
+    throw "Explicit unsigned preview expected the hardware probe custom action to be NotSigned"
 }
 
 $generatedParent = Split-Path -Parent $StageDir
@@ -340,6 +358,7 @@ foreach ($path in @($WixBuildDir, $OutputDir, $VerificationRoot)) {
     $parent = Split-Path -Parent $path
     Ensure-Directory $parent
 }
+Ensure-Directory $SupersededOutputDir
 Reset-Directory $StageDir
 Reset-Directory $WixBuildDir
 Ensure-Directory $OutputDir
@@ -502,6 +521,8 @@ $cudaLicense = Join-Path $ToolRoot "cuda-runtime\nvidia_cuda_runtime_cu12-12.9.7
 Assert-File $cudaLicense "CUDA runtime license"
 Copy-StagedInput $cudaLicense (Join-Path $stageLicenses.FullName "NVIDIA-CUDA-License.txt") "tool" "CUDA runtime license"
 Copy-StagedInput (Join-Path $tensorRtRoot "doc\README.txt") (Join-Path $stageLicenses.FullName "NVIDIA-TensorRT-README.txt") "tool" "TensorRT redistribution and license reference"
+Copy-StagedInput (Join-Path $onnxRuntimeRoot "LICENSE") (Join-Path $stageLicenses.FullName "ONNX-Runtime-LICENSE.txt") "tool" "ONNX Runtime MIT license"
+Copy-StagedInput (Join-Path $onnxRuntimeRoot "ThirdPartyNotices.txt") (Join-Path $stageLicenses.FullName "ONNX-Runtime-ThirdPartyNotices.txt") "tool" "ONNX Runtime third-party notices"
 
 $projectSourceAvailability = if ($BuildMode -eq "Release") {
     "$SourceArchiveUrl`nSHA-256: $($SourceArchiveSha256.ToLowerInvariant())"
@@ -559,6 +580,33 @@ https://learn.microsoft.com/visualstudio/releases/2022/redistribution
 This reference is not a replacement for the applicable Visual Studio license terms and does not grant additional rights.
 "@ | Set-Content -LiteralPath (Join-Path $stageLicenses.FullName "Microsoft-VC-Runtime-REDISTRIBUTION-REFERENCE.txt") -Encoding UTF8
 
+$sbomPackages = @($resolved.GetEnumerator() | Sort-Object Key | ForEach-Object {
+    [ordered]@{
+        SPDXID = "SPDXRef-Binary-$((Get-StableHex $_.Key).Substring(0, 16))"
+        name = $_.Key
+        versionInfo = if ($_.Key -ceq "onnxruntime.dll") { $onnxRuntimeVersion } else { "NOASSERTION" }
+        downloadLocation = if ($_.Key -ceq "onnxruntime.dll") { $onnxRuntimeAssetUrl } else { "NOASSERTION" }
+        filesAnalyzed = $false
+        checksums = @([ordered]@{ algorithm = "SHA256"; checksumValue = $_.Value.sha256 })
+        licenseConcluded = "NOASSERTION"
+        licenseDeclared = if ($_.Key -ceq "onnxruntime.dll") { "MIT" } else { "NOASSERTION" }
+        copyrightText = "NOASSERTION"
+    }
+})
+$sbom = [ordered]@{
+    spdxVersion = "SPDX-2.3"
+    dataLicense = "CC0-1.0"
+    SPDXID = "SPDXRef-DOCUMENT"
+    name = "Cuajone-PPE-Monitor-$Version-x64"
+    documentNamespace = "https://github.com/jeanpaulandradeleiva-crypto/CAMARAS-IP-CUAJONE/sbom/$Version/$([Guid]::NewGuid())"
+    creationInfo = [ordered]@{
+        created = [DateTime]::UtcNow.ToString("yyyy-MM-ddTHH:mm:ssZ")
+        creators = @("Tool: installer/native/build-installer.ps1")
+    }
+    packages = $sbomPackages
+}
+$sbom | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath (Join-Path $stageDocs.FullName "sbom.spdx.json") -Encoding UTF8
+
 $iconPath = Join-Path $StageDir "CuajonePPEMonitor.ico"
 & $iconGenerator -OutputPath $iconPath
 if ($LASTEXITCODE -ne 0) {
@@ -576,6 +624,28 @@ $metadata = [ordered]@{
     buildUtc = [DateTime]::UtcNow.ToString("o")
     releaseExecutable = $ReleaseExecutable
     releaseExecutableSha256 = (Get-FileHash -Algorithm SHA256 -LiteralPath $ReleaseExecutable).Hash
+    hardwareProbeCustomAction = $HardwareProbeCustomAction
+    hardwareProbeCustomActionSha256 = (Get-FileHash -Algorithm SHA256 -LiteralPath $HardwareProbeCustomAction).Hash.ToLowerInvariant()
+    onnxRuntime = [ordered]@{
+        version = $onnxRuntimeVersion
+        root = $onnxRuntimeRoot
+        assetUrl = $onnxRuntimeAssetUrl
+        assetSha256 = $onnxRuntimeAssetSha256
+        executionProvider = "CPUExecutionProvider"
+    }
+    runtimeSecurityPolicy = [ordered]@{
+        hardwareProbeSchemaVersion = 2
+        minimumCudaDriverApiVersion = 12090
+        minimumTensorRtComputeCapability = "7.5"
+        onnxManifestSchemaVersion = 1
+        onnxExternalDataAllowed = $false
+        onnxCustomOperatorsAllowed = $false
+        maximumOnnxModelBytes = 268435456
+        maximumTensorRtEngineBytes = 1073741824
+        maximumImageDimension = 4096
+        maximumOutputElements = 16777216
+        maximumTensorBytes = 268435456
+    }
     toolRoot = $ToolRoot
     dumpbin = $dumpbin
     wixToolset = $wixReportedVersion
@@ -608,7 +678,7 @@ $metadata = [ordered]@{
         "Explicit unsigned internal preview"
     }
     thirdPartyBinariesResigned = $false
-    acceptanceScope = "MSI database, administrative extraction, loader, and --help only; no install, engines, cameras, preflight, or inference"
+    acceptanceScope = "MSI database, administrative extraction, loader, --help, and hardware probe only; no install, engines, cameras, preflight, or inference"
     parityGate = if ($BuildMode -eq "Release") {
         [ordered]@{
             receiptVersion = $productionParityReceipt.receipt_version
@@ -630,6 +700,7 @@ $metadata = [ordered]@{
         "CuajonePPEMonitor.ico"
         "build-metadata.json"
         "docs/SOURCE-OFFER.txt"
+        "docs/sbom.spdx.json"
         "licenses/Microsoft-VC-Runtime-REDISTRIBUTION-REFERENCE.txt"
         "licenses/NVIDIA-TensorRT-LICENSE-REFERENCE.txt"
         "SHA256SUMS.txt"
@@ -678,8 +749,17 @@ $installerPath = Join-Path $OutputDir "$outputBaseFilename.msi"
 $wixPdb = Join-Path $WixBuildDir "$outputBaseFilename.wixpdb"
 $wixIntermediate = Join-Path $WixBuildDir "obj"
 Ensure-Directory $wixIntermediate
-if (Test-Path -LiteralPath $installerPath) {
-    Remove-Item -LiteralPath $installerPath -Force
+$existingCandidates = @(Get-ChildItem -LiteralPath $OutputDir -File | Where-Object {
+    $_.Name -like 'CuajonePPEMonitor-*-x64*.msi' -or
+    $_.Name -like 'CuajonePPEMonitor-*-x64*.msi.sha256'
+})
+if ($existingCandidates.Count -gt 0) {
+    $archiveName = "{0}-{1}" -f [DateTime]::UtcNow.ToString("yyyyMMdd-HHmmssfff"), $Version
+    $archiveDirectory = Join-Path $SupersededOutputDir $archiveName
+    New-Item -ItemType Directory -Path $archiveDirectory | Out-Null
+    foreach ($candidate in $existingCandidates) {
+        Move-Item -LiteralPath $candidate.FullName -Destination $archiveDirectory
+    }
 }
 
 $arpComments = if ($BuildMode -eq "Preview") {
@@ -697,6 +777,7 @@ $wixArguments = @(
     "-d", "MsiVersion=$msiVersion",
     "-d", "ArpComments=$arpComments",
     "-d", "LicenseRtf=$licenseRtf",
+    "-d", "HardwareProbeCA=$HardwareProbeCustomAction",
     "-ext", "WixToolset.UI.wixext",
     "-ext", "WixToolset.Util.wixext",
     "-intermediatefolder", $wixIntermediate,
@@ -728,6 +809,19 @@ if ($isSignedBuild) {
 $installerHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $installerPath).Hash.ToLowerInvariant()
 $sidecarPath = "$installerPath.sha256"
 "$installerHash  $(Split-Path -Leaf $installerPath)" | Set-Content -LiteralPath $sidecarPath -Encoding ASCII
+$activeCandidates = @(Get-ChildItem -LiteralPath $OutputDir -File | Where-Object {
+    $_.Name -like 'CuajonePPEMonitor-*-x64*.msi' -or
+    $_.Name -like 'CuajonePPEMonitor-*-x64*.msi.sha256'
+})
+$expectedActiveNames = @(
+    (Split-Path -Leaf $installerPath)
+    (Split-Path -Leaf $sidecarPath)
+)
+if ($activeCandidates.Count -ne 2 -or @($activeCandidates.Name | Where-Object {
+        $_ -notin $expectedActiveNames
+    }).Count -ne 0) {
+    throw "Active output must contain exactly the current MSI and SHA-256 sidecar"
+}
 
 $verificationParameters = @{
     InstallerPath = $installerPath
