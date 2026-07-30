@@ -1,9 +1,9 @@
 # Runtime nativo C++ para EPP y caídas
 
-Este directorio contiene el primer candidato nativo Windows x64. Ejecuta dos
-engines TensorRT externos, uno de detección EPP y otro de pose, sin Python,
-PyTorch ni Ultralytics durante la ejecución. `ppe_reportev2.py` continúa siendo la
-referencia de comportamiento y el fallback operativo.
+Este directorio contiene el runtime Windows x64. Ejecuta modelos ONNX con CPU o
+engines TensorRT con CUDA, sin Python, PyTorch ni Ultralytics durante la ejecución.
+`Auto` prefiere CUDA solo cuando hardware, driver y engines están listos; si no,
+usa ONNX CPU. `ppe_reportev2.py` continúa siendo la referencia de comportamiento.
 
 > Toolchain local: las herramientas y SDK se instalaron bajo
 > `D:\DevTools\CuajoneNative`. La activación no modifica el PATH global y los
@@ -12,7 +12,7 @@ referencia de comportamiento y el fallback operativo.
 ## Ruta rápida
 
 1. Instala por separado las herramientas y SDK indicados en Prerrequisitos.
-2. Define `TENSORRT_ROOT` y `OpenCV_DIR` sin copiar DLL ni librerías al repositorio.
+2. Define `ONNXRUNTIME_ROOT`, `TENSORRT_ROOT` y `OpenCV_DIR` sin copiar binarios al repositorio.
 3. Compila y ejecuta primero `cpu-tests`.
 4. Compila `windows-msvc` y ejecuta `--preflight` con engines compatibles.
 5. Recién después realiza una prueba controlada con un video autorizado.
@@ -25,7 +25,10 @@ deserializa ambos engines de forma secuencial y valida sus tensores.
 | Módulo | Responsabilidad |
 | --- | --- |
 | `engine_reader` | Acepta planes raw y engines Ultralytics con prefijo reconocible; valida JSON estricto, Unicode y IDs de clase. |
-| `tensorrt_runtime` | RAII para runtime, contexto, stream y buffers CUDA; acepta solo I/O device, lineal, no vectorizado, FP32/FP16 y no-shape. |
+| `compute` | Política Auto/CUDA/CPU, Driver API mínimo, selección multidispositivo y probe DXGI con carga dinámica de `nvcuda.dll`. |
+| `model_manifest` | Verifica tipo, rol, tamaño, SHA-256, procedencia, I/O y protobuf ONNX antes de crear una sesión. |
+| `onnx_session` | Sesión ONNX Runtime CPU-only creada desde los bytes ya verificados, con un input/output FP32 y shapes fijos. |
+| `tensorrt_runtime` | Backend opcional: RAII para runtime, contexto, stream y buffers CUDA. |
 | `preprocess` | Letterbox OpenCV, BGR a RGB, normalización y empaquetado NCHW FP32; conserva escala y padding exactos. |
 | `yolo_decode` | Rechaza valores no finitos, limita candidatos, aplica NMS por clase en coordenadas del modelo y recién después restaura/recorta. |
 | `iou_tracker` | IDs temporales mediante asociación IoU determinista, edad máxima y capacidad acotada. |
@@ -33,7 +36,7 @@ deserializa ambos engines de forma secuencial y valida sus tensores.
 | `fall_analytics` | Validación de keypoints, geometría, descenso, confirmación, recuperación y cooldown. |
 | `contracts` | Versiones, CloudEvents y serialización JSON canónica sin secretos. |
 | `analytics_pipeline` | Composición reutilizable, timestamps/frame IDs inyectables, orden estricto y reset. |
-| `engine_pipeline` | Inferencia TensorRT y analítica compartidas por ejecutable y binding QA. |
+| `engine_pipeline` | Pre/postproceso y analítica compartidos por ONNX CPU y TensorRT CUDA. |
 | `capture` | Un único slot reemplazable, reinicio sin frame obsoleto, fallback de apertura y reconexión RTSP con transporte configurable. |
 | `evidence` | JPEG anotado y CSV append-only; no genera Excel. |
 
@@ -55,13 +58,15 @@ en orden y rechazan IDs o timestamps que retrocedan hasta ejecutar `reset()`.
 
 - Windows x64 y Visual Studio 2022 con MSVC C++.
 - CMake 3.25 o posterior.
+- ONNX Runtime 1.25.0 CPU para Windows x64.
 - SDK C++ de TensorRT 11 compatible con los engines, con `NvInfer.h` e import lib.
 - CUDA Toolkit/runtime compatible con TensorRT y el controlador NVIDIA.
 - OpenCV C++ 4.8 o posterior con `core`, `imgproc`, `imgcodecs`, `videoio` y `highgui`.
-- Driver NVIDIA compatible y GPU seleccionable mediante CUDA.
+- Driver NVIDIA cuya Driver API reporte al menos `12090` (CUDA 12.9) y GPU
+  seleccionable mediante CUDA.
 
-TensorRT, CUDA y OpenCV son dependencias externas. El proyecto no descarga ni
-redistribuye binarios propietarios. `nvcc` no es necesario para estas fuentes
+ONNX Runtime, TensorRT, CUDA y OpenCV son dependencias externas del build. El MSI
+redistribuye únicamente runtimes aprobados con licencias y hashes. `nvcc` no es necesario para estas fuentes
 porque no contienen kernels `.cu`; sí se requieren headers e import libs de CUDA.
 
 `TENSORRT_ROOT` no puede estar vacío. CMake busca exclusivamente
@@ -86,44 +91,91 @@ Toolkit completo. `CUDA_CCCL_HEADERS_ROOT` apunta al paquete oficial
 PowerShell, desde `native/`, sin cambiar variables globales del sistema:
 
 ```powershell
+. .\activate-native.ps1 -CpuOnly
+
+cmake --preset cpu-tests
+cmake --build --preset cpu-tests-release
+ctest --preset cpu-tests-release
+
 . .\activate-native.ps1
-
-cmake -S . -B D:\DevTools\CuajoneNative\build\cpu-tests -G Ninja `
-  -DCMAKE_BUILD_TYPE=Release `
-  -DCUAJONE_BUILD_RUNTIME=OFF `
-  -DCUAJONE_BUILD_TESTS=ON
-cmake --build D:\DevTools\CuajoneNative\build\cpu-tests
-ctest --test-dir D:\DevTools\CuajoneNative\build\cpu-tests --output-on-failure
-
-cmake -S . -B D:\DevTools\CuajoneNative\build\windows-msvc -G Ninja `
-  -DCMAKE_BUILD_TYPE=Release `
-  -DCUAJONE_BUILD_RUNTIME=ON `
-  -DCUAJONE_BUILD_TESTS=ON
-cmake --build D:\DevTools\CuajoneNative\build\windows-msvc
+cmake --preset windows-msvc
+cmake --build --preset windows-msvc-release
 ```
 
-El preset CPU no busca CUDA ni TensorRT, pero requiere OpenCV C++ para probar el
-letterbox. El preset completo falla de forma explícita si falta MSVC, CUDA,
-TensorRT u OpenCV.
+El preset CPU compila el ejecutable y el probe con `CUAJONE_ENABLE_TENSORRT=OFF`:
+no busca ni enlaza CUDA/TensorRT. El preset completo habilita ambos backends.
 
 Las rutas activadas son TensorRT `11.1.0.106`, CUDA runtime `12.9.79`, OpenCV
 `4.12.0` (`vc16`, ABI compatible con VS2022), CMake `3.31.8`, Ninja `1.13.1` y
 Visual Studio Build Tools 2022 `17.14`. No copies DLL al repositorio: la activación
-agrega temporalmente sus directorios externos al PATH del proceso actual.
+agrega temporalmente sus directorios externos al PATH del proceso actual. CMake sí
+copia el `onnxruntime.dll` 1.25.0 fijado junto a los ejecutables externos de build;
+esto evita que Windows resuelva por error otra versión instalada en `System32`.
 
 ## Preflight y ejecución
+
+Consulta el hardware sin modelos, cámaras ni TensorRT:
+
+```powershell
+cuajone_native.exe --hardware-probe-json
+```
+
+Los exit codes estables son `0` listo, `10` sin adaptador NVIDIA, `11` driver no
+usable, `12` error de probe y `13` Driver API anterior a CUDA 12.9. El JSON usa
+`schema_version: 2`, publica `minimum_driver_version: 12090` y enumera el índice de
+cada dispositivo. `driver_was_loaded` debe ser `false`: demuestra que
+el ejecutable llegó al probe sin cargar `nvcuda.dll` de forma anticipada.
+`--compute cpu` nunca ejecuta este probe. El CLI
+explícito tiene prioridad sobre `HKLM\SOFTWARE\Cuajone PPE Monitor\ComputeMode`.
+TensorRT 11 exige al menos SM 7.5; una GPU anterior no se declara lista aunque la
+API del driver CUDA inicialice. Sin `--device`, el runtime elige el primer índice
+compatible; un índice explícito inexistente o inferior a SM 7.5 falla cerrado.
 
 Ejemplo sin secretos, usando un video local:
 
 ```powershell
 build\windows-msvc\Release\cuajone_native.exe `
   --preflight `
+  --compute cuda `
   --source C:\video-autorizado\turno.mp4 `
   --source-label CAM_CUAJONE_01 `
   --ppe-engine C:\models\ppe.engine `
   --pose-engine C:\models\pose.engine `
   --output C:\resultados\cuajone
 ```
+
+Para CPU reemplaza engines por `--ppe-onnx`, `--pose-onnx` y declara el orden de
+clases con `--ppe-labels`. CPU exige modelos FP32 con batch 1, NCHW fijo, un input
+y un output raw. Shapes dinámicos, NMS fusionado o múltiples outputs fallan cerrado.
+
+Cada `<modelo>.onnx` requiere un `<modelo>.onnx.manifest.json` adyacente. El sidecar
+es parte del artefacto aprobado y usa exactamente este contrato:
+
+```json
+{
+  "schema_version": 1,
+  "artifact_type": "onnx",
+  "role": "ppe",
+  "model_file": "ppe.onnx",
+  "model_sha256": "<64 hex lowercase>",
+  "model_size_bytes": 123456,
+  "external_data": false,
+  "custom_operators": false,
+  "input": { "name": "images", "element_type": "float32", "shape": [1, 3, 640, 640] },
+  "output": { "name": "output0", "element_type": "float32", "shape": [1, 84, 8400] },
+  "provenance": {
+    "source_uri": "https://example.invalid/approved-model-record",
+    "exporter": "approved-exporter-version",
+    "license": "SPDX-or-approved-license-reference"
+  }
+}
+```
+
+Para pose, `role` debe ser `pose`. No se aceptan campos desconocidos, symlinks,
+extensiones distintas, hashes/tamaños divergentes, `external_data`, funciones
+locales ni dominios de operadores distintos de ONNX estándar. El runtime escanea
+el protobuf y después entrega a ORT los mismos bytes verificados en memoria; no
+vuelve a abrir el path ni permite resolución de sidecars.
 
 Quita `--preflight` para procesar la fuente. `--source` acepta `rtsp://` y
 `rtsps://`, exige authority y host no vacíos, acepta userinfo y requiere corchetes
@@ -191,6 +243,12 @@ Se admiten solamente:
 - Layout `[C,N]` o `[N,C]` cuando una sola dimensión satisface exactamente
   `4 + clases + keypoints` o `5 + clases + keypoints`.
 
+Los límites previos a reserva son: manifest ONNX 64 KiB, modelo ONNX 256 MiB,
+engine TensorRT 1 GiB, rank máximo 8, H/W máximo 4096, entrada máxima
+`3 * 4096 * 4096` elementos, salida máxima 16 777 216 elementos y 256 MiB por
+tensor. Una dimensión individual no puede superar 1 000 000. Las multiplicaciones
+de elementos y bytes se comprueban antes de reservar memoria CPU o CUDA.
+
 El segundo caso incluye objectness. Si ninguna fórmula coincide, ambas coinciden,
 el output es dinámico o el engine contiene NMS fusionado/múltiples outputs, el
 inicio falla. No se intenta adivinar el schema.
@@ -218,7 +276,15 @@ SM, TensorRT, CUDA, driver, precisión, tamaño y forma usados en el host final.
 `cuajone_cpu_tests` cubre sin GPU el prefijo y JSON de metadata, surrogate pairs,
 URLs/redacción RTSP, letterbox, rechazo no-finito, decode detect/pose, orden de NMS,
 límites de detección, defensas de constructores, continuidad/expiración del
-tracker, asociación/votación EPP y confirmación/recuperación de caída.
+tracker, asociación/votación EPP, confirmación/recuperación de caída, las 120
+combinaciones de política de cómputo y la selección multidispositivo. El target
+`cuajone_onnx_tests` genera protobufs sintéticos y cubre inferencia positiva desde
+memoria, manifest/hash/rol/I/O, extensión, límites, external data y dominios custom.
+
+Baseline de esta corrección: CTest `2/2` tanto en CPU-only como en el build completo;
+la suite Python ejecutada con `python -m pytest` informa `93 passed, 1 skipped` sin
+binding (el único skip es el módulo nativo opcional) y `104 passed` con el binding
+MSVC cargado.
 
 La prueba TensorRT es deliberadamente opt-in y solo inspecciona un engine real:
 
@@ -259,7 +325,7 @@ invoca `_commit` sobre un descriptor nativo porque esta implementación usa
 
 La distribución operativa estará compuesta por el ejecutable, DLL de runtime de
 MSVC, DLL de OpenCV, DLL de CUDA/TensorRT autorizadas por sus licencias, los dos
-engines externos y la carpeta de salida. El tamaño depende de las builds concretas
+artefactos externos con sus manifests aprobados y la carpeta de salida. El tamaño depende de las builds concretas
 de esos componentes; todavía no se midió y no se estima aquí.
 
 ## Brechas conocidas

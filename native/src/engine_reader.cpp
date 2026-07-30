@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
 #include "cuajone/engine_reader.hpp"
+#include "cuajone/resource_limits.hpp"
 
 #include <algorithm>
 #include <charconv>
@@ -366,6 +367,13 @@ std::uint32_t readLittleEndianLength(std::span<const std::byte> bytes) {
 }  // namespace
 
 EngineFile EngineFile::read(const std::filesystem::path& path) {
+    if (path.extension() != ".engine") {
+        throw std::runtime_error("TensorRT artifact path must use the .engine extension: " + path.string());
+    }
+    const auto status = std::filesystem::symlink_status(path);
+    if (!std::filesystem::is_regular_file(status) || std::filesystem::is_symlink(status)) {
+        throw std::runtime_error("TensorRT engine must be a regular non-symlink file: " + path.string());
+    }
     std::ifstream stream(path, std::ios::binary | std::ios::ate);
     if (!stream) {
         throw std::runtime_error("Cannot open TensorRT engine: " + path.string());
@@ -373,6 +381,9 @@ EngineFile EngineFile::read(const std::filesystem::path& path) {
     const std::streamsize file_size = stream.tellg();
     if (file_size <= 0) {
         throw std::runtime_error("TensorRT engine is empty: " + path.string());
+    }
+    if (static_cast<std::uintmax_t>(file_size) > resource_limits::kMaximumTensorRtEngineBytes) {
+        throw std::runtime_error("TensorRT engine exceeds the 1 GiB artifact limit: " + path.string());
     }
     stream.seekg(0);
 

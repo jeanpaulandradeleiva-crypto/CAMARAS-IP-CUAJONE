@@ -15,6 +15,10 @@
       "cacheVariables": {
         "CMAKE_CONFIGURATION_TYPES": "Release;RelWithDebInfo",
         "TENSORRT_ROOT": "$env{TENSORRT_ROOT}",
+        "ONNXRUNTIME_ROOT": "$env{ONNXRUNTIME_ROOT}",
+        "CUDA_RUNTIME_ROOT": "$env{CUDA_RUNTIME_ROOT}",
+        "CUDA_COMPILER_HEADERS_ROOT": "$env{CUDA_COMPILER_HEADERS_ROOT}",
+        "CUDA_CCCL_HEADERS_ROOT": "$env{CUDA_CCCL_HEADERS_ROOT}",
         "OpenCV_DIR": "$env{OpenCV_DIR}"
       }
     },
@@ -25,8 +29,10 @@
       "architecture": "x64",
       "binaryDir": "D:/DevTools/CuajoneNative/build/presets/cpu-tests",
       "cacheVariables": {
-        "CUAJONE_BUILD_RUNTIME": "OFF",
+        "CUAJONE_BUILD_RUNTIME": "ON",
+        "CUAJONE_ENABLE_TENSORRT": "OFF",
         "CUAJONE_BUILD_TESTS": "ON",
+        "ONNXRUNTIME_ROOT": "$env{ONNXRUNTIME_ROOT}",
         "OpenCV_DIR": "$env{OpenCV_DIR}"
       }
     },
@@ -45,6 +51,7 @@
         "CUAJONE_PYTHON_OUTPUT_DIR": "D:/DevTools/CuajoneNative/build/presets/python-bindings/python",
         "Python_EXECUTABLE": "$env{CUAJONE_PYTHON_EXECUTABLE}",
         "TENSORRT_ROOT": "$env{TENSORRT_ROOT}",
+        "ONNXRUNTIME_ROOT": "$env{ONNXRUNTIME_ROOT}",
         "CUDA_RUNTIME_ROOT": "$env{CUDA_RUNTIME_ROOT}",
         "CUDA_COMPILER_HEADERS_ROOT": "$env{CUDA_COMPILER_HEADERS_ROOT}",
         "CUDA_CCCL_HEADERS_ROOT": "$env{CUDA_CCCL_HEADERS_ROOT}",

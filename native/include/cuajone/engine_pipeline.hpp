@@ -3,6 +3,7 @@
 #pragma once
 
 #include "cuajone/analytics_pipeline.hpp"
+#include "cuajone/compute.hpp"
 
 #include <opencv2/core/mat.hpp>
 
@@ -18,13 +19,16 @@
 namespace cuajone {
 
 struct EnginePipelineConfig {
+    ComputeBackend backend{ComputeBackend::Cuda};
     std::filesystem::path ppe_engine;
     std::filesystem::path pose_engine;
+    std::filesystem::path ppe_onnx;
+    std::filesystem::path pose_onnx;
     std::optional<std::map<int, std::string>> ppe_labels;
     std::size_t pose_class_count{1};
     std::array<int, 2> pose_keypoint_shape{17, 3};
     bool allow_nonperson_pose_class{};
-    int device{};
+    std::optional<int> device;
     float ppe_confidence{0.30F};
     float pose_confidence{0.35F};
     float nms_iou{0.45F};
@@ -33,6 +37,8 @@ struct EnginePipelineConfig {
 };
 
 struct EnginePipelineSummary {
+    ComputeBackend backend{ComputeBackend::Cpu};
+    std::string provider;
     std::string device_name;
     int device_index{};
     int device_count{};
@@ -63,5 +69,7 @@ private:
     struct Impl;
     std::unique_ptr<Impl> impl_;
 };
+
+bool tensorRtBackendCompiled() noexcept;
 
 }  // namespace cuajone

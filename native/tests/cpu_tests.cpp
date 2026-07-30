@@ -21,6 +21,7 @@
 #include <limits>
 #include <stdexcept>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace {
@@ -51,9 +52,11 @@ void requireThrows(Function function, const std::string& message) {
 
 class TemporaryFile {
 public:
-    explicit TemporaryFile(const std::vector<unsigned char>& bytes) {
+    explicit TemporaryFile(
+        const std::vector<unsigned char>& bytes,
+        std::string_view extension = ".engine") {
         path_ = std::filesystem::temp_directory_path()
-            / ("cuajone_native_" + std::to_string(++sequence_) + ".engine");
+            / ("cuajone_native_" + std::to_string(++sequence_) + std::string(extension));
         std::ofstream output(path_, std::ios::binary);
         output.write(reinterpret_cast<const char*>(bytes.data()), static_cast<std::streamsize>(bytes.size()));
     }
@@ -66,6 +69,9 @@ private:
 };
 
 void testEngineRawAndMetadataPrefix() {
+    TemporaryFile wrong_type({0x24, 0x00, 0x00, 0x00, 0xAA, 0xBB}, ".onnx");
+    requireThrows([&] { EngineFile::read(wrong_type.path()); },
+        "ONNX artifact was accepted by the TensorRT engine reader");
     TemporaryFile raw({0x24, 0x00, 0x00, 0x00, 0xAA, 0xBB});
     const EngineFile raw_engine = EngineFile::read(raw.path());
     require(!raw_engine.hasMetadataPrefix(), "Raw plan was mistaken for metadata");
@@ -130,6 +136,8 @@ void testEngineRawAndMetadataPrefix() {
 }
 
 void testLetterboxMappingAndPacking() {
+    requireThrows([] { LetterboxPreprocessor oversized(4097, 1); },
+        "Oversized preprocessor dimensions were accepted");
     cv::Mat frame(720, 1280, CV_8UC3, cv::Scalar(10, 20, 30));
     LetterboxPreprocessor preprocessor(640, 640);
     const PreprocessedFrame result = preprocessor.process(frame);
@@ -257,11 +265,11 @@ void testCliUrlsAndInvariantDefense() {
     };
     auto valid = base;
     valid.insert(valid.end(), {"--max-det", "42", "--rtsp-transport", "udp",
-                               "--capture-open-timeout-ms", "0"});
+                               "--capture-open-timeout-ms", "0", "--device", "2"});
     const RuntimeConfig parsed = parse(valid);
     require(parsed.max_det == 42 && parsed.rtsp_transport == RtspTransport::Udp
-            && parsed.capture_open_timeout.count() == 0,
-        "CLI did not preserve max-det, transport, or zero timeout");
+            && parsed.capture_open_timeout.count() == 0 && parsed.device == 2,
+        "CLI did not preserve max-det, transport, zero timeout, or device");
     auto invalid_confidence = base;
     invalid_confidence.insert(invalid_confidence.end(), {"--pose-conf", "1.1"});
     requireThrows([&] { parse(invalid_confidence); }, "CLI accepted confidence above one");
@@ -281,6 +289,17 @@ void testCliUrlsAndInvariantDefense() {
     invalid_mode[2] = "unknown";
     requireThrows([&] { parse(invalid_mode); }, "Unknown analytics mode was accepted");
 
+    auto cpu = ppe_only;
+    cpu.erase(cpu.begin() + 5, cpu.begin() + 7);
+    cpu.insert(cpu.end(), {"--compute", "cpu", "--ppe-onnx", "ppe.onnx", "--ppe-labels", "person,helmet,vest"});
+    const RuntimeConfig parsed_cpu = parse(cpu);
+    require(parsed_cpu.compute_backend == ComputeBackend::Cpu && parsed_cpu.compute_explicit
+            && parsed_cpu.ppe_onnx == "ppe.onnx",
+        "CLI did not preserve explicit CPU compute selection");
+    auto invalid_compute = ppe_only;
+    invalid_compute.insert(invalid_compute.end(), {"--compute", "gpu"});
+    requireThrows([&] { parse(invalid_compute); }, "CLI accepted an unknown compute backend");
+
     requireThrows(
         [] { IoUTracker({0.3F, 0, 1}); },
         "Zero tracker age was accepted by the constructor");
@@ -290,6 +309,97 @@ void testCliUrlsAndInvariantDefense() {
     requireThrows(
         [] { FallAnalyzer({0, 1, std::chrono::seconds(1), std::chrono::seconds(1), 1.0F, 45.0F, 0.1F, 0.5F}); },
         "Zero fall confirmation count was accepted by the constructor");
+}
+
+void testComputeSelectionAndProbeContract() {
+    require(!isTensorRtCompatibleComputeCapability(7, 0)
+            && isTensorRtCompatibleComputeCapability(7, 5)
+            && isTensorRtCompatibleComputeCapability(8, 6),
+        "TensorRT 11 compute-capability floor changed");
+    require(parseComputeBackend("auto") == ComputeBackend::Auto
+            && parseComputeBackend("cuda") == ComputeBackend::Cuda
+            && parseComputeBackend("cpu") == ComputeBackend::Cpu,
+        "Compute backend parser changed");
+    const std::array statuses{
+        HardwareProbeStatus::NoNvidiaAdapter,
+        HardwareProbeStatus::DriverUnavailable,
+        HardwareProbeStatus::DriverTooOld,
+        HardwareProbeStatus::CudaReady,
+        HardwareProbeStatus::ProbeError,
+    };
+    for (const ComputeBackend requested : {
+             ComputeBackend::Auto, ComputeBackend::Cuda, ComputeBackend::Cpu}) {
+        for (const HardwareProbeStatus status : statuses) {
+            for (const bool compiled : {false, true}) {
+                for (const bool gpu_models : {false, true}) {
+                    for (const bool cpu_models : {false, true}) {
+                        std::optional<ComputeBackend> expected;
+                        if (requested == ComputeBackend::Cpu) {
+                            if (cpu_models) expected = ComputeBackend::Cpu;
+                        } else if (requested == ComputeBackend::Cuda) {
+                            if (compiled && status == HardwareProbeStatus::CudaReady && gpu_models) {
+                                expected = ComputeBackend::Cuda;
+                            }
+                        } else if (compiled && status == HardwareProbeStatus::CudaReady && gpu_models) {
+                            expected = ComputeBackend::Cuda;
+                        } else if (cpu_models) {
+                            expected = ComputeBackend::Cpu;
+                        }
+                        std::optional<ComputeSelection> actual;
+                        try {
+                            actual = selectComputeBackend(requested, {
+                                status, compiled, gpu_models, cpu_models,
+                            });
+                        } catch (const std::exception&) {
+                        }
+                        require(actual.has_value() == expected.has_value(),
+                            "Compute matrix availability result changed");
+                        if (expected) require(actual->backend == *expected,
+                            "Compute matrix selected the wrong available backend");
+                    }
+                }
+            }
+        }
+    }
+
+    const std::array devices{
+        CudaDeviceInfo{0, "Legacy", 7, 0},
+        CudaDeviceInfo{1, "Compatible A", 8, 6},
+        CudaDeviceInfo{2, "Compatible B", 7, 5},
+    };
+    require(selectCompatibleCudaDevice(devices, std::nullopt) == 1,
+        "Automatic CUDA device selection did not choose the first compatible device");
+    require(selectCompatibleCudaDevice(devices, 2) == 2,
+        "Explicit compatible CUDA device was not preserved");
+    requireThrows([&] { selectCompatibleCudaDevice(devices, 0); },
+        "Explicit incompatible CUDA device was accepted");
+    requireThrows([&] { selectCompatibleCudaDevice(devices, 3); },
+        "Unavailable CUDA device index was accepted");
+    const std::array incompatible{CudaDeviceInfo{0, "Legacy", 7, 0}};
+    requireThrows([&] { selectCompatibleCudaDevice(incompatible, std::nullopt); },
+        "Automatic selection accepted a device below SM 7.5");
+    require(kMinimumCudaDriverApiVersion == 12090, "CUDA Driver API floor changed");
+
+    HardwareProbeResult synthetic;
+    synthetic.status = HardwareProbeStatus::CudaReady;
+    synthetic.driver_version = 12090;
+    synthetic.adapters.push_back({"Synthetic NVIDIA", 1234, 4096});
+    synthetic.cuda_devices.push_back({0, "Synthetic CUDA", 8, 6});
+    synthetic.detail = "synthetic";
+    const std::string json = hardwareProbeJson(synthetic);
+    require(json.find("\"schema_version\":2") != std::string::npos
+            && json.find("\"status\":\"cuda_ready\"") != std::string::npos
+            && json.find("\"cuda_ready\":true") != std::string::npos
+            && json.find("\"minimum_driver_version\":12090") != std::string::npos
+            && json.find("\"device_index\":0") != std::string::npos
+            && json.find("\"driver_was_loaded\":false") != std::string::npos,
+        "Hardware probe JSON contract changed");
+    require(hardwareProbeExitCode(HardwareProbeStatus::CudaReady) == 0
+            && hardwareProbeExitCode(HardwareProbeStatus::NoNvidiaAdapter) == 10
+            && hardwareProbeExitCode(HardwareProbeStatus::DriverUnavailable) == 11
+            && hardwareProbeExitCode(HardwareProbeStatus::ProbeError) == 12
+            && hardwareProbeExitCode(HardwareProbeStatus::DriverTooOld) == 13,
+        "Hardware probe exit-code contract changed");
 }
 
 void testTrackerContinuityAndExpiry() {
@@ -488,6 +598,7 @@ int main() {
         {"detect decode and NMS", testDetectSchemaDecodeAndNms},
         {"pose decode", testPoseSchemaAndDecode},
         {"CLI URLs and invariants", testCliUrlsAndInvariantDefense},
+        {"compute selection and probe contract", testComputeSelectionAndProbeContract},
         {"IoU tracker", testTrackerContinuityAndExpiry},
         {"PPE analytics", testPpeAssociationVotingAndCooldown},
         {"fall analytics", testFallConfirmationRecoveryAndCooldown},

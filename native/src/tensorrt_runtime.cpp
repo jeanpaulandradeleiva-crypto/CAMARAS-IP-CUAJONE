@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
 #include "cuajone/tensorrt_runtime.hpp"
+#include "cuajone/compute.hpp"
+#include "cuajone/resource_limits.hpp"
 
 #include <algorithm>
 #include <iostream>
@@ -76,18 +78,22 @@ std::size_t TensorRtSession::elementSize(nvinfer1::DataType type) {
     }
 }
 
-std::size_t TensorRtSession::volume(const nvinfer1::Dims& dimensions) {
-    if (dimensions.nbDims <= 0) throw std::runtime_error("TensorRT tensor has invalid rank");
+std::size_t TensorRtSession::volume(
+    const nvinfer1::Dims& dimensions,
+    std::size_t maximum_elements,
+    std::string_view name) {
+    if (dimensions.nbDims <= 0
+        || static_cast<std::size_t>(dimensions.nbDims) > resource_limits::kMaximumTensorRank) {
+        throw std::runtime_error(std::string(name) + " rank is outside the supported range");
+    }
     std::size_t result = 1;
     for (int index = 0; index < dimensions.nbDims; ++index) {
-        if (dimensions.d[index] <= 0) {
-            throw std::runtime_error("TensorRT tensor has unresolved or non-positive dimensions");
+        if (dimensions.d[index] <= 0
+            || dimensions.d[index] > resource_limits::kMaximumTensorDimension) {
+            throw std::runtime_error(std::string(name) + " has an unresolved or out-of-range dimension");
         }
-        const std::size_t value = static_cast<std::size_t>(dimensions.d[index]);
-        if (result > std::numeric_limits<std::size_t>::max() / value) {
-            throw std::overflow_error("TensorRT tensor element count overflow");
-        }
-        result *= value;
+        result = resource_limits::checkedMultiply(
+            result, static_cast<std::size_t>(dimensions.d[index]), maximum_elements, name);
     }
     return result;
 }
@@ -163,6 +169,10 @@ TensorRtSession::TensorRtSession(
         || input_dimensions.d[2] <= 0 || input_dimensions.d[3] <= 0) {
         throw std::runtime_error("Only fixed batch-1, three-channel NCHW YOLO inputs are supported");
     }
+    if (input_dimensions.d[2] > resource_limits::kMaximumImageDimension
+        || input_dimensions.d[3] > resource_limits::kMaximumImageDimension) {
+        throw std::runtime_error("YOLO input dimensions exceed the supported image limit");
+    }
     context_.reset(engine_->createExecutionContext());
     if (!context_) throw std::runtime_error("TensorRT could not create an execution context");
     if (!context_->setInputShape(input_name_.c_str(), input_dimensions)) {
@@ -174,17 +184,21 @@ TensorRtSession::TensorRtSession(
     }
     input_height_ = static_cast<int>(input_dimensions.d[2]);
     input_width_ = static_cast<int>(input_dimensions.d[3]);
-    input_elements_ = volume(input_dimensions);
+    input_elements_ = volume(
+        input_dimensions, resource_limits::kMaximumInputElements, "TensorRT input");
 
     const nvinfer1::Dims output_dimensions = context_->getTensorShape(output_name_.c_str());
-    output_elements_ = volume(output_dimensions);
+    output_elements_ = volume(
+        output_dimensions, resource_limits::kMaximumOutputElements, "TensorRT output");
     output_shape_.reserve(static_cast<std::size_t>(output_dimensions.nbDims));
     for (int index = 0; index < output_dimensions.nbDims; ++index) {
         output_shape_.push_back(output_dimensions.d[index]);
     }
 
-    input_buffer_ = DeviceBuffer(input_elements_ * elementSize(input_type_));
-    output_buffer_ = DeviceBuffer(output_elements_ * elementSize(output_type_));
+    input_buffer_ = DeviceBuffer(resource_limits::checkedTensorBytes(
+        input_elements_, elementSize(input_type_), "TensorRT input"));
+    output_buffer_ = DeviceBuffer(resource_limits::checkedTensorBytes(
+        output_elements_, elementSize(output_type_), "TensorRT output"));
     if (input_type_ == nvinfer1::DataType::kFLOAT) host_input_float_.resize(input_elements_);
     else host_input_half_.resize(input_elements_);
     if (output_type_ == nvinfer1::DataType::kFLOAT) host_output_float_.resize(output_elements_);
@@ -243,12 +257,17 @@ InferenceOutput TensorRtSession::infer(std::span<const float> nchw_input) {
     return {float_output_, output_shape_};
 }
 
-DeviceSummary selectCudaDevice(int device) {
+DeviceSummary selectCudaDevice(std::optional<int> requested_device) {
     int count{};
     checkCuda(cudaGetDeviceCount(&count), "cudaGetDeviceCount");
-    if (device < 0 || device >= count) {
-        throw std::runtime_error("Selected CUDA device index is not available");
+    std::vector<CudaDeviceInfo> devices;
+    devices.reserve(static_cast<std::size_t>(std::max(0, count)));
+    for (int index = 0; index < count; ++index) {
+        cudaDeviceProp properties{};
+        checkCuda(cudaGetDeviceProperties(&properties, index), "cudaGetDeviceProperties");
+        devices.push_back({index, properties.name, properties.major, properties.minor});
     }
+    const int device = selectCompatibleCudaDevice(devices, requested_device);
     cudaDeviceProp properties{};
     checkCuda(cudaGetDeviceProperties(&properties, device), "cudaGetDeviceProperties");
     checkCuda(cudaSetDevice(device), "cudaSetDevice");

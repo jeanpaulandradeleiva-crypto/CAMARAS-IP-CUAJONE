@@ -3,6 +3,7 @@
 #pragma once
 
 #include "cuajone/engine_reader.hpp"
+#include "cuajone/inference_session.hpp"
 #include "cuajone/yolo_decode.hpp"
 
 #include <NvInfer.h>
@@ -57,26 +58,24 @@ public:
     void log(Severity severity, const char* message) noexcept override;
 };
 
-struct InferenceOutput {
-    std::span<const float> values;
-    std::span<const std::int64_t> shape;
-};
-
-class TensorRtSession {
+class TensorRtSession final : public InferenceSession {
 public:
     TensorRtSession(const EngineFile& engine_file, std::optional<std::array<int, 2>> preferred_image_size);
 
     TensorRtSession(const TensorRtSession&) = delete;
     TensorRtSession& operator=(const TensorRtSession&) = delete;
 
-    [[nodiscard]] int inputWidth() const noexcept;
-    [[nodiscard]] int inputHeight() const noexcept;
-    [[nodiscard]] const std::vector<std::int64_t>& outputShape() const noexcept;
-    InferenceOutput infer(std::span<const float> nchw_input);
+    [[nodiscard]] int inputWidth() const noexcept override;
+    [[nodiscard]] int inputHeight() const noexcept override;
+    [[nodiscard]] const std::vector<std::int64_t>& outputShape() const noexcept override;
+    InferenceOutput infer(std::span<const float> nchw_input) override;
 
 private:
     static std::size_t elementSize(nvinfer1::DataType type);
-    static std::size_t volume(const nvinfer1::Dims& dimensions);
+    static std::size_t volume(
+        const nvinfer1::Dims& dimensions,
+        std::size_t maximum_elements,
+        std::string_view name);
 
     TensorRtLogger logger_;
     std::unique_ptr<nvinfer1::IRuntime> runtime_;
@@ -110,6 +109,6 @@ struct DeviceSummary {
     int compute_minor{};
 };
 
-DeviceSummary selectCudaDevice(int device);
+DeviceSummary selectCudaDevice(std::optional<int> device);
 
 }  // namespace cuajone

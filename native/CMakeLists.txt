@@ -4,16 +4,17 @@ cmake_minimum_required(VERSION 3.25)
 
 project(cuajone_native LANGUAGES CXX)
 
-option(CUAJONE_BUILD_RUNTIME "Build the Windows TensorRT runtime" ON)
+option(CUAJONE_BUILD_RUNTIME "Build the Windows native runtime" ON)
 option(CUAJONE_BUILD_TESTS "Build pure CPU unit tests" ON)
 option(CUAJONE_BUILD_PYTHON_BINDINGS "Build the development/QA pybind11 module" OFF)
+option(CUAJONE_ENABLE_TENSORRT "Enable the optional TensorRT/CUDA backend" ON)
 option(CUAJONE_ENABLE_TRT_INTEGRATION_TESTS "Build opt-in TensorRT integration tests" OFF)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
-if(CUAJONE_BUILD_RUNTIME)
+if(CUAJONE_BUILD_RUNTIME AND CUAJONE_ENABLE_TENSORRT)
     set(TENSORRT_ROOT "" CACHE PATH "TensorRT 11 C++ SDK root containing include/ and lib/")
     if(NOT TENSORRT_ROOT OR TENSORRT_ROOT STREQUAL "")
         message(FATAL_ERROR
@@ -22,6 +23,15 @@ if(CUAJONE_BUILD_RUNTIME)
 endif()
 
 find_package(OpenCV 4.8 REQUIRED COMPONENTS core imgproc)
+
+add_library(cuajone_compute
+    src/compute.cpp
+)
+target_include_directories(cuajone_compute PUBLIC include)
+target_compile_features(cuajone_compute PUBLIC cxx_std_20)
+if(WIN32)
+    target_link_libraries(cuajone_compute PRIVATE dxgi advapi32)
+endif()
 
 add_library(cuajone_contracts
     src/contracts.cpp
@@ -54,14 +64,14 @@ add_library(cuajone_core
     src/cli.cpp
 )
 target_include_directories(cuajone_core PUBLIC include)
-target_link_libraries(cuajone_core PUBLIC cuajone_contracts cuajone_analytics cuajone_inference)
+target_link_libraries(cuajone_core PUBLIC cuajone_contracts cuajone_analytics cuajone_inference cuajone_compute)
 target_compile_features(cuajone_core PUBLIC cxx_std_20)
 if(MSVC)
-    foreach(target cuajone_contracts cuajone_analytics cuajone_inference cuajone_core)
+    foreach(target cuajone_compute cuajone_contracts cuajone_analytics cuajone_inference cuajone_core)
         target_compile_options(${target} PRIVATE /W4 /permissive- /EHsc)
     endforeach()
 else()
-    foreach(target cuajone_contracts cuajone_analytics cuajone_inference cuajone_core)
+    foreach(target cuajone_compute cuajone_contracts cuajone_analytics cuajone_inference cuajone_core)
         target_compile_options(${target} PRIVATE -Wall -Wextra -Wpedantic)
     endforeach()
 endif()
@@ -117,89 +127,69 @@ if(CUAJONE_BUILD_RUNTIME)
         message(FATAL_ERROR "The native runtime requires the MSVC C++ toolchain")
     endif()
 
-    get_filename_component(TENSORRT_ROOT "${TENSORRT_ROOT}" ABSOLUTE)
-    unset(TENSORRT_INCLUDE_DIR CACHE)
-    unset(TENSORRT_NVINFER_LIBRARY CACHE)
-    find_path(TENSORRT_INCLUDE_DIR NvInfer.h
-        PATHS "${TENSORRT_ROOT}/include"
-        NO_DEFAULT_PATH)
-    if(NOT TENSORRT_INCLUDE_DIR)
-        message(FATAL_ERROR
-            "TensorRT 11 header NvInfer.h was not found under ${TENSORRT_ROOT}/include")
+    set(ONNXRUNTIME_ROOT "" CACHE PATH "ONNX Runtime 1.25.0 Windows x64 CPU package root")
+    if(NOT ONNXRUNTIME_ROOT)
+        message(FATAL_ERROR "ONNXRUNTIME_ROOT is required for the CPU inference backend")
     endif()
-    find_library(TENSORRT_NVINFER_LIBRARY NAMES nvinfer_11
-        PATHS "${TENSORRT_ROOT}/lib" "${TENSORRT_ROOT}/lib/x64"
-        NO_DEFAULT_PATH)
-    if(NOT TENSORRT_NVINFER_LIBRARY)
+    get_filename_component(ONNXRUNTIME_ROOT "${ONNXRUNTIME_ROOT}" ABSOLUTE)
+    if(NOT EXISTS "${ONNXRUNTIME_ROOT}/include/onnxruntime_cxx_api.h"
+        OR NOT EXISTS "${ONNXRUNTIME_ROOT}/lib/onnxruntime.lib"
+        OR NOT EXISTS "${ONNXRUNTIME_ROOT}/lib/onnxruntime.dll")
         message(FATAL_ERROR
-            "TensorRT 11 import library nvinfer_11 was not found under "
-            "${TENSORRT_ROOT}/lib or ${TENSORRT_ROOT}/lib/x64")
+            "ONNXRUNTIME_ROOT must contain ONNX Runtime 1.25.0 include/ and lib/ files")
     endif()
-    message(STATUS "TensorRT expectation: major version 11, nvinfer_11 only")
-    message(STATUS "TensorRT header: ${TENSORRT_INCLUDE_DIR}/NvInfer.h")
-    message(STATUS "TensorRT library: ${TENSORRT_NVINFER_LIBRARY}")
+    add_library(cuajone_onnxruntime SHARED IMPORTED)
+    set_target_properties(cuajone_onnxruntime PROPERTIES
+        IMPORTED_IMPLIB "${ONNXRUNTIME_ROOT}/lib/onnxruntime.lib"
+        IMPORTED_LOCATION "${ONNXRUNTIME_ROOT}/lib/onnxruntime.dll"
+        INTERFACE_INCLUDE_DIRECTORIES "${ONNXRUNTIME_ROOT}/include")
 
-    set(CUDA_RUNTIME_ROOT "" CACHE PATH
-        "Optional CUDA runtime-only root containing include/, lib/x64/, and bin/")
-    set(CUDA_COMPILER_HEADERS_ROOT "" CACHE PATH
-        "Optional split CUDA package root containing include/crt/")
-    set(CUDA_CCCL_HEADERS_ROOT "" CACHE PATH
-        "Optional split CUDA CCCL package root containing include/nv/target")
-    if(CUDA_RUNTIME_ROOT)
-        get_filename_component(CUDA_RUNTIME_ROOT "${CUDA_RUNTIME_ROOT}" ABSOLUTE)
-        unset(CUDA_RUNTIME_INCLUDE_DIR CACHE)
-        unset(CUDA_CUDART_LIBRARY CACHE)
-        unset(CUDA_CUDART_DLL CACHE)
-        find_path(CUDA_RUNTIME_INCLUDE_DIR cuda_runtime_api.h
-            PATHS "${CUDA_RUNTIME_ROOT}/include"
-            NO_DEFAULT_PATH)
-        find_library(CUDA_CUDART_LIBRARY NAMES cudart
-            PATHS "${CUDA_RUNTIME_ROOT}/lib/x64" "${CUDA_RUNTIME_ROOT}/lib"
-            NO_DEFAULT_PATH)
-        find_file(CUDA_CUDART_DLL NAMES cudart64_12.dll
-            PATHS "${CUDA_RUNTIME_ROOT}/bin"
-            NO_DEFAULT_PATH)
-        if(NOT CUDA_RUNTIME_INCLUDE_DIR OR NOT CUDA_CUDART_LIBRARY OR NOT CUDA_CUDART_DLL)
-            message(FATAL_ERROR
-                "CUDA_RUNTIME_ROOT must contain include/cuda_runtime_api.h, "
-                "lib/x64/cudart.lib, and bin/cudart64_12.dll")
+    if(CUAJONE_ENABLE_TENSORRT)
+        get_filename_component(TENSORRT_ROOT "${TENSORRT_ROOT}" ABSOLUTE)
+        unset(TENSORRT_INCLUDE_DIR CACHE)
+        unset(TENSORRT_NVINFER_LIBRARY CACHE)
+        find_path(TENSORRT_INCLUDE_DIR NvInfer.h PATHS "${TENSORRT_ROOT}/include" NO_DEFAULT_PATH)
+        find_library(TENSORRT_NVINFER_LIBRARY NAMES nvinfer_11
+            PATHS "${TENSORRT_ROOT}/lib" "${TENSORRT_ROOT}/lib/x64" NO_DEFAULT_PATH)
+        if(NOT TENSORRT_INCLUDE_DIR OR NOT TENSORRT_NVINFER_LIBRARY)
+            message(FATAL_ERROR "TensorRT 11 headers and nvinfer_11 import library are required")
         endif()
-        set(CUDA_RUNTIME_INCLUDE_DIRS "${CUDA_RUNTIME_INCLUDE_DIR}")
-        if(NOT EXISTS "${CUDA_RUNTIME_INCLUDE_DIR}/crt/host_defines.h")
-            get_filename_component(CUDA_COMPILER_HEADERS_ROOT
-                "${CUDA_COMPILER_HEADERS_ROOT}" ABSOLUTE)
-            if(NOT EXISTS "${CUDA_COMPILER_HEADERS_ROOT}/include/crt/host_defines.h")
-                message(FATAL_ERROR
-                    "CUDA runtime headers reference crt/host_defines.h; set "
-                    "CUDA_COMPILER_HEADERS_ROOT to the matching split NVIDIA package root")
+        set(CUDA_RUNTIME_ROOT "" CACHE PATH
+            "Optional CUDA runtime-only root containing include/, lib/x64/, and bin/")
+        set(CUDA_COMPILER_HEADERS_ROOT "" CACHE PATH "Optional split CUDA compiler headers root")
+        set(CUDA_CCCL_HEADERS_ROOT "" CACHE PATH "Optional split CUDA CCCL headers root")
+        if(CUDA_RUNTIME_ROOT)
+            get_filename_component(CUDA_RUNTIME_ROOT "${CUDA_RUNTIME_ROOT}" ABSOLUTE)
+            find_path(CUDA_RUNTIME_INCLUDE_DIR cuda_runtime_api.h PATHS "${CUDA_RUNTIME_ROOT}/include" NO_DEFAULT_PATH)
+            find_library(CUDA_CUDART_LIBRARY NAMES cudart PATHS "${CUDA_RUNTIME_ROOT}/lib/x64" NO_DEFAULT_PATH)
+            find_file(CUDA_CUDART_DLL NAMES cudart64_12.dll PATHS "${CUDA_RUNTIME_ROOT}/bin" NO_DEFAULT_PATH)
+            if(NOT CUDA_RUNTIME_INCLUDE_DIR OR NOT CUDA_CUDART_LIBRARY OR NOT CUDA_CUDART_DLL)
+                message(FATAL_ERROR "CUDA_RUNTIME_ROOT is incomplete")
             endif()
-            list(APPEND CUDA_RUNTIME_INCLUDE_DIRS
-                "${CUDA_COMPILER_HEADERS_ROOT}/include")
-            message(STATUS "CUDA compiler headers: ${CUDA_COMPILER_HEADERS_ROOT}/include")
-        endif()
-        if(NOT EXISTS "${CUDA_RUNTIME_INCLUDE_DIR}/nv/target"
+            set(CUDA_RUNTIME_INCLUDE_DIRS "${CUDA_RUNTIME_INCLUDE_DIR}")
+            if(NOT EXISTS "${CUDA_RUNTIME_INCLUDE_DIR}/crt/host_defines.h")
+                if(NOT EXISTS "${CUDA_COMPILER_HEADERS_ROOT}/include/crt/host_defines.h")
+                    message(FATAL_ERROR "CUDA_COMPILER_HEADERS_ROOT is required for split runtime headers")
+                endif()
+                list(APPEND CUDA_RUNTIME_INCLUDE_DIRS "${CUDA_COMPILER_HEADERS_ROOT}/include")
+            endif()
+            if(NOT EXISTS "${CUDA_RUNTIME_INCLUDE_DIR}/nv/target"
                 AND NOT EXISTS "${CUDA_COMPILER_HEADERS_ROOT}/include/nv/target")
-            get_filename_component(CUDA_CCCL_HEADERS_ROOT
-                "${CUDA_CCCL_HEADERS_ROOT}" ABSOLUTE)
-            if(NOT EXISTS "${CUDA_CCCL_HEADERS_ROOT}/include/nv/target")
-                message(FATAL_ERROR
-                    "CUDA runtime headers reference nv/target; set "
-                    "CUDA_CCCL_HEADERS_ROOT to the matching split NVIDIA package root")
+                if(NOT EXISTS "${CUDA_CCCL_HEADERS_ROOT}/include/nv/target")
+                    message(FATAL_ERROR "CUDA_CCCL_HEADERS_ROOT is required for split runtime headers")
+                endif()
+                list(APPEND CUDA_RUNTIME_INCLUDE_DIRS "${CUDA_CCCL_HEADERS_ROOT}/include")
             endif()
-            list(APPEND CUDA_RUNTIME_INCLUDE_DIRS "${CUDA_CCCL_HEADERS_ROOT}/include")
-            message(STATUS "CUDA CCCL headers: ${CUDA_CCCL_HEADERS_ROOT}/include")
+            add_library(cuajone_cuda_runtime SHARED IMPORTED)
+            set_target_properties(cuajone_cuda_runtime PROPERTIES
+                IMPORTED_IMPLIB "${CUDA_CUDART_LIBRARY}"
+                IMPORTED_LOCATION "${CUDA_CUDART_DLL}"
+                INTERFACE_INCLUDE_DIRECTORIES "${CUDA_RUNTIME_INCLUDE_DIRS}")
+            set(CUAJONE_CUDART_TARGET cuajone_cuda_runtime)
+        else()
+            find_package(CUDAToolkit 12 REQUIRED)
+            set(CUAJONE_CUDART_TARGET CUDA::cudart)
         endif()
-        add_library(cuajone_cuda_runtime SHARED IMPORTED)
-        set_target_properties(cuajone_cuda_runtime PROPERTIES
-            IMPORTED_IMPLIB "${CUDA_CUDART_LIBRARY}"
-            IMPORTED_LOCATION "${CUDA_CUDART_DLL}"
-            INTERFACE_INCLUDE_DIRECTORIES "${CUDA_RUNTIME_INCLUDE_DIRS}")
-        set(CUAJONE_CUDART_TARGET cuajone_cuda_runtime)
-        message(STATUS "CUDA runtime-only root: ${CUDA_RUNTIME_ROOT}")
-        message(STATUS "CUDA runtime library: ${CUDA_CUDART_LIBRARY}")
-    else()
-        find_package(CUDAToolkit 12 REQUIRED)
-        set(CUAJONE_CUDART_TARGET CUDA::cudart)
     endif()
     find_package(OpenCV 4.8 REQUIRED COMPONENTS core imgproc imgcodecs videoio highgui)
 
@@ -207,25 +197,78 @@ if(CUAJONE_BUILD_RUNTIME)
         src/capture.cpp
         src/engine_pipeline.cpp
         src/evidence.cpp
-        src/tensorrt_runtime.cpp
+        src/model_manifest.cpp
+        src/onnx_session.cpp
     )
-    target_include_directories(cuajone_runtime PUBLIC include "${TENSORRT_INCLUDE_DIR}")
+    target_include_directories(cuajone_runtime PUBLIC include)
     target_link_libraries(cuajone_runtime
         PUBLIC cuajone_core
-        PUBLIC ${CUAJONE_CUDART_TARGET}
-        PRIVATE "${TENSORRT_NVINFER_LIBRARY}"
+        PRIVATE cuajone_onnxruntime
+            bcrypt
             opencv_imgcodecs opencv_videoio opencv_highgui)
+    if(CUAJONE_ENABLE_TENSORRT)
+        target_sources(cuajone_runtime PRIVATE src/tensorrt_runtime.cpp)
+        target_include_directories(cuajone_runtime PRIVATE "${TENSORRT_INCLUDE_DIR}")
+        target_link_libraries(cuajone_runtime PUBLIC ${CUAJONE_CUDART_TARGET})
+        target_link_libraries(cuajone_runtime PRIVATE "${TENSORRT_NVINFER_LIBRARY}")
+        target_compile_definitions(cuajone_runtime PRIVATE CUAJONE_WITH_TENSORRT=1)
+    endif()
     target_compile_options(cuajone_runtime PRIVATE /W4 /permissive- /EHsc)
 
     if(TARGET cuajone_python)
         target_compile_definitions(cuajone_python PRIVATE CUAJONE_PYTHON_WITH_ENGINE_RUNTIME=1)
         target_link_libraries(cuajone_python PRIVATE cuajone_runtime)
+        add_custom_command(TARGET cuajone_python POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                $<TARGET_FILE:cuajone_onnxruntime>
+                $<TARGET_FILE_DIR:cuajone_python>)
+        if(CUAJONE_ENABLE_TENSORRT)
+            target_link_libraries(cuajone_python PRIVATE delayimp)
+            target_link_options(cuajone_python PRIVATE
+                "/DELAYLOAD:cudart64_12.dll"
+                "/DELAYLOAD:nvinfer_11.dll")
+        endif()
     endif()
 
     add_executable(cuajone_native src/main.cpp)
     target_link_libraries(cuajone_native PRIVATE cuajone_runtime)
+    add_custom_command(TARGET cuajone_native POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            $<TARGET_FILE:cuajone_onnxruntime>
+            $<TARGET_FILE_DIR:cuajone_native>)
+    if(CUAJONE_ENABLE_TENSORRT)
+        target_link_libraries(cuajone_native PRIVATE delayimp)
+        target_link_options(cuajone_native PRIVATE
+            "/DELAYLOAD:cudart64_12.dll"
+            "/DELAYLOAD:nvinfer_11.dll")
+    endif()
 
-    if(CUAJONE_ENABLE_TRT_INTEGRATION_TESTS)
+    add_library(cuajone_installer_ca SHARED
+        src/compute.cpp
+        src/installer_custom_action.cpp
+    )
+    target_include_directories(cuajone_installer_ca PRIVATE include)
+    target_link_libraries(cuajone_installer_ca PRIVATE dxgi advapi32 msi)
+    target_compile_options(cuajone_installer_ca PRIVATE /W4 /permissive- /EHsc)
+    set_target_properties(cuajone_installer_ca PROPERTIES
+        OUTPUT_NAME CuajoneHardwareProbeCA
+        MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+
+    if(CUAJONE_BUILD_TESTS)
+        add_executable(cuajone_onnx_tests tests/onnx_tests.cpp)
+        target_link_libraries(cuajone_onnx_tests PRIVATE cuajone_runtime)
+        target_compile_options(cuajone_onnx_tests PRIVATE /W4 /permissive- /EHsc)
+        add_custom_command(TARGET cuajone_onnx_tests POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                $<TARGET_FILE:cuajone_onnxruntime>
+                $<TARGET_FILE_DIR:cuajone_onnx_tests>)
+        add_test(NAME cuajone_onnx_tests COMMAND cuajone_onnx_tests)
+        set_tests_properties(cuajone_onnx_tests PROPERTIES
+            ENVIRONMENT_MODIFICATION
+                "PATH=path_list_prepend:$<TARGET_FILE_DIR:opencv_core>;PATH=path_list_prepend:${ONNXRUNTIME_ROOT}/lib")
+    endif()
+
+    if(CUAJONE_ENABLE_TRT_INTEGRATION_TESTS AND CUAJONE_ENABLE_TENSORRT)
         set(CUAJONE_TEST_ENGINE "" CACHE FILEPATH "Engine used by the opt-in TensorRT smoke test")
         if(NOT EXISTS "${CUAJONE_TEST_ENGINE}")
             message(FATAL_ERROR "CUAJONE_TEST_ENGINE must point to a compatible engine")

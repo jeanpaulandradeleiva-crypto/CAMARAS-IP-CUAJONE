@@ -160,11 +160,26 @@ ParsedRtspSource parseRtspSource(const std::string& source) {
 }
 
 void validate(RuntimeConfig& config) {
-    if (config.help) return;
-    if (config.source.empty() || config.ppe_engine.empty() || config.output.empty()
-        || (config.analytics_mode == AnalyticsMode::PpeFall && config.pose_engine.empty())) {
+    if (config.help || config.hardware_probe_json) return;
+    if (config.source.empty() || config.output.empty()) {
         throw std::invalid_argument(
-            "--source, --ppe-engine, and --output are required; --pose-engine is required in ppe-fall mode");
+            "--source and --output are required");
+    }
+    const bool gpu_models = !config.ppe_engine.empty()
+        && (config.analytics_mode == AnalyticsMode::PpeOnly || !config.pose_engine.empty());
+    const bool cpu_models = !config.ppe_onnx.empty()
+        && (config.analytics_mode == AnalyticsMode::PpeOnly || !config.pose_onnx.empty());
+    if (config.compute_backend == ComputeBackend::Cuda && !gpu_models) {
+        throw std::invalid_argument(
+            "CUDA mode requires --ppe-engine and --pose-engine in ppe-fall mode");
+    }
+    if (config.compute_backend == ComputeBackend::Cpu && !cpu_models) {
+        throw std::invalid_argument(
+            "CPU mode requires --ppe-onnx and --pose-onnx in ppe-fall mode");
+    }
+    if (config.compute_backend == ComputeBackend::Auto && !gpu_models && !cpu_models) {
+        throw std::invalid_argument(
+            "Auto mode requires a complete TensorRT engine pair, ONNX model pair, or both");
     }
     validateRtspSource(config.source);
     if (config.source_label.empty()) config.source_label = defaultSourceLabel(config.source);
@@ -178,7 +193,7 @@ void validate(RuntimeConfig& config) {
     ratio(config.nms_iou, "--nms-iou");
     ratio(config.tracker_iou, "--tracker-iou");
     ratio(config.ppe.present_ratio, "--ppe-present-ratio");
-    if (config.device < 0 || config.pose_class_count == 0 || config.max_det == 0
+    if ((config.device && *config.device < 0) || config.pose_class_count == 0 || config.max_det == 0
         || config.max_det > DecodeLimits{}.max_nms_candidates
         || config.tracker_max_age == 0 || config.tracker_max_tracks == 0
         || config.target_fps < 0.0 || config.reconnect_delay_seconds < 0.0
@@ -219,13 +234,20 @@ RuntimeConfig parseCommandLine(int argc, char** argv) {
         const std::string_view option = argv[index];
         if (option == "--help" || option == "-h") config.help = true;
         else if (option == "--preflight") config.preflight = true;
+        else if (option == "--hardware-probe-json") config.hardware_probe_json = true;
         else if (option == "--show") config.show_window = true;
         else if (option == "--allow-nonperson-pose-class") config.allow_nonperson_pose_class = true;
         else if (option == "--mode") config.analytics_mode = parseAnalyticsMode(requireValue(index, argc, argv, option));
         else if (option == "--source") config.source = requireValue(index, argc, argv, option);
         else if (option == "--source-label") config.source_label = requireValue(index, argc, argv, option);
+        else if (option == "--compute") {
+            config.compute_backend = parseComputeBackend(requireValue(index, argc, argv, option));
+            config.compute_explicit = true;
+        }
         else if (option == "--ppe-engine") config.ppe_engine = requireValue(index, argc, argv, option);
         else if (option == "--pose-engine") config.pose_engine = requireValue(index, argc, argv, option);
+        else if (option == "--ppe-onnx") config.ppe_onnx = requireValue(index, argc, argv, option);
+        else if (option == "--pose-onnx") config.pose_onnx = requireValue(index, argc, argv, option);
         else if (option == "--output") config.output = requireValue(index, argc, argv, option);
         else if (option == "--ppe-labels") config.ppe_labels = parseLabels(requireValue(index, argc, argv, option));
         else if (option == "--pose-class-count") config.pose_class_count = parseNumber<std::size_t>(requireValue(index, argc, argv, option), option);
@@ -265,17 +287,22 @@ RuntimeConfig parseCommandLine(int argc, char** argv) {
 
 void printHelp(std::ostream& output) {
     output <<
-        "Cuajone native TensorRT PPE and fall analytics\n\n"
+        "Cuajone native PPE and fall analytics\n\n"
         "Required:\n"
         "  --source <rtsp-or-file>       RTSP URL, video, or image\n"
-        "  --ppe-engine <file.engine>   PPE detection TensorRT engine\n"
-        "  --pose-engine <file.engine>  Pose TensorRT engine (required for ppe-fall)\n"
         "  --output <directory>         Evidence and append-only CSV directory\n\n"
+        "Compute and models:\n"
+        "  --compute <mode>             auto, cuda, or cpu (default: installed setting/auto)\n"
+        "  --ppe-engine <file.engine>   PPE TensorRT engine for CUDA\n"
+        "  --pose-engine <file.engine>  Pose TensorRT engine for CUDA ppe-fall\n"
+        "  --ppe-onnx <file.onnx>       PPE ONNX model for CPU\n"
+        "  --pose-onnx <file.onnx>      Pose ONNX model for CPU ppe-fall\n\n"
         "Diagnostics and identity:\n"
         "  --help                       Show this help without runtime startup\n"
+        "  --hardware-probe-json        Print stable NVIDIA/CUDA probe JSON and exit\n"
         "  --preflight                  Validate everything without opening the source\n"
         "  --mode <mode>                ppe-only or ppe-fall (default: ppe-fall)\n"
-        "  --device <index>             CUDA device index (default: 0)\n"
+        "  --device <index>             CUDA device index (default: first compatible)\n"
         "  --source-label <label>       Non-secret source label used in events\n"
         "  --ppe-labels <a,b,c>         Class labels for a raw engine without metadata\n"
         "  --pose-class-count <number>  Pose classes fallback (default: 1)\n"

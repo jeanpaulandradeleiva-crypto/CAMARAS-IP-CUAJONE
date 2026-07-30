@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
 #include "cuajone/preprocess.hpp"
+#include "cuajone/resource_limits.hpp"
 
 #include <opencv2/imgproc.hpp>
 
@@ -14,7 +15,15 @@ LetterboxPreprocessor::LetterboxPreprocessor(int model_width, int model_height)
     if (model_width <= 0 || model_height <= 0) {
         throw std::invalid_argument("Model dimensions must be positive");
     }
-    packed_.resize(static_cast<std::size_t>(3 * model_width * model_height));
+    if (model_width > resource_limits::kMaximumImageDimension
+        || model_height > resource_limits::kMaximumImageDimension) {
+        throw std::invalid_argument("Model dimensions exceed the supported image limit");
+    }
+    const std::size_t pixels = resource_limits::checkedMultiply(
+        static_cast<std::size_t>(model_width), static_cast<std::size_t>(model_height),
+        resource_limits::kMaximumInputElements, "Preprocessed image");
+    packed_.resize(resource_limits::checkedMultiply(
+        3, pixels, resource_limits::kMaximumInputElements, "Preprocessed input"));
 }
 
 PreprocessedFrame LetterboxPreprocessor::process(const cv::Mat& bgr_frame) {
@@ -33,11 +42,12 @@ PreprocessedFrame LetterboxPreprocessor::process(const cv::Mat& bgr_frame) {
     resized_.copyTo(canvas_(cv::Rect(
         transform.padding_left, transform.padding_top, resized_width, resized_height)));
 
-    const std::size_t plane = static_cast<std::size_t>(model_width_ * model_height_);
+    const std::size_t width = static_cast<std::size_t>(model_width_);
+    const std::size_t plane = width * static_cast<std::size_t>(model_height_);
     for (int y = 0; y < model_height_; ++y) {
         const auto* row = canvas_.ptr<cv::Vec3b>(y);
         for (int x = 0; x < model_width_; ++x) {
-            const std::size_t offset = static_cast<std::size_t>(y * model_width_ + x);
+            const std::size_t offset = static_cast<std::size_t>(y) * width + static_cast<std::size_t>(x);
             packed_[offset] = static_cast<float>(row[x][2]) / 255.0F;
             packed_[plane + offset] = static_cast<float>(row[x][1]) / 255.0F;
             packed_[2 * plane + offset] = static_cast<float>(row[x][0]) / 255.0F;

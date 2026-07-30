@@ -4,7 +4,6 @@
 #include "cuajone/cli.hpp"
 #include "cuajone/engine_pipeline.hpp"
 #include "cuajone/evidence.hpp"
-#include "cuajone/tensorrt_runtime.hpp"
 
 #include <opencv2/highgui.hpp>
 #include <opencv2/imgproc.hpp>
@@ -48,10 +47,13 @@ void validateSourceWithoutOpening(const std::string& source) {
     }
 }
 
-EnginePipelineConfig enginePipelineConfig(const RuntimeConfig& config) {
+EnginePipelineConfig enginePipelineConfig(const RuntimeConfig& config, ComputeBackend backend) {
     return {
+        backend,
         config.ppe_engine,
         config.pose_engine,
+        config.ppe_onnx,
+        config.pose_onnx,
         config.ppe_labels,
         config.pose_class_count,
         config.pose_keypoint_shape,
@@ -72,25 +74,39 @@ EnginePipelineConfig enginePipelineConfig(const RuntimeConfig& config) {
     };
 }
 
-std::unique_ptr<NativeEnginePipeline> runBasePreflight(const RuntimeConfig& config) {
+std::unique_ptr<NativeEnginePipeline> runBasePreflight(
+    const RuntimeConfig& config,
+    ComputeBackend backend) {
     validateSourceWithoutOpening(config.source);
     validateWritableOutput(config.output);
-    auto pipeline = std::make_unique<NativeEnginePipeline>(enginePipelineConfig(config));
+    auto pipeline = std::make_unique<NativeEnginePipeline>(enginePipelineConfig(config, backend));
     const auto& summary = pipeline->summary();
-    std::cout << "OpenCV: " << CV_VERSION << " | TensorRT headers: "
-              << NV_TENSORRT_MAJOR << '.' << NV_TENSORRT_MINOR << '\n';
-    std::cout << "CUDA device " << summary.device_index << ": " << summary.device_name
-              << " | SM " << summary.compute_major << '.' << summary.compute_minor
-              << " | devices: " << summary.device_count << '\n';
-    std::cout << "PPE engine: " << config.ppe_engine.string()
-              << " | metadata prefix: " << (summary.ppe_metadata_prefix ? "yes" : "no") << '\n';
-    if (summary.pose_loaded) {
-        std::cout << "Pose engine: " << config.pose_engine.string()
-                  << " | metadata prefix: " << (summary.pose_metadata_prefix ? "yes" : "no") << '\n';
+    std::cout << "OpenCV: " << CV_VERSION << " | provider: " << summary.provider << '\n';
+    if (backend == ComputeBackend::Cuda) {
+        std::cout << "CUDA device " << summary.device_index << ": " << summary.device_name
+                  << " | SM " << summary.compute_major << '.' << summary.compute_minor
+                  << " | devices: " << summary.device_count << '\n';
+        std::cout << "PPE engine: " << config.ppe_engine.string()
+                  << " | metadata prefix: " << (summary.ppe_metadata_prefix ? "yes" : "no") << '\n';
+        if (summary.pose_loaded) {
+            std::cout << "Pose engine: " << config.pose_engine.string()
+                      << " | metadata prefix: " << (summary.pose_metadata_prefix ? "yes" : "no") << '\n';
+        }
+    } else {
+        std::cout << "PPE ONNX: " << config.ppe_onnx.string() << '\n';
+        if (summary.pose_loaded) std::cout << "Pose ONNX: " << config.pose_onnx.string() << '\n';
     }
     std::cout << "Source: " << redactSource(config.source) << " | label: " << config.source_label << '\n';
     std::cout << "Output: " << config.output.string() << '\n';
     return pipeline;
+}
+
+bool modelSetAvailable(
+    const std::filesystem::path& ppe,
+    const std::filesystem::path& pose,
+    AnalyticsMode mode) {
+    return std::filesystem::is_regular_file(ppe)
+        && (mode == AnalyticsMode::PpeOnly || std::filesystem::is_regular_file(pose));
 }
 
 void drawPose(cv::Mat& frame, std::span<const Keypoint> keypoints, float threshold) {
@@ -230,14 +246,54 @@ int monitor(
 
 int main(int argc, char** argv) {
     try {
-        const RuntimeConfig config = parseCommandLine(argc, argv);
+        RuntimeConfig config = parseCommandLine(argc, argv);
         if (config.help) {
             printHelp(std::cout);
             return 0;
         }
+        if (config.hardware_probe_json) {
+            const HardwareProbeResult probe = probeHardware();
+            std::cout << hardwareProbeJson(probe) << '\n';
+            return hardwareProbeExitCode(probe.status);
+        }
+        if (!config.compute_explicit) {
+            if (const auto installed = installedComputeBackend()) config.compute_backend = *installed;
+        }
+        HardwareProbeStatus hardware_status = HardwareProbeStatus::NoNvidiaAdapter;
+        if (config.compute_backend != ComputeBackend::Cpu) {
+            const HardwareProbeResult probe = probeHardware();
+            hardware_status = probe.status;
+            std::cout << "Hardware probe: " << hardwareProbeStatusName(probe.status)
+                      << " | " << probe.detail << '\n';
+        }
+        const bool gpu_models = modelSetAvailable(
+            config.ppe_engine, config.pose_engine, config.analytics_mode);
+        const bool cpu_models = modelSetAvailable(
+            config.ppe_onnx, config.pose_onnx, config.analytics_mode);
+        const ComputeSelection selection = selectComputeBackend(config.compute_backend, {
+            hardware_status,
+            tensorRtBackendCompiled(),
+            gpu_models,
+            cpu_models,
+        });
+        std::cout << "Compute: " << computeBackendName(selection.backend)
+                  << " | " << selection.reason << '\n';
         std::signal(SIGINT, requestStop);
         std::signal(SIGTERM, requestStop);
-        std::unique_ptr<NativeEnginePipeline> pipeline = runBasePreflight(config);
+        std::unique_ptr<NativeEnginePipeline> pipeline;
+        ComputeBackend effective_backend = selection.backend;
+        try {
+            pipeline = runBasePreflight(config, effective_backend);
+        } catch (const std::exception& cuda_error) {
+            if (config.compute_backend != ComputeBackend::Auto
+                || effective_backend != ComputeBackend::Cuda
+                || !cpu_models) {
+                throw;
+            }
+            std::cerr << "Auto CUDA validation failed; selecting CPU: " << cuda_error.what() << '\n';
+            effective_backend = ComputeBackend::Cpu;
+            pipeline = runBasePreflight(config, effective_backend);
+        }
         std::cout << "Preflight: OK\n";
         if (config.preflight) return 0;
         return monitor(config, *pipeline);

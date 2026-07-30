@@ -3,6 +3,7 @@
 #pragma once
 
 #include "cuajone/fall_analytics.hpp"
+#include "cuajone/compute.hpp"
 #include "cuajone/ppe_analytics.hpp"
 
 #include <array>
@@ -20,17 +21,22 @@ struct RuntimeConfig {
     bool help{};
     bool preflight{};
     bool show_window{};
+    bool hardware_probe_json{};
+    bool compute_explicit{};
     bool allow_nonperson_pose_class{};
+    ComputeBackend compute_backend{ComputeBackend::Auto};
     AnalyticsMode analytics_mode{AnalyticsMode::PpeFall};
     std::string source;
     std::string source_label;
     std::filesystem::path ppe_engine;
     std::filesystem::path pose_engine;
+    std::filesystem::path ppe_onnx;
+    std::filesystem::path pose_onnx;
     std::filesystem::path output;
     std::optional<std::map<int, std::string>> ppe_labels;
     std::size_t pose_class_count{1};
     std::array<int, 2> pose_keypoint_shape{17, 3};
-    int device{};
+    std::optional<int> device;
     float ppe_confidence{0.30F};
     float pose_confidence{0.35F};
     float nms_iou{0.45F};
