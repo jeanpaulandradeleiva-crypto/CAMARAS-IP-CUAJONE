@@ -395,6 +395,11 @@ try {
         }).Count -ne 1) {
             throw "Invalid COMPUTE_MODE values are not rejected"
         }
+        if (@($launchConditions | Where-Object {
+            $_.Columns[0] -match 'VersionNT|WindowsBuild'
+        }).Count -ne 0) {
+            throw "MSI contains an unsupported Windows version launch restriction"
+        }
 
         $sequenceRows = Get-MsiRows $database 'SELECT `Action`, `Condition`, `Sequence` FROM `InstallExecuteSequence`' 3
         $sequenceActions = @($sequenceRows | ForEach-Object { $_.Columns[0] })

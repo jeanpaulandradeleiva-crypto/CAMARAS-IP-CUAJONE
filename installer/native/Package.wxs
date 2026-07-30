@@ -36,8 +36,6 @@
     <Property Id="ARPPRODUCTICON" Value="ProductIcon" />
     <Icon Id="ProductIcon" SourceFile="$(var.StageDir)\CuajonePPEMonitor.ico" />
 
-    <Launch Condition="Installed OR (VersionNT64 &gt;= 603 AND WindowsBuildNumber &gt;= 17763)"
-            Message="Cuajone PPE Monitor requires 64-bit Windows 10 version 1809 or later." />
     <Launch Condition="Installed OR COMPUTE_MODE=&quot;auto&quot; OR COMPUTE_MODE=&quot;cuda&quot; OR COMPUTE_MODE=&quot;cpu&quot;"
             Message="COMPUTE_MODE must be auto, cuda, or cpu." />
 
