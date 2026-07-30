@@ -85,19 +85,14 @@
         <Control Id="BottomLine" Type="Line" X="0" Y="234" Width="373" Height="0" />
         <Control Id="ProbeStatus" Type="Text" X="25" Y="58" Width="320" Height="18" NoPrefix="yes"
                  Text="NVIDIA/CUDA status: [NVIDIA_STATUS]" />
-        <Control Id="AutoMode" Type="PushButton" X="25" Y="88" Width="95" Height="28" Text="Auto (recommended)">
-          <Publish Property="COMPUTE_MODE" Value="auto" />
+        <Control Id="ComputeModeSelection" Type="RadioButtonGroup" X="25" Y="84" Width="320" Height="66"
+                 Property="COMPUTE_MODE">
+          <RadioButtonGroup Property="COMPUTE_MODE">
+            <RadioButton Value="auto" X="0" Y="0" Width="320" Height="17" Text="Auto (recommended)" />
+            <RadioButton Value="cuda" X="0" Y="22" Width="320" Height="17" Text="GPU (CUDA)" />
+            <RadioButton Value="cpu" X="0" Y="44" Width="320" Height="17" Text="CPU" />
+          </RadioButtonGroup>
         </Control>
-        <Control Id="CudaMode" Type="PushButton" X="137" Y="88" Width="95" Height="28" Text="GPU (CUDA)"
-                 DisableCondition="CUDA_READY&lt;&gt;&quot;1&quot;"
-                 EnableCondition="CUDA_READY=&quot;1&quot;">
-          <Publish Property="COMPUTE_MODE" Value="cuda" />
-        </Control>
-        <Control Id="CpuMode" Type="PushButton" X="249" Y="88" Width="95" Height="28" Text="CPU">
-          <Publish Property="COMPUTE_MODE" Value="cpu" />
-        </Control>
-        <Control Id="Selection" Type="Text" X="25" Y="132" Width="320" Height="18" NoPrefix="yes"
-                 Text="Selected mode: [COMPUTE_MODE]" />
         <Control Id="UnavailableWarning" Type="Text" X="25" Y="158" Width="320" Height="38" NoPrefix="yes"
                  ShowCondition="CUDA_READY&lt;&gt;&quot;1&quot;"
                  HideCondition="CUDA_READY=&quot;1&quot;"
@@ -140,28 +135,28 @@
     <ComponentGroup Id="RuntimeDataDirectories">
       <Component Id="RuntimeModelsDirectory" Directory="MODELSFOLDER" Guid="D35B10E0-97B1-4CB4-A638-8BD836FF77F5">
         <CreateFolder>
-          <util:PermissionEx User="S-1-5-32-545" GenericRead="yes" GenericWrite="yes" GenericExecute="yes"
+          <util:PermissionEx User="Users" GenericRead="yes" GenericWrite="yes" GenericExecute="yes"
                              CreateFile="yes" CreateChild="yes" Delete="yes" DeleteChild="yes"
                              ReadPermission="yes" Synchronize="yes" Traverse="yes" />
         </CreateFolder>
       </Component>
       <Component Id="RuntimeConfigDirectory" Directory="CONFIGFOLDER" Guid="0CE24DFA-B744-43D4-999C-4CB3886BE0A5">
         <CreateFolder>
-          <util:PermissionEx User="S-1-5-32-545" GenericRead="yes" GenericWrite="yes" GenericExecute="yes"
+          <util:PermissionEx User="Users" GenericRead="yes" GenericWrite="yes" GenericExecute="yes"
                              CreateFile="yes" CreateChild="yes" Delete="yes" DeleteChild="yes"
                              ReadPermission="yes" Synchronize="yes" Traverse="yes" />
         </CreateFolder>
       </Component>
       <Component Id="RuntimeOutputDirectory" Directory="OUTPUTFOLDER" Guid="9D3B7F4F-CB4F-4E95-AF35-7DA01CA06097">
         <CreateFolder>
-          <util:PermissionEx User="S-1-5-32-545" GenericRead="yes" GenericWrite="yes" GenericExecute="yes"
+          <util:PermissionEx User="Users" GenericRead="yes" GenericWrite="yes" GenericExecute="yes"
                              CreateFile="yes" CreateChild="yes" Delete="yes" DeleteChild="yes"
                              ReadPermission="yes" Synchronize="yes" Traverse="yes" />
         </CreateFolder>
       </Component>
       <Component Id="RuntimeLogsDirectory" Directory="LOGSFOLDER" Guid="8EF4EA77-F8B0-4AAE-A686-175C83C066D3">
         <CreateFolder>
-          <util:PermissionEx User="S-1-5-32-545" GenericRead="yes" GenericWrite="yes" GenericExecute="yes"
+          <util:PermissionEx User="Users" GenericRead="yes" GenericWrite="yes" GenericExecute="yes"
                              CreateFile="yes" CreateChild="yes" Delete="yes" DeleteChild="yes"
                              ReadPermission="yes" Synchronize="yes" Traverse="yes" />
         </CreateFolder>

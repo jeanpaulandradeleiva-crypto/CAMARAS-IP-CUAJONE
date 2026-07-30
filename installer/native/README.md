@@ -110,7 +110,7 @@ carpetas. Los binarios conservan los permisos endurecidos heredados de
 `Program Files`. La instalación crea accesos en el menú Inicio y se registra en
 Aplicaciones instaladas.
 
-La pantalla de cómputo ofrece Auto, GPU (CUDA) y CPU. GPU se deshabilita si DXGI y
+La pantalla de cómputo ofrece Auto, GPU (CUDA) y CPU. GPU se marca como no disponible si DXGI y
 la API del driver CUDA 12.9 (`12090`) no están listos o ningún dispositivo alcanza
 SM 7.5. El MSI repite el gate en la secuencia de
 ejecución para cubrir `/qn`; `COMPUTE_MODE=cuda` falla cerrado. Auto/CPU no instalan

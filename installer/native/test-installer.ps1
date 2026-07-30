@@ -322,7 +322,7 @@ try {
             "AppSearch", "Binary", "Component", "Control", "ControlCondition", "ControlEvent",
             "CustomAction", "Dialog", "Directory", "Feature", "FeatureComponents", "File",
             "InstallExecuteSequence", "InstallUISequence", "Media", "Property", "RegLocator",
-            "Registry", "Shortcut", "Upgrade"
+            "RadioButton", "Registry", "Shortcut", "Upgrade", "Wix4SecureObject"
         )
         foreach ($table in $requiredTables) {
             if ($tables -notcontains $table) {
@@ -381,6 +381,12 @@ try {
                 throw "Mutable runtime directory is missing from ProgramData: $directoryId"
             }
         }
+        $secureObjectRows = Get-MsiRows $database 'SELECT `Domain`, `User`, `Component_` FROM `Wix4SecureObject`' 3
+        if ($secureObjectRows.Count -ne 4 -or @($secureObjectRows | Where-Object {
+            -not [string]::IsNullOrEmpty($_.Columns[0]) -or $_.Columns[1] -cne "Users"
+        }).Count -ne 0) {
+            throw "Runtime directory permissions do not use the locale-independent WiX Users account"
+        }
 
         $upgradeRows = Get-MsiRows $database 'SELECT `UpgradeCode`, `VersionMin`, `VersionMax`, `Attributes`, `ActionProperty` FROM `Upgrade`' 5
         if (@($upgradeRows | Where-Object { $_.Columns[0] -in @($upgradeCode, "{$upgradeCode}") }).Count -lt 2) {
@@ -431,27 +437,30 @@ try {
             throw "Compute selection dialog is missing"
         }
         $controlRows = Get-MsiRows $database 'SELECT `Dialog_`, `Control`, `Type`, `Property`, `Text` FROM `Control`' 5
-        foreach ($control in @("AutoMode", "CudaMode", "CpuMode", "ProbeStatus")) {
+        foreach ($control in @("ComputeModeSelection", "ProbeStatus")) {
             if (@($controlRows | Where-Object {
                 $_.Columns[0] -ceq "ComputeDlg" -and $_.Columns[1] -ceq $control
             }).Count -ne 1) {
                 throw "Compute dialog control is missing: $control"
             }
         }
-        $controlConditionRows = Get-MsiRows $database 'SELECT `Dialog_`, `Control_`, `Action`, `Condition` FROM `ControlCondition`' 4
-        if (@($controlConditionRows | Where-Object {
-            $_.Columns[0] -ceq "ComputeDlg" -and $_.Columns[1] -ceq "CudaMode" -and
-            $_.Columns[2] -ceq "Disable" -and $_.Columns[3] -match 'CUDA_READY'
-        }).Count -ne 1) {
-            throw "GPU selection is not disabled when CUDA is unavailable"
+        $computeModeControl = @($controlRows | Where-Object {
+            $_.Columns[0] -ceq "ComputeDlg" -and $_.Columns[1] -ceq "ComputeModeSelection"
+        })
+        if ($computeModeControl.Count -ne 1 -or $computeModeControl[0].Columns[2] -cne "RadioButtonGroup" -or
+            $computeModeControl[0].Columns[3] -cne "COMPUTE_MODE") {
+            throw "Compute mode is not represented by a property-bound radio button group"
         }
-        $controlEventRows = Get-MsiRows $database 'SELECT `Dialog_`, `Control_`, `Event`, `Argument`, `Condition`, `Ordering` FROM `ControlEvent`' 6
+        $radioButtonRows = Get-MsiRows $database 'SELECT `Property`, `Value`, `Text` FROM `RadioButton`' 3
+        $computeModeRadioRows = @($radioButtonRows | Where-Object { $_.Columns[0] -ceq "COMPUTE_MODE" })
+        if ($computeModeRadioRows.Count -ne 3) {
+            throw "Compute mode radio button group does not contain exactly three choices"
+        }
         foreach ($mode in @("auto", "cuda", "cpu")) {
-            if (@($controlEventRows | Where-Object {
-                $_.Columns[0] -ceq "ComputeDlg" -and $_.Columns[2] -ceq "[COMPUTE_MODE]" -and
-                $_.Columns[3] -ceq $mode
+            if (@($computeModeRadioRows | Where-Object {
+                $_.Columns[1] -ceq $mode
             }).Count -ne 1) {
-                throw "Compute dialog does not publish mode: $mode"
+                throw "Compute dialog does not expose radio choice: $mode"
             }
         }
 
@@ -490,9 +499,9 @@ try {
             @($secureObjectRows | Where-Object {
                 $_.Columns[0] -notin $expectedSecureObjects -or
                 $_.Columns[1] -cne "CreateFolder" -or
-                $_.Columns[2] -cne "S-1-5-32-545"
+                $_.Columns[2] -cne "Users"
             }).Count -ne 0) {
-            throw "Runtime ACL rows do not grant the approved Users SID on the four data directories"
+            throw "Runtime ACL rows do not grant the locale-independent Users account on the four data directories"
         }
         $customActionRows = Get-MsiRows $database 'SELECT `Action`, `Type`, `Source`, `Target` FROM `CustomAction`' 4
         $approvedCustomActions = @(

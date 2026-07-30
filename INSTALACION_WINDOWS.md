@@ -21,7 +21,7 @@ PowerShell ni escribir comandos.
 4. Elige cómo procesará la aplicación:
 
    - **Auto (recomendado):** usa GPU NVIDIA si está lista; en caso contrario usa CPU.
-   - **GPU (CUDA):** solo se habilita si se detectan GPU compatible y driver suficientemente reciente.
+   - **GPU (CUDA):** requiere GPU compatible y driver suficientemente reciente; la instalación se detiene si no están listos.
    - **CPU:** no requiere GPU NVIDIA.
 
    El instalador no descarga, instala ni cambia drivers.
@@ -61,7 +61,7 @@ cámaras.
 | Windows no confía en el instalador | No cambies la seguridad del equipo. Contacta a TI. |
 | La instalación falla | Pide a TI que genere el registro MSI y envíaselo. |
 | La aplicación abre, pero no aparece una cámara | La cámara todavía debe configurarse. Es un paso posterior a la instalación. |
-| GPU aparece deshabilitado | Elige Auto o CPU y pide a TI revisar hardware/driver por separado. No instales drivers desde el MSI. |
+| GPU aparece como no disponible | Elige Auto o CPU y pide a TI revisar hardware/driver por separado. No instales drivers desde el MSI. |
 
 ## Para TI
 
