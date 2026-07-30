@@ -11,15 +11,16 @@ la [guía simple de instalación](../../INSTALACION_WINDOWS.md).
 2. Prepara la confianza privada del piloto, si corresponde.
 3. Verifica los hashes, los certificados y la firma antes de instalar.
 4. Instala con interfaz o en modo silencioso y conserva el registro MSI.
-5. Comprueba únicamente la ayuda de comandos, sin abrir cámaras.
+5. Comprueba que el iniciador gráfico abre, sin configurar cámaras ni modelos.
 6. Usa Windows Installer para reparar, actualizar, desinstalar o volver a una
    versión anterior.
 
 ## 1. Confirmar el alcance
 
-El MSI está construido con WiX Toolset. Instala el ejecutable propio, las DLL
-runtime demostradas, licencias, avisos, hashes y procedencia. No incluye engines,
-modelos, credenciales, SDK, configuración de cámaras ni datos operativos.
+El MSI está construido con WiX Toolset. Instala el iniciador gráfico
+`cuajone_launcher.exe`, el runtime de consola `cuajone_native.exe`, las DLL runtime
+demostradas, licencias, avisos, hashes y procedencia. No incluye engines, modelos,
+credenciales, SDK, configuración de cámaras ni datos operativos.
 
 También falla cerrado si staging o extracción contienen Python, `.py`, `.pyc`,
 `.pyd`, runtime Python, PyTorch, Ultralytics, CVAT, Supervision, datasets, fixtures,
@@ -31,9 +32,10 @@ los datos mutables permanecen bajo `C:\ProgramData\Cuajone PPE Monitor`, separad
 de los binarios instalados. El piloto actual tiene alcance limitado; no se afirma
 soporte runtime para varias cámaras.
 
-> Alcance validado: base MSI, extracción administrativa, carga del ejecutable,
-> `--help` y probe de hardware. No se ejecutaron instalación real, cámaras, inferencia, engines ni
-> `--preflight` en el host de desarrollo.
+> Alcance validado: base MSI, extracción administrativa, subsistemas PE del
+> iniciador/runtime, carga del runtime, `--help` y probe de hardware. No se ejecutaron
+> instalación real, iniciador, cámaras, inferencia, engines ni `--preflight` en el
+> host de desarrollo.
 
 ## 2. Preparar la confianza privada del piloto
 
@@ -107,8 +109,8 @@ C:\ProgramData\Cuajone PPE Monitor\runtime\logs
 
 Los usuarios estándar reciben permisos de modificación solo en esas cuatro
 carpetas. Los binarios conservan los permisos endurecidos heredados de
-`Program Files`. La instalación crea accesos en el menú Inicio y se registra en
-Aplicaciones instaladas.
+`Program Files`. La instalación crea el acceso principal **Cuajone PPE Monitor**
+para el iniciador y conserva **Command Help** y **README** en el menú Inicio.
 
 La pantalla de cómputo ofrece Auto, GPU (CUDA) y CPU. GPU se marca como no disponible si DXGI y
 la API del driver CUDA 12.9 (`12090`) no están listos o ningún dispositivo alcanza
@@ -140,9 +142,10 @@ falla, entrega el archivo indicado por `/L*V` al equipo responsable.
 
 ## 5. Comprobar sin cámara
 
-Desde el menú Inicio, abre **Cuajone PPE Monitor - Command Help**. La prueba es
-correcta si aparece la ayuda sin un error. Este acceso ejecuta únicamente
-`--help`: no abre cámaras, no carga engines y no inicia inferencia.
+Desde el menú Inicio, abre **Cuajone PPE Monitor**. La prueba operativa es correcta
+si aparece el formulario; ciérralo sin completar una fuente ni seleccionar
+modelos. El acceso **Cuajone PPE Monitor - Command Help** se conserva para soporte
+avanzado y ejecuta únicamente `--help`.
 
 No uses `--preflight` como comprobación básica, porque selecciona CUDA y puede
 deserializar engines.
@@ -206,8 +209,10 @@ recibo vence después de siete días. Un recibo sintético no atraviesa ese gate
 
 El MSI, su `.sha256`, staging, SBOM SPDX 2.3, temporales y evidencia quedan bajo
 `D:\DevTools\CuajoneNative\installer`. El script firma primero
-`cuajone_native.exe` y `CuajoneHardwareProbeCA.dll`, construye/firma el MSI y realiza extracción
-administrativa en D. Nunca vuelve a firmar DLL de terceros.
+`cuajone_native.exe`, `cuajone_launcher.exe` y `CuajoneHardwareProbeCA.dll`,
+construye/firma el MSI y realiza extracción administrativa en D. Ambos ejecutables
+son raíces independientes del recorrido de imports PE. Nunca vuelve a firmar DLL
+de terceros.
 
 Antes de construir, los MSI/sidecars anteriores se mueven desde `output` a un
 subdirectorio fechado de `installer\superseded`. Al terminar, `output` debe contener
@@ -216,9 +221,10 @@ ese conjunto y el contenido del sidecar.
 
 ## 8. Controlar la firma
 
-`sign-release.ps1` acepta únicamente el `.exe` propio, el custom action propio y archivos `.msi`. Usa
-SignTool con digest SHA-256, timestamp RFC 3161 y verificación Authenticode. No
-acepta PFX, contraseñas ni claves exportadas.
+`sign-release.ps1` acepta únicamente `cuajone_launcher.exe`,
+`cuajone_native.exe`, `CuajoneHardwareProbeCA.dll` y archivos `.msi`. Usa SignTool
+con digest SHA-256, timestamp RFC 3161 y verificación Authenticode. No acepta PFX,
+contraseñas ni claves exportadas.
 
 El opt-in `CUAJONE_ALLOW_INTERNAL_PILOT_TRUST=1` solo funciona con
 `-BuildMode Preview`. La verificación admite únicamente `UntrustedRoot` en una
@@ -261,8 +267,9 @@ determinista por ruta staged; ese archivo no se versiona.
 4. Extracción administrativa con `msiexec /a` hacia D.
 5. Comparación SHA-256 de todo el payload contra staging y de cada archivo copiado
    contra su fuente actual del repositorio, build o toolchain.
-6. Verificación de firma del MSI y del `.exe` propio, seguida por `--help` y el
-   probe JSON sin modelos.
+6. Verificación de firma de MSI, launcher y runtime; confirmación de subsistema GUI
+   para el launcher y consola para el runtime; luego `--help` y probe JSON sin
+   modelos.
 7. Rechazo de cualquier artefacto Python/QA mediante la política compartida
    `payload-policy.ps1`.
 

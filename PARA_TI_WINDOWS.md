@@ -1,13 +1,13 @@
 # Para TI: piloto Windows en cinco pasos
 
 Esta guía permite verificar, instalar y retirar el piloto sin abrir cámaras ni
-cargar engines. La [guía de usuario](INSTALACION_WINDOWS.md) sigue siendo la ruta
-para quien solo necesita instalar y comprobar la ayuda.
+cargar modelos. La [guía de usuario](INSTALACION_WINDOWS.md) sigue siendo la ruta
+para quien necesita abrir el iniciador gráfico y configurar una ejecución.
 
 ## Primera pantalla
 
 **Propósito:** preparar una VM Windows enrolada, verificar el paquete aprobado,
-instalarlo con registro, elegir cómputo y comprobar `--help`/probe sin modelos.
+instalarlo con registro, elegir cómputo y comprobar el iniciador sin modelos.
 
 **Archivos que recibe TI:**
 
@@ -23,11 +23,12 @@ instalarlo con registro, elegir cómputo y comprobar `--help`/probe sin modelos.
 2. Compara SHA-256, huellas y firma antes de modificar confianza.
 3. Valida y enrola los certificados públicos con autorización explícita.
 4. Instala el MSI con interfaz o en silencio y guarda `/L*V`.
-5. Abre **Cuajone PPE Monitor - Command Help** y archiva la evidencia.
+5. Abre **Cuajone PPE Monitor**, confirma que aparece el formulario y ciérralo sin
+   completar una fuente ni cargar modelos.
 
-**Resultado esperado:** el producto aparece en Aplicaciones instaladas y `--help`
-abre sin error. Esta aceptación no configura cámaras, no ejecuta RTSP, no carga
-engines y no inicia inferencia.
+**Resultado esperado:** el producto aparece en Aplicaciones instaladas y el
+iniciador gráfico abre sin error. Esta aceptación no configura cámaras, no ejecuta
+RTSP, no carga modelos y no inicia inferencia.
 
 ## Versiones y alcance
 
@@ -38,8 +39,9 @@ engines y no inicia inferencia.
 | Builds desde fuente | Flujo de ingeniería futuro; requiere firma, revisión y sus propios gates. |
 
 El MSI no instala Python, PyTorch, Ultralytics, CVAT, Supervision, `cuajone_qa`, el
-binding `.pyd`, fixtures, modelos, engines ni recibos de paridad. Esos componentes
-son exclusivamente de desarrollo y QA.
+binding `.pyd`, fixtures, modelos, engines ni recibos de paridad. Los modelos y
+engines operativos son artefactos externos aprobados; los demás componentes son
+exclusivamente de desarrollo y QA.
 
 ## Verificar SHA y firma
 
@@ -142,11 +144,26 @@ Conserva el archivo indicado por `/L*V`, el hash del MSI, la salida de firma y l
 versión de Windows. La comprobación aceptada es:
 
 1. Confirma el producto en Aplicaciones instaladas.
-2. Abre **Cuajone PPE Monitor - Command Help**.
-3. Confirma que aparece la ayuda sin error.
-4. Cierra la ventana.
+2. Abre **Cuajone PPE Monitor** desde Inicio.
+3. Confirma que el formulario permite elegir fuente, análisis, cómputo, modelos
+   externos, salida y visualización.
+4. Cierra el iniciador sin completar credenciales, abrir la fuente o cargar modelos.
 
-No uses `--preflight` como smoke test: puede seleccionar CUDA y deserializar engines.
+No uses `--preflight` como smoke test: puede seleccionar CUDA y deserializar
+engines. **Cuajone PPE Monitor - Command Help** y `cuajone_native.exe` quedan para
+diagnóstico o automatización avanzada, no como ruta normal del operador.
+
+## CLI avanzado
+
+El runtime de consola permanece instalado en
+`<CARPETA_INSTALACION>\bin\cuajone_native.exe`. Úsalo solo cuando un procedimiento
+de soporte requiera opciones explícitas, `--help`, el probe JSON o automatización.
+No entregues al usuario normal una línea de comandos con credenciales RTSP.
+
+Los modelos siguen fuera del MSI. GPU usa engines TensorRT aprobados; CPU usa
+modelos ONNX aprobados con sus manifests adyacentes. Conserva hashes, procedencia y
+autorización junto con la evidencia de despliegue, pero no copies modelos al
+directorio de binarios.
 
 ## Reparar, actualizar y desinstalar
 
@@ -161,7 +178,7 @@ Un downgrade directo se bloquea. Para rollback:
 1. Respalda datos mutables solo si el propietario los requiere y autoriza.
 2. Desinstala la versión actual.
 3. Verifica el MSI anterior aprobado con sus propios hashes y firma.
-4. Instálalo y repite la aceptación `--help`.
+4. Instálalo y repite la aceptación del iniciador gráfico.
 
 Windows Installer conserva carpetas mutables que todavía contienen datos.
 
@@ -173,7 +190,7 @@ Windows Installer conserva carpetas mutables que todavía contienen datos.
 | Firma no válida o sin timestamp | No instalar; entregar hash y salida de verificación a seguridad. |
 | Acceso denegado al enrolar | Confirmar PowerShell elevado y autorización; no relajar políticas. |
 | Error `msiexec` | Conservar el log `/L*V` y buscar `Return value 3` con su contexto. |
-| `--help` no abre | Registrar el error, versión del SO y controles activos; no ejecutar `--preflight`. |
+| El iniciador no abre | Registrar el error, versión del SO y controles activos; comprobar firma de `cuajone_launcher.exe` y no ejecutar `--preflight`. |
 | Alerta de EDR/Defender | Enviar hash, firma y log al proceso de seguridad; no desactivar ni excluir carpetas. |
 
 ## Entrega a seguridad
@@ -189,7 +206,7 @@ Windows Installer conserva carpetas mutables que todavía contienen datos.
 - [ ] VM autorizada con controles corporativos activos.
 - [ ] Enrolamiento limitado a la raíz y hoja públicas del piloto.
 - [ ] Instalación registrada con `/L*V` y ruta esperada.
-- [ ] `--help` abrió sin cámaras, engines ni inferencia.
+- [ ] El iniciador abrió y cerró sin cámaras, modelos ni inferencia.
 - [ ] Reparación, upgrade, desinstalación y rollback tienen responsable asignado.
 
 Para construcción, firma, tablas MSI, toolchain y validación administrativa, usa la

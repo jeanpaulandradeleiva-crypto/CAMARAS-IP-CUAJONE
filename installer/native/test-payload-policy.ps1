@@ -19,6 +19,7 @@ if (Test-Path -LiteralPath $TestRoot) {
 New-Item -ItemType Directory -Path $TestRoot | Out-Null
 try {
     $allowedPaths = @(
+        "bin\cuajone_launcher.exe",
         "bin\cuajone_native.exe",
         "bin\opencv_world4120.dll",
         "docs\README.md",
@@ -36,6 +37,7 @@ try {
     }
     Assert-NoForbiddenPayloadFiles $TestRoot "policy test"
     $forbiddenPaths = @(
+        "bin\unexpected_tool.exe",
         "cuajone_native.pyd",
         "python312.dll",
         "python311.dll",

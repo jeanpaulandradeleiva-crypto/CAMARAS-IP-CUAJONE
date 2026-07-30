@@ -59,6 +59,36 @@ function Get-FileHashWithRetry([string]$Path) {
     throw "Timed out waiting for administrative extraction to release: $Path"
 }
 
+function Get-PeSubsystem([string]$Path) {
+    Assert-File $Path "PE file"
+    $stream = [System.IO.File]::OpenRead($Path)
+    $reader = [System.IO.BinaryReader]::new($stream)
+    try {
+        if ($stream.Length -lt 64 -or $reader.ReadUInt16() -ne 0x5A4D) {
+            throw "File does not contain a valid DOS header: $Path"
+        }
+        $stream.Position = 0x3C
+        $peOffset = [long]$reader.ReadUInt32()
+        if ($peOffset -lt 64 -or $peOffset + 94 -gt $stream.Length) {
+            throw "File contains an invalid PE header offset: $Path"
+        }
+        $stream.Position = $peOffset
+        if ($reader.ReadUInt32() -ne 0x00004550) {
+            throw "File does not contain a valid PE signature: $Path"
+        }
+        $stream.Position = $peOffset + 24
+        $magic = $reader.ReadUInt16()
+        if ($magic -notin @(0x010B, 0x020B)) {
+            throw "File contains an unsupported PE optional header: $Path"
+        }
+        $stream.Position = $peOffset + 24 + 68
+        $reader.ReadUInt16()
+    } finally {
+        $reader.Dispose()
+        $stream.Dispose()
+    }
+}
+
 function Get-MsiRows([object]$Database, [string]$Query, [int]$ColumnCount) {
     $view = $Database.OpenView($Query)
     try {
@@ -132,6 +162,10 @@ if ($sidecarLine -cne $expectedSidecar) {
 
 $stageMetadataPath = Join-Path $stage "build-metadata.json"
 Assert-File $stageMetadataPath "Staged build metadata"
+$stagedLauncher = Join-Path $stage "bin\cuajone_launcher.exe"
+$stagedRuntime = Join-Path $stage "bin\cuajone_native.exe"
+Assert-File $stagedLauncher "Staged launcher executable"
+Assert-File $stagedRuntime "Staged runtime executable"
 $stageMetadata = Get-Content -LiteralPath $stageMetadataPath -Raw | ConvertFrom-Json
 if ($stageMetadata.stagingProvenanceVersion -ne 1 -or $stageMetadata.sourceProvenance.Count -lt 1) {
     throw "Staged build metadata does not contain supported source provenance"
@@ -140,6 +174,19 @@ if ($stageMetadata.onnxRuntime.version -cne "1.25.0" -or
     $stageMetadata.onnxRuntime.assetSha256 -cne "da753f762bf2400e7191ec594086b186a7051d5af8dc886f6e2020c2403df738" -or
     $stageMetadata.onnxRuntime.executionProvider -cne "CPUExecutionProvider") {
     throw "Staged build metadata does not pin the approved ONNX Runtime CPU package"
+}
+if ((Split-Path -Leaf $stageMetadata.launcherExecutable) -cne "cuajone_launcher.exe" -or
+    $stageMetadata.launcherExecutableSha256 -cne (Get-FileHash -Algorithm SHA256 -LiteralPath $stagedLauncher).Hash.ToLowerInvariant() -or
+    (Split-Path -Leaf $stageMetadata.releaseExecutable) -cne "cuajone_native.exe" -or
+    $stageMetadata.releaseExecutableSha256 -cne (Get-FileHash -Algorithm SHA256 -LiteralPath $stagedRuntime).Hash.ToLowerInvariant()) {
+    throw "Staged build metadata does not identify both owned executables and their hashes"
+}
+foreach ($ownedExecutableName in @("cuajone_launcher.exe", "cuajone_native.exe")) {
+    if (@($stageMetadata.stagedBinaries | Where-Object {
+        $_.name -ceq $ownedExecutableName
+    }).Count -ne 1) {
+        throw "Staged build metadata does not contain exactly one owned executable root: $ownedExecutableName"
+    }
 }
 if ($stageMetadata.runtimeSecurityPolicy.hardwareProbeSchemaVersion -ne 2 -or
     $stageMetadata.runtimeSecurityPolicy.minimumCudaDriverApiVersion -ne 12090 -or
@@ -464,14 +511,51 @@ try {
             }
         }
 
-        $shortcutRows = Get-MsiRows $database 'SELECT `Shortcut`, `Directory_`, `Name`, `Target`, `Arguments` FROM `Shortcut`' 5
-        if (@($shortcutRows | Where-Object { $_.Columns[1] -ceq "ProgramMenuAppFolder" }).Count -lt 2) {
+        $shortcutRows = Get-MsiRows $database 'SELECT `Shortcut`, `Directory_`, `Name`, `Component_`, `Target`, `Arguments` FROM `Shortcut`' 6
+        if (@($shortcutRows | Where-Object { $_.Columns[1] -ceq "ProgramMenuAppFolder" }).Count -lt 3) {
             throw "Expected Start-menu shortcuts are missing"
         }
-        if (@($shortcutRows | Where-Object {
-            $_.Columns[0] -ceq "CommandHelpShortcut" -and $_.Columns[4] -match '--help'
-        }).Count -ne 1) {
+        $launcherShortcut = @($shortcutRows | Where-Object {
+            $_.Columns[0] -ceq "LauncherShortcut" -and
+            ($_.Columns[2] -split '\|')[-1] -ceq "Cuajone PPE Monitor" -and
+            [string]::IsNullOrEmpty($_.Columns[5])
+        })
+        if ($launcherShortcut.Count -ne 1) {
+            throw "Primary graphical launcher shortcut is missing or has unexpected arguments"
+        }
+        $helpShortcut = @($shortcutRows | Where-Object {
+            $_.Columns[0] -ceq "CommandHelpShortcut" -and $_.Columns[5] -match '--help'
+        })
+        if ($helpShortcut.Count -ne 1) {
             throw "Command Help shortcut does not declare --help"
+        }
+        $readmeShortcut = @($shortcutRows | Where-Object {
+            $_.Columns[0] -ceq "ReadmeShortcut" -and
+            ($_.Columns[2] -split '\|')[-1] -ceq "Cuajone PPE Monitor - README"
+        })
+        if ($readmeShortcut.Count -ne 1) {
+            throw "README shortcut is missing"
+        }
+
+        $fileRows = Get-MsiRows $database 'SELECT `File`, `Component_`, `FileName` FROM `File`' 3
+        foreach ($requiredExecutable in @("cuajone_launcher.exe", "cuajone_native.exe")) {
+            if (@($fileRows | Where-Object {
+                ($_.Columns[2] -split '\|')[-1] -ceq $requiredExecutable
+            }).Count -ne 1) {
+                throw "Owned executable payload is missing or duplicated: $requiredExecutable"
+            }
+        }
+        $launcherFile = @($fileRows | Where-Object { $_.Columns[0] -ceq "LauncherExecutable" })
+        $runtimeFile = @($fileRows | Where-Object { $_.Columns[0] -ceq "RuntimeExecutable" })
+        $readmeFile = @($fileRows | Where-Object { $_.Columns[0] -ceq "DeploymentReadme" })
+        if ($launcherFile.Count -ne 1 -or $launcherShortcut[0].Columns[3] -cne $launcherFile[0].Columns[1]) {
+            throw "Primary shortcut is not bound to the launcher executable component"
+        }
+        if ($runtimeFile.Count -ne 1 -or $helpShortcut[0].Columns[3] -cne $runtimeFile[0].Columns[1]) {
+            throw "Command Help shortcut is not bound to the runtime executable component"
+        }
+        if ($readmeFile.Count -ne 1 -or $readmeShortcut[0].Columns[3] -cne $readmeFile[0].Columns[1]) {
+            throw "README shortcut is not bound to the deployment README component"
         }
 
         $componentRows = Get-MsiRows $database 'SELECT `Component`, `ComponentId`, `Directory_`, `Attributes`, `KeyPath` FROM `Component`' 5
@@ -608,22 +692,35 @@ try {
         }
     }
 
+    $launcher = Join-Path $extractApp "bin\cuajone_launcher.exe"
     $executable = Join-Path $extractApp "bin\cuajone_native.exe"
-    if ($ExpectedSignatureStatus -eq "Signed") {
-        $executableSignatureParameters = @{
-            FilePath = $executable
-            SignToolPath = $SignToolPath
-            VerifyOnly = $true
+    Assert-File $launcher "Extracted launcher executable"
+    Assert-File $executable "Extracted runtime executable"
+    foreach ($ownedExecutable in @($launcher, $executable)) {
+        if ($ExpectedSignatureStatus -eq "Signed") {
+            $executableSignatureParameters = @{
+                FilePath = $ownedExecutable
+                SignToolPath = $SignToolPath
+                VerifyOnly = $true
+            }
+            if ($AllowInternalPilotTrust) {
+                $executableSignatureParameters.AllowInternalPilotTrust = $true
+                $executableSignatureParameters.CertificateThumbprint = $CertificateThumbprint
+                $executableSignatureParameters.PilotRootCertificatePath = $PilotRootCertificatePath
+            }
+            & $signatureVerifier @executableSignatureParameters | Out-Null
+        } elseif ((Get-AuthenticodeSignature -LiteralPath $ownedExecutable).Status -ne
+            [System.Management.Automation.SignatureStatus]::NotSigned) {
+            throw "Expected the extracted owned executable to be unsigned: $ownedExecutable"
         }
-        if ($AllowInternalPilotTrust) {
-            $executableSignatureParameters.AllowInternalPilotTrust = $true
-            $executableSignatureParameters.CertificateThumbprint = $CertificateThumbprint
-            $executableSignatureParameters.PilotRootCertificatePath = $PilotRootCertificatePath
-        }
-        & $signatureVerifier @executableSignatureParameters | Out-Null
-    } elseif ((Get-AuthenticodeSignature -LiteralPath $executable).Status -ne
-        [System.Management.Automation.SignatureStatus]::NotSigned) {
-        throw "Expected the extracted owned executable to be unsigned"
+    }
+    $launcherSubsystem = Get-PeSubsystem $launcher
+    $runtimeSubsystem = Get-PeSubsystem $executable
+    if ($launcherSubsystem -ne 2) {
+        throw "Launcher is not a Windows GUI subsystem executable: $launcherSubsystem"
+    }
+    if ($runtimeSubsystem -ne 3) {
+        throw "Runtime is not a Windows console subsystem executable: $runtimeSubsystem"
     }
 
     $originalPath = $env:PATH
@@ -685,6 +782,8 @@ $result = [ordered]@{
     administrativeExtractionExitCode = $adminExitCode
     payloadFilesCompared = $payloadCount
     thirdPartyBytePreservation = "passed"
+    launcherSubsystem = "windows-gui"
+    runtimeSubsystem = "windows-console"
     helpExitCode = $helpExitCode
     hardwareProbeExitCode = $probeExitCode
     hardwareProbeStatus = $probeJson.status

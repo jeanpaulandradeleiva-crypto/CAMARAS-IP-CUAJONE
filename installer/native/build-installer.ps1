@@ -17,6 +17,7 @@ param(
     [string]$WixToolRoot = "D:\DevTools\CuajoneNative\wix",
     [string]$WixVersion = "6.0.2",
     [string]$ReleaseExecutable = "D:\DevTools\CuajoneNative\build\presets\windows-msvc\Release\cuajone_native.exe",
+    [string]$LauncherExecutable = "D:\DevTools\CuajoneNative\build\presets\windows-msvc\Release\cuajone_launcher.exe",
     [string]$HardwareProbeCustomAction = "D:\DevTools\CuajoneNative\build\presets\windows-msvc\Release\CuajoneHardwareProbeCA.dll",
     [string]$StageDir = "D:\DevTools\CuajoneNative\installer\stage",
     [string]$WixBuildDir = "D:\DevTools\CuajoneNative\installer\wix-build",
@@ -163,7 +164,8 @@ function Write-PayloadSource([string]$Root, [string]$OutputPath) {
         $hex = Get-StableHex $relative
         $componentId = "Component_$($hex.Substring(0, 24))"
         $fileId = switch -CaseSensitive ($relative) {
-            'bin\cuajone_native.exe' { 'AppExecutable'; break }
+            'bin\cuajone_launcher.exe' { 'LauncherExecutable'; break }
+            'bin\cuajone_native.exe' { 'RuntimeExecutable'; break }
             'docs\README.md' { 'DeploymentReadme'; break }
             'CuajonePPEMonitor.ico' { 'InstalledProductIcon'; break }
             default { "File_$($hex.Substring(0, 24))" }
@@ -177,11 +179,15 @@ function Write-PayloadSource([string]$Root, [string]$OutputPath) {
         $source = ConvertTo-XmlValue $file.FullName
         $guid = Get-DeterministicComponentGuid $relative
         $lines.Add("      <Component Id=`"$componentId`" Guid=`"$guid`"$subdirectoryAttribute>")
-        if ($fileId -ceq 'AppExecutable') {
+        if ($fileId -ceq 'LauncherExecutable') {
+            $lines.Add("        <File Id=`"$fileId`" Source=`"$source`" KeyPath=`"yes`">")
+            $lines.Add('          <Shortcut Id="LauncherShortcut" Directory="ProgramMenuAppFolder" Name="Cuajone PPE Monitor" Description="Configure and start Cuajone PPE Monitor" WorkingDirectory="INSTALLFOLDER" Advertise="yes" />')
+            $lines.Add('        </File>')
+            $lines.Add('        <RemoveFolder Id="RemoveProgramMenuAppFolder" Directory="ProgramMenuAppFolder" On="uninstall" />')
+        } elseif ($fileId -ceq 'RuntimeExecutable') {
             $lines.Add("        <File Id=`"$fileId`" Source=`"$source`" KeyPath=`"yes`">")
             $lines.Add('          <Shortcut Id="CommandHelpShortcut" Directory="ProgramMenuAppFolder" Name="Cuajone PPE Monitor - Command Help" Description="Open command-line help" Arguments="--help" WorkingDirectory="INSTALLFOLDER" Advertise="yes" />')
             $lines.Add('        </File>')
-            $lines.Add('        <RemoveFolder Id="RemoveProgramMenuAppFolder" Directory="ProgramMenuAppFolder" On="uninstall" />')
         } elseif ($fileId -ceq 'DeploymentReadme') {
             $lines.Add("        <File Id=`"$fileId`" Source=`"$source`" KeyPath=`"yes`">")
             $lines.Add('          <Shortcut Id="ReadmeShortcut" Directory="ProgramMenuAppFolder" Name="Cuajone PPE Monitor - README" Description="Open deployment and license documentation" WorkingDirectory="INSTALLFOLDER" Advertise="yes" />')
@@ -204,7 +210,14 @@ foreach ($path in @($StageDir, $WixBuildDir, $OutputDir, $SupersededOutputDir, $
 Assert-Directory $ToolRoot "Native tool root"
 Assert-Directory $WixToolRoot "WiX tool root"
 Assert-File $ReleaseExecutable "Release executable"
+Assert-File $LauncherExecutable "Launcher executable"
 Assert-File $HardwareProbeCustomAction "Hardware probe custom action"
+if ((Split-Path -Leaf $ReleaseExecutable) -cne "cuajone_native.exe") {
+    throw "ReleaseExecutable must identify cuajone_native.exe"
+}
+if ((Split-Path -Leaf $LauncherExecutable) -cne "cuajone_launcher.exe") {
+    throw "LauncherExecutable must identify cuajone_launcher.exe"
+}
 Assert-File $packageSource "WiX package source"
 Assert-File $packageProject "WiX project"
 Assert-File $iconGenerator "Icon generator"
@@ -322,7 +335,7 @@ $sourceInputs = @(
     (Get-ChildItem -LiteralPath (Join-Path $projectRoot "native\src") -File -Filter "*.cpp").FullName
     (Get-ChildItem -LiteralPath (Join-Path $projectRoot "native\include") -Recurse -File -Include "*.hpp", "*.h").FullName
 )
-foreach ($ownedBinary in @($ReleaseExecutable, $HardwareProbeCustomAction)) {
+foreach ($ownedBinary in @($ReleaseExecutable, $LauncherExecutable, $HardwareProbeCustomAction)) {
     $newerSource = $sourceInputs | Where-Object {
         (Get-Item -LiteralPath $_).LastWriteTimeUtc -gt (Get-Item -LiteralPath $ownedBinary).LastWriteTimeUtc
     }
@@ -339,6 +352,11 @@ if ($isSignedBuild) {
         throw "Project executable signing command failed"
     }
     & $signatureVerifier -FilePath $ReleaseExecutable -SignToolPath $SignToolPath -VerifyOnly
+    & $SignCommand -FilePath $LauncherExecutable
+    if (-not $?) {
+        throw "Launcher executable signing command failed"
+    }
+    & $signatureVerifier -FilePath $LauncherExecutable -SignToolPath $SignToolPath -VerifyOnly
     & $SignCommand -FilePath $HardwareProbeCustomAction
     if (-not $?) {
         throw "Hardware probe custom action signing command failed"
@@ -347,6 +365,9 @@ if ($isSignedBuild) {
 } elseif ((Get-AuthenticodeSignature -LiteralPath $ReleaseExecutable).Status -ne
     [System.Management.Automation.SignatureStatus]::NotSigned) {
     throw "Explicit unsigned preview expected the project executable to be NotSigned"
+} elseif ((Get-AuthenticodeSignature -LiteralPath $LauncherExecutable).Status -ne
+    [System.Management.Automation.SignatureStatus]::NotSigned) {
+    throw "Explicit unsigned preview expected the launcher executable to be NotSigned"
 } elseif ((Get-AuthenticodeSignature -LiteralPath $HardwareProbeCustomAction).Status -ne
     [System.Management.Automation.SignatureStatus]::NotSigned) {
     throw "Explicit unsigned preview expected the hardware probe custom action to be NotSigned"
@@ -458,6 +479,7 @@ function Add-StagedBinary(
 }
 
 Add-StagedBinary $ReleaseExecutable "Application executable" "build"
+Add-StagedBinary $LauncherExecutable "Graphical launcher executable" "build"
 $ffmpegPlugin = Join-Path $openCvBin "opencv_videoio_ffmpeg4120_64.dll"
 Assert-File $ffmpegPlugin "OpenCV FFmpeg videoio plugin"
 $ffmpegSha256 = (Get-FileHash -Algorithm SHA256 -LiteralPath $ffmpegPlugin).Hash.ToLowerInvariant()
@@ -623,7 +645,9 @@ $metadata = [ordered]@{
     configuration = "Release"
     buildUtc = [DateTime]::UtcNow.ToString("o")
     releaseExecutable = $ReleaseExecutable
-    releaseExecutableSha256 = (Get-FileHash -Algorithm SHA256 -LiteralPath $ReleaseExecutable).Hash
+    releaseExecutableSha256 = (Get-FileHash -Algorithm SHA256 -LiteralPath $ReleaseExecutable).Hash.ToLowerInvariant()
+    launcherExecutable = $LauncherExecutable
+    launcherExecutableSha256 = (Get-FileHash -Algorithm SHA256 -LiteralPath $LauncherExecutable).Hash.ToLowerInvariant()
     hardwareProbeCustomAction = $HardwareProbeCustomAction
     hardwareProbeCustomActionSha256 = (Get-FileHash -Algorithm SHA256 -LiteralPath $HardwareProbeCustomAction).Hash.ToLowerInvariant()
     onnxRuntime = [ordered]@{
@@ -678,7 +702,7 @@ $metadata = [ordered]@{
         "Explicit unsigned internal preview"
     }
     thirdPartyBinariesResigned = $false
-    acceptanceScope = "MSI database, administrative extraction, loader, --help, and hardware probe only; no install, engines, cameras, preflight, or inference"
+    acceptanceScope = "MSI database, administrative extraction, launcher/runtime PE subsystem, loader, --help, and hardware probe only; no install, engines, cameras, preflight, or inference"
     parityGate = if ($BuildMode -eq "Release") {
         [ordered]@{
             receiptVersion = $productionParityReceipt.receipt_version

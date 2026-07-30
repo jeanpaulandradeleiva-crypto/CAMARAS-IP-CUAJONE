@@ -4,6 +4,10 @@ Set-StrictMode -Version Latest
 
 function Get-ForbiddenPayloadFiles([string]$Root) {
     # Development inputs may exist in the repository but must never cross into MSI staging.
+    $allowedExecutablePaths = @(
+        'bin\cuajone_launcher.exe',
+        'bin\cuajone_native.exe'
+    )
     $patterns = @(
         '(^|[\\/])\.env($|\.)',
         '\.(pt|pth|engine|plan|onnx|safetensors|csv|xlsx|xls|parquet|arrow|feather|bin|pkl|pickle|weights|whl|py|pyc|pyo|pyd|jsonl)$',
@@ -18,6 +22,10 @@ function Get-ForbiddenPayloadFiles([string]$Root) {
     )
     $violations = foreach ($file in Get-ChildItem -LiteralPath $Root -Recurse -File) {
         $relative = [System.IO.Path]::GetRelativePath($Root, $file.FullName)
+        if ($file.Extension -ieq '.exe' -and $relative -notin $allowedExecutablePaths) {
+            $relative
+            continue
+        }
         foreach ($pattern in $patterns) {
             if ($relative -match $pattern) {
                 $relative

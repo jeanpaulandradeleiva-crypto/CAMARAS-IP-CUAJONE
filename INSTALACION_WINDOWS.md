@@ -29,25 +29,44 @@ PowerShell ni escribir comandos.
 5. Selecciona **Install**.
 6. Cuando termine, selecciona **Finish**.
 
-## Comprobar que abre
+## Abrir y configurar el monitor
 
 1. Abre el menú Inicio de Windows.
 2. Busca **Cuajone PPE Monitor**.
-3. Abre **Cuajone PPE Monitor - Command Help**.
-4. Si aparece la ayuda sin un mensaje de error, la comprobación terminó.
+3. Abre **Cuajone PPE Monitor**. Este es el iniciador gráfico para el uso normal.
+4. Completa los campos con los valores aprobados por el responsable de la
+   aplicación:
 
-Esta comprobación no abre cámaras ni inicia el análisis.
+   - cámara RTSP o archivo de video autorizado;
+   - modo de análisis: EPP solamente o EPP y caídas;
+   - modo de cómputo: Auto, GPU o CPU;
+   - archivos de modelo correspondientes al modo elegido;
+   - etiquetas de clase EPP, en el orden exacto de salida del modelo, cuando uses modelos CPU;
+   - carpeta donde se guardarán los resultados;
+   - si deseas mostrar la ventana de análisis.
+
+5. Revisa la configuración y usa la acción de inicio del mismo formulario. El
+   iniciador valida primero la configuración y muestra el error sin cerrar la
+   ventana si falta un dato.
+
+No escribas una contraseña RTSP en documentos, capturas o tickets. El iniciador no
+la guarda como configuración permanente; deberás volver a proporcionarla cuando
+corresponda.
+
+**Cuajone PPE Monitor - Command Help** permanece en el menú Inicio para soporte y
+uso avanzado. No es la forma normal de iniciar el monitor.
 
 ## Configurar cámaras después
 
 La instalación y la configuración de cámaras son pasos separados. El instalador
-no agrega una cámara y no deja la aplicación unida de forma permanente a una sola
-cámara.
+no agrega una cámara ni incluye modelos. Después de instalar, el iniciador gráfico
+permite elegir la cámara, el modo, los modelos externos aprobados y la salida sin
+reinstalar la aplicación.
 
-La versión piloto tiene un alcance limitado. La cámara se configura después de
-instalar, con ayuda del responsable de la aplicación. La configuración y los datos
-se guardan fuera de la carpeta de instalación, bajo
-`C:\ProgramData\Cuajone PPE Monitor`.
+La versión piloto tiene un alcance limitado. Los modelos deben ser proporcionados
+por TI o por el responsable de la aplicación y permanecen fuera del MSI. La
+configuración y los datos mutables se guardan fuera de la carpeta de instalación,
+bajo `C:\ProgramData\Cuajone PPE Monitor`.
 
 Se espera que versiones futuras permitan agregar más configuraciones de cámara
 sin reinstalar la aplicación en otra carpeta. Esto dependerá del soporte del
@@ -60,7 +79,8 @@ cámaras.
 | --- | --- |
 | Windows no confía en el instalador | No cambies la seguridad del equipo. Contacta a TI. |
 | La instalación falla | Pide a TI que genere el registro MSI y envíaselo. |
-| La aplicación abre, pero no aparece una cámara | La cámara todavía debe configurarse. Es un paso posterior a la instalación. |
+| El iniciador indica que falta un campo | Revisa la cámara, el modo, los modelos requeridos y la carpeta de salida. |
+| El iniciador rechaza un modelo | Usa únicamente los archivos externos aprobados para el modo GPU o CPU elegido; contacta al responsable. |
 | GPU aparece como no disponible | Elige Auto o CPU y pide a TI revisar hardware/driver por separado. No instales drivers desde el MSI. |
 
 ## Para TI
