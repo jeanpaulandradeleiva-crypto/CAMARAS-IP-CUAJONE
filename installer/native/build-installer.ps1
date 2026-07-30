@@ -330,13 +330,40 @@ foreach ($extension in @("WixToolset.UI.wixext $WixVersion", "WixToolset.Util.wi
     }
 }
 
-$sourceInputs = @(
-    (Join-Path $projectRoot "native\CMakeLists.txt")
-    (Get-ChildItem -LiteralPath (Join-Path $projectRoot "native\src") -File -Filter "*.cpp").FullName
-    (Get-ChildItem -LiteralPath (Join-Path $projectRoot "native\include") -Recurse -File -Include "*.hpp", "*.h").FullName
-)
+$nativeRoot = Join-Path $projectRoot "native"
+$cmakeLists = Join-Path $nativeRoot "CMakeLists.txt"
+$allCpp = @(Get-ChildItem -LiteralPath (Join-Path $nativeRoot "src") -File -Filter "*.cpp").FullName
+$allHeaders = @(Get-ChildItem -LiteralPath (Join-Path $nativeRoot "include") -Recurse -File -Include "*.hpp", "*.h").FullName
+$launcherNames = @("launcher.cpp", "launcher_support.cpp", "launcher_support.hpp")
+$probeNames = @("compute.cpp", "installer_custom_action.cpp", "compute.hpp")
+$freshnessByBinary = @{
+    $ReleaseExecutable = @($cmakeLists) + @(
+        $allCpp | Where-Object {
+            (Split-Path -Leaf $_) -notin @("launcher.cpp", "launcher_support.cpp", "installer_custom_action.cpp")
+        }
+    ) + @(
+        $allHeaders | Where-Object {
+            (Split-Path -Leaf $_) -ne "launcher_support.hpp"
+        }
+    )
+    $LauncherExecutable = @($cmakeLists) + @(
+        $allCpp + $allHeaders | Where-Object {
+            (Split-Path -Leaf $_) -in $launcherNames
+        }
+    )
+    $HardwareProbeCustomAction = @($cmakeLists) + @(
+        $allCpp + $allHeaders | Where-Object {
+            (Split-Path -Leaf $_) -in $probeNames
+        }
+    )
+}
 foreach ($ownedBinary in @($ReleaseExecutable, $LauncherExecutable, $HardwareProbeCustomAction)) {
+    $sourceInputs = @($freshnessByBinary[$ownedBinary] | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | Select-Object -Unique)
+    if ($sourceInputs.Count -eq 0) {
+        throw "No native source inputs were resolved for $(Split-Path -Leaf $ownedBinary)"
+    }
     $newerSource = $sourceInputs | Where-Object {
+        (Test-Path -LiteralPath $_) -and
         (Get-Item -LiteralPath $_).LastWriteTimeUtc -gt (Get-Item -LiteralPath $ownedBinary).LastWriteTimeUtc
     }
     if ($newerSource) {
