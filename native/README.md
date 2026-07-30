@@ -129,7 +129,7 @@ cómputo `Auto`/`CUDA`/`CPU`, los cuatro artefactos de modelo, labels EPP y `Sho
 Las rutas iniciales se derivan de `FOLDERID_ProgramData`:
 
 ```text
-%ProgramData%\Cuajone PPE Monitor\
+%ProgramData%\Cuajone PPE Monitor\runtime\
   models\ppe.engine
   models\pose.engine
   models\ppe.onnx
@@ -148,7 +148,7 @@ esa autoridad.
 Stdout y stderr pasan por un pipe y se redacta el userinfo de URLs RTSP antes de
 escribir el log visible. El launcher no guarda formularios ni configuración, por
 lo que las credenciales RTSP no se persisten. El proceso pertenece a un Job Object
-con `KILL_ON_JOB_CLOSE`; `Stop` envía `CTRL_BREAK_EVENT`, espera hasta cinco
+con `KILL_ON_JOB_CLOSE`; `Stop` envía `CTRL_BREAK_EVENT`, espera hasta 30
 segundos fuera del hilo UI y, si no termina, finaliza el job. El runtime continúa
 siendo un ejecutable de consola y maneja `SIGBREAK` mediante su ruta normal de
 apagado cooperativo.
