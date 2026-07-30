@@ -245,6 +245,11 @@ int monitor(
 }  // namespace
 
 int main(int argc, char** argv) {
+    std::signal(SIGINT, requestStop);
+    std::signal(SIGTERM, requestStop);
+#ifdef _WIN32
+    std::signal(SIGBREAK, requestStop);
+#endif
     try {
         RuntimeConfig config = parseCommandLine(argc, argv);
         if (config.help) {
@@ -278,8 +283,6 @@ int main(int argc, char** argv) {
         });
         std::cout << "Compute: " << computeBackendName(selection.backend)
                   << " | " << selection.reason << '\n';
-        std::signal(SIGINT, requestStop);
-        std::signal(SIGTERM, requestStop);
         std::unique_ptr<NativeEnginePipeline> pipeline;
         ComputeBackend effective_backend = selection.backend;
         try {

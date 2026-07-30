@@ -4,6 +4,8 @@ Este directorio contiene el runtime Windows x64. Ejecuta modelos ONNX con CPU o
 engines TensorRT con CUDA, sin Python, PyTorch ni Ultralytics durante la ejecución.
 `Auto` prefiere CUDA solo cuando hardware, driver y engines están listos; si no,
 usa ONNX CPU. `ppe_reportev2.py` continúa siendo la referencia de comportamiento.
+El target WIN32 separado `cuajone_launcher.exe` ofrece la interfaz gráfica y no
+enlaza `cuajone_runtime`, OpenCV, ONNX Runtime, CUDA ni TensorRT.
 
 > Toolchain local: las herramientas y SDK se instalaron bajo
 > `D:\DevTools\CuajoneNative`. La activación no modifica el PATH global y los
@@ -39,6 +41,8 @@ deserializa ambos engines de forma secuencial y valida sus tensores.
 | `engine_pipeline` | Pre/postproceso y analítica compartidos por ONNX CPU y TensorRT CUDA. |
 | `capture` | Un único slot reemplazable, reinicio sin frame obsoleto, fallback de apertura y reconexión RTSP con transporte configurable. |
 | `evidence` | JPEG anotado y CSV append-only; no genera Excel. |
+| `launcher_support` | Matriz estructural de modelos, plan de argumentos, quoting Windows y redacción RTSP comprobables sin el runtime. |
+| `launcher` | UI Win32, ejecución del CLI hermano, log ProgramData, Job Object y parada acotada. |
 
 Los dos engines se deserializan uno después del otro y permanecen residentes. La
 inferencia EPP termina y sincroniza antes de iniciar pose. No existen colas de GPU,
@@ -100,6 +104,7 @@ ctest --preset cpu-tests-release
 . .\activate-native.ps1
 cmake --preset windows-msvc
 cmake --build --preset windows-msvc-release
+ctest --test-dir D:\DevTools\CuajoneNative\build\presets\windows-msvc -C Release --output-on-failure
 ```
 
 El preset CPU compila el ejecutable y el probe con `CUAJONE_ENABLE_TENSORRT=OFF`:
@@ -111,6 +116,42 @@ Visual Studio Build Tools 2022 `17.14`. No copies DLL al repositorio: la activac
 agrega temporalmente sus directorios externos al PATH del proceso actual. CMake sí
 copia el `onnxruntime.dll` 1.25.0 fijado junto a los ejecutables externos de build;
 esto evita que Windows resuelva por error otra versión instalada en `System32`.
+
+## Launcher gráfico
+
+`cuajone_launcher.exe` y `cuajone_native.exe` deben permanecer en la misma carpeta.
+El launcher resuelve el runtime hermano mediante la ruta absoluta de su propio
+módulo y usa `CreateProcessW`; no busca ejecutables mediante `PATH`. La interfaz
+expone fuente RTSP o archivo, carpeta de salida, modo `PPE only`/`PPE + fall`,
+cómputo `Auto`/`CUDA`/`CPU`, los cuatro artefactos de modelo, labels EPP y `Show`.
+`Validate` ejecuta el mismo plan con `--preflight`; `Start` inicia el procesamiento.
+
+Las rutas iniciales se derivan de `FOLDERID_ProgramData`:
+
+```text
+%ProgramData%\Cuajone PPE Monitor\
+  models\ppe.engine
+  models\pose.engine
+  models\ppe.onnx
+  models\pose.onnx
+  output\
+  logs\cuajone-<timestamp>.log
+```
+
+La validación estructural replica la matriz CLI: CUDA exige el engine EPP y, en
+`PPE + fall`, el engine pose; CPU exige los ONNX equivalentes, cada manifest
+`<modelo>.onnx.manifest.json` adyacente y labels EPP; Auto exige al menos un
+candidato completo. `PPE only` nunca emite argumentos pose. El launcher no analiza
+el contenido de engines, ONNX ni manifests: el `--preflight` del runtime conserva
+esa autoridad.
+
+Stdout y stderr pasan por un pipe y se redacta el userinfo de URLs RTSP antes de
+escribir el log visible. El launcher no guarda formularios ni configuración, por
+lo que las credenciales RTSP no se persisten. El proceso pertenece a un Job Object
+con `KILL_ON_JOB_CLOSE`; `Stop` envía `CTRL_BREAK_EVENT`, espera hasta cinco
+segundos fuera del hilo UI y, si no termina, finaliza el job. El runtime continúa
+siendo un ejecutable de consola y maneja `SIGBREAK` mediante su ruta normal de
+apagado cooperativo.
 
 ## Preflight y ejecución
 
@@ -280,8 +321,11 @@ tracker, asociación/votación EPP, confirmación/recuperación de caída, las 1
 combinaciones de política de cómputo y la selección multidispositivo. El target
 `cuajone_onnx_tests` genera protobufs sintéticos y cubre inferencia positiva desde
 memoria, manifest/hash/rol/I/O, extensión, límites, external data y dominios custom.
+`cuajone_launcher_tests` cubre la matriz Auto/CUDA/CPU para ambos modos, manifests
+y labels CPU, omisión pose en `PPE only`, quoting de `CreateProcessW` y redacción
+de credenciales RTSP.
 
-Baseline de esta corrección: CTest `2/2` tanto en CPU-only como en el build completo;
+Baseline de esta corrección: CTest `3/3` tanto en CPU-only como en el build completo;
 la suite Python ejecutada con `python -m pytest` informa `93 passed, 1 skipped` sin
 binding (el único skip es el módulo nativo opcional) y `104 passed` con el binding
 MSVC cargado.

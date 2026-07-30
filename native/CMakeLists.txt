@@ -6,6 +6,7 @@ project(cuajone_native LANGUAGES CXX)
 
 option(CUAJONE_BUILD_RUNTIME "Build the Windows native runtime" ON)
 option(CUAJONE_BUILD_TESTS "Build pure CPU unit tests" ON)
+option(CUAJONE_BUILD_LAUNCHER "Build the Windows GUI launcher" ON)
 option(CUAJONE_BUILD_PYTHON_BINDINGS "Build the development/QA pybind11 module" OFF)
 option(CUAJONE_ENABLE_TENSORRT "Enable the optional TensorRT/CUDA backend" ON)
 option(CUAJONE_ENABLE_TRT_INTEGRATION_TESTS "Build opt-in TensorRT integration tests" OFF)
@@ -13,6 +14,30 @@ option(CUAJONE_ENABLE_TRT_INTEGRATION_TESTS "Build opt-in TensorRT integration t
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
+
+if(CUAJONE_BUILD_LAUNCHER)
+    add_library(cuajone_launcher_support
+        src/launcher_support.cpp
+    )
+    target_include_directories(cuajone_launcher_support PUBLIC include)
+    target_compile_features(cuajone_launcher_support PUBLIC cxx_std_20)
+    if(MSVC)
+        target_compile_options(cuajone_launcher_support PRIVATE /W4 /permissive- /EHsc)
+    else()
+        target_compile_options(cuajone_launcher_support PRIVATE -Wall -Wextra -Wpedantic)
+    endif()
+
+    if(WIN32)
+        add_executable(cuajone_launcher WIN32 src/launcher.cpp)
+        target_link_libraries(cuajone_launcher PRIVATE
+            cuajone_launcher_support comctl32 ole32 shell32)
+        target_compile_definitions(cuajone_launcher PRIVATE
+            UNICODE _UNICODE NOMINMAX WIN32_LEAN_AND_MEAN)
+        if(MSVC)
+            target_compile_options(cuajone_launcher PRIVATE /W4 /permissive- /EHsc)
+        endif()
+    endif()
+endif()
 
 if(CUAJONE_BUILD_RUNTIME AND CUAJONE_ENABLE_TENSORRT)
     set(TENSORRT_ROOT "" CACHE PATH "TensorRT 11 C++ SDK root containing include/ and lib/")
@@ -116,6 +141,14 @@ if(CUAJONE_BUILD_TESTS)
         set_tests_properties(cuajone_cpu_tests PROPERTIES
             ENVIRONMENT_MODIFICATION
                 "PATH=path_list_prepend:$<TARGET_FILE_DIR:opencv_core>")
+    endif()
+    if(CUAJONE_BUILD_LAUNCHER)
+        add_executable(cuajone_launcher_tests tests/launcher_tests.cpp)
+        target_link_libraries(cuajone_launcher_tests PRIVATE cuajone_launcher_support)
+        if(MSVC)
+            target_compile_options(cuajone_launcher_tests PRIVATE /W4 /permissive- /EHsc)
+        endif()
+        add_test(NAME cuajone_launcher_tests COMMAND cuajone_launcher_tests)
     endif()
 endif()
 
