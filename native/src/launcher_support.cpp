@@ -29,6 +29,31 @@ bool isRtspSource(std::wstring_view source) {
     return source.starts_with(L"rtsp://") || source.starts_with(L"rtsps://");
 }
 
+void requireRtspCamera(std::wstring_view source) {
+    if (!isRtspSource(source)) {
+        throw std::invalid_argument("Source must be an rtsp:// or rtsps:// camera URL");
+    }
+    const std::size_t scheme_end = source.find(L"://");
+    const std::size_t authority_start = scheme_end + 3;
+    const std::size_t authority_end = source.find_first_of(L"/?#", authority_start);
+    const std::size_t end = authority_end == std::wstring_view::npos ? source.size() : authority_end;
+    if (authority_start >= end) {
+        throw std::invalid_argument("RTSP camera URL must include a host");
+    }
+    const std::wstring_view authority = source.substr(authority_start, end - authority_start);
+    if (std::any_of(authority.begin(), authority.end(), [](wchar_t character) {
+            return std::iswspace(character) != 0 || character < 0x20;
+        })) {
+        throw std::invalid_argument("RTSP camera URL authority is invalid");
+    }
+    const std::size_t at = authority.rfind(L'@');
+    const std::wstring_view host_and_port = at == std::wstring_view::npos
+        ? authority : authority.substr(at + 1);
+    if (host_and_port.empty()) {
+        throw std::invalid_argument("RTSP camera URL must include a host");
+    }
+}
+
 bool hasNonWhitespace(std::wstring_view value) {
     return std::any_of(value.begin(), value.end(), [](wchar_t character) {
         return std::iswspace(character) == 0;
@@ -53,11 +78,9 @@ std::filesystem::path adjacentOnnxManifest(const std::filesystem::path& model) {
 
 LaunchPlan buildLaunchPlan(const LauncherSettings& settings, bool preflight) {
     if (settings.source.empty()) {
-        throw std::invalid_argument("Source is required");
+        throw std::invalid_argument("RTSP camera URL is required");
     }
-    if (!isRtspSource(settings.source) && !regularFile(std::filesystem::path(settings.source))) {
-        throw std::invalid_argument("Offline source must be an existing file");
-    }
+    requireRtspCamera(settings.source);
     if (settings.output.empty()) {
         throw std::invalid_argument("Output folder is required");
     }

@@ -37,7 +37,7 @@ PowerShell ni escribir comandos.
 4. Completa los campos con los valores aprobados por el responsable de la
    aplicación:
 
-   - cámara RTSP o archivo de video autorizado;
+   - URL RTSP de la cámara autorizada (`rtsp://` o `rtsps://`);
    - modo de análisis: EPP solamente o EPP y caídas;
    - modo de cómputo: Auto, GPU o CPU;
    - archivos de modelo correspondientes al modo elegido;

@@ -27,7 +27,6 @@ constexpr ULONGLONG kGracefulStopMilliseconds = 30000;
 
 enum ControlId : int {
     SourceEdit = 100,
-    SourceBrowse,
     OutputEdit,
     OutputBrowse,
     AnalyticsCombo,
@@ -151,9 +150,9 @@ void createControls(LauncherWindow& state) {
     constexpr int edit_x = 146;
     constexpr int edit_width = 620;
 
-    createLabel(state, L"Source", label_x, 18, 120);
-    state.source = createEdit(state, SourceEdit, edit_x, 18, edit_width);
-    createBrowseButton(state, SourceBrowse, 18);
+    createLabel(state, L"RTSP camera", label_x, 18, 120);
+    state.source = createEdit(state, SourceEdit, edit_x, 18, 724);
+    SetWindowTextW(state.source, L"rtsp://");
 
     createLabel(state, L"Output folder", label_x, 54, 120);
     state.output = createEdit(state, OutputEdit, edit_x, 54, edit_width);
@@ -553,10 +552,6 @@ void showError(LauncherWindow& state, const std::exception& error) {
 }
 
 void browseInto(LauncherWindow& state, int id) {
-    static constexpr COMDLG_FILTERSPEC source_filters[] = {
-        {L"Video and image files", L"*.mp4;*.avi;*.mkv;*.mov;*.jpg;*.jpeg;*.png;*.bmp"},
-        {L"All files", L"*.*"},
-    };
     static constexpr COMDLG_FILTERSPEC engine_filters[] = {
         {L"TensorRT engine", L"*.engine"}, {L"All files", L"*.*"},
     };
@@ -569,13 +564,10 @@ void browseInto(LauncherWindow& state, int id) {
         return;
     }
     HWND destination = nullptr;
-    const COMDLG_FILTERSPEC* filters = source_filters;
-    UINT filter_count = static_cast<UINT>(std::size(source_filters));
-    if (id == SourceBrowse) destination = state.source;
-    else if (id == PpeEngineBrowse || id == PoseEngineBrowse) {
+    const COMDLG_FILTERSPEC* filters = engine_filters;
+    UINT filter_count = static_cast<UINT>(std::size(engine_filters));
+    if (id == PpeEngineBrowse || id == PoseEngineBrowse) {
         destination = id == PpeEngineBrowse ? state.ppe_engine : state.pose_engine;
-        filters = engine_filters;
-        filter_count = static_cast<UINT>(std::size(engine_filters));
     } else if (id == PpeOnnxBrowse || id == PoseOnnxBrowse) {
         destination = id == PpeOnnxBrowse ? state.ppe_onnx : state.pose_onnx;
         filters = onnx_filters;
@@ -614,7 +606,7 @@ LRESULT CALLBACK windowProcedure(HWND window, UINT message, WPARAM wparam, LPARA
                 if (id == ValidateButton) launchRuntime(*state, true);
                 else if (id == StartButton) launchRuntime(*state, false);
                 else if (id == StopButton) requestStop(*state);
-                else if (id == SourceBrowse || id == OutputBrowse
+                else if (id == OutputBrowse
                     || id == PpeEngineBrowse || id == PoseEngineBrowse
                     || id == PpeOnnxBrowse || id == PoseOnnxBrowse) {
                     browseInto(*state, id);

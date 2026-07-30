@@ -64,7 +64,7 @@ private:
 
 LauncherSettings baseSettings(const TemporaryTree& tree) {
     LauncherSettings settings;
-    settings.source = tree.makeFile(L"source with space.mp4").wstring();
+    settings.source = L"rtsp://camera.example:554/axis-media/media.amp";
     settings.output = tree.root() / L"output";
     settings.ppe_labels = L"Person,Hard_hat,Vest";
     return settings;
@@ -80,6 +80,23 @@ void addCpuModels(LauncherSettings& settings, const TemporaryTree& tree) {
     tree.makeFile(L"ppe.onnx.manifest.json");
     settings.pose_onnx = tree.makeFile(L"pose.onnx");
     tree.makeFile(L"pose.onnx.manifest.json");
+}
+
+void testRtspCameraSourceIsRequired() {
+    TemporaryTree tree;
+    auto settings = baseSettings(tree);
+    addCudaModels(settings, tree);
+    settings.source = tree.makeFile(L"source with space.mp4").wstring();
+    requireThrows([&] { buildLaunchPlan(settings, false); },
+        "Launcher accepted a local media file as the camera source");
+    settings.source = L"rtsp://";
+    requireThrows([&] { buildLaunchPlan(settings, false); },
+        "Launcher accepted an RTSP URL without a host");
+    settings.source = L"rtsp://camera.example/live";
+    const auto plan = buildLaunchPlan(settings, false);
+    require(contains(plan.arguments, L"--source")
+            && contains(plan.arguments, L"rtsp://camera.example/live"),
+        "Launcher did not emit the RTSP camera URL");
 }
 
 void testModelMatrixAndArguments() {
@@ -207,6 +224,7 @@ void testCredentialRedaction() {
 
 int main() {
     const std::vector<std::pair<std::string, std::function<void()>>> tests{
+        {"RTSP camera source requirement", testRtspCameraSourceIsRequired},
         {"launcher model matrix and arguments", testModelMatrixAndArguments},
         {"PPE-only pose omission", testPpeOnlyOmitsPoseArguments},
         {"Windows command-line quoting", testWindowsQuoting},

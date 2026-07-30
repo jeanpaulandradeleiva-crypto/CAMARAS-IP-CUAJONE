@@ -122,7 +122,7 @@ esto evita que Windows resuelva por error otra versión instalada en `System32`.
 `cuajone_launcher.exe` y `cuajone_native.exe` deben permanecer en la misma carpeta.
 El launcher resuelve el runtime hermano mediante la ruta absoluta de su propio
 módulo y usa `CreateProcessW`; no busca ejecutables mediante `PATH`. La interfaz
-expone fuente RTSP o archivo, carpeta de salida, modo `PPE only`/`PPE + fall`,
+expone la URL RTSP de la cámara, carpeta de salida, modo `PPE only`/`PPE + fall`,
 cómputo `Auto`/`CUDA`/`CPU`, los cuatro artefactos de modelo, labels EPP y `Show`.
 `Validate` ejecuta el mismo plan con `--preflight`; `Start` inicia el procesamiento.
 
