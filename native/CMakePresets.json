@@ -9,11 +9,10 @@
     {
       "name": "windows-msvc",
       "displayName": "Windows x64 native runtime",
-      "generator": "Visual Studio 17 2022",
-      "architecture": "x64",
-      "binaryDir": "D:/DevTools/CuajoneNative/build/presets/windows-msvc",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/../.tools/native/build/presets/windows-msvc",
       "cacheVariables": {
-        "CMAKE_CONFIGURATION_TYPES": "Release;RelWithDebInfo",
+        "CMAKE_BUILD_TYPE": "Release",
         "TENSORRT_ROOT": "$env{TENSORRT_ROOT}",
         "ONNXRUNTIME_ROOT": "$env{ONNXRUNTIME_ROOT}",
         "CUDA_RUNTIME_ROOT": "$env{CUDA_RUNTIME_ROOT}",
@@ -25,13 +24,13 @@
     {
       "name": "cpu-tests",
       "displayName": "CPU tests without CUDA or TensorRT",
-      "generator": "Visual Studio 17 2022",
-      "architecture": "x64",
-      "binaryDir": "D:/DevTools/CuajoneNative/build/presets/cpu-tests",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/../.tools/native/build/presets/cpu-tests",
       "cacheVariables": {
         "CUAJONE_BUILD_RUNTIME": "ON",
         "CUAJONE_ENABLE_TENSORRT": "OFF",
         "CUAJONE_BUILD_TESTS": "ON",
+        "CMAKE_BUILD_TYPE": "Release",
         "ONNXRUNTIME_ROOT": "$env{ONNXRUNTIME_ROOT}",
         "OpenCV_DIR": "$env{OpenCV_DIR}"
       }
@@ -39,16 +38,15 @@
     {
       "name": "python-bindings",
       "displayName": "Python 3.12 development/QA binding with native runtime",
-      "generator": "Visual Studio 17 2022",
-      "architecture": "x64",
-      "binaryDir": "D:/DevTools/CuajoneNative/build/presets/python-bindings",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/../.tools/native/build/presets/python-bindings",
       "cacheVariables": {
-        "CMAKE_CONFIGURATION_TYPES": "Release;RelWithDebInfo",
+        "CMAKE_BUILD_TYPE": "Release",
         "CUAJONE_BUILD_RUNTIME": "ON",
         "CUAJONE_BUILD_TESTS": "ON",
         "CUAJONE_BUILD_PYTHON_BINDINGS": "ON",
         "CUAJONE_PYBIND11_ROOT": "$env{CUAJONE_PYBIND11_ROOT}",
-        "CUAJONE_PYTHON_OUTPUT_DIR": "D:/DevTools/CuajoneNative/build/presets/python-bindings/python",
+        "CUAJONE_PYTHON_OUTPUT_DIR": "${sourceDir}/../.tools/native/build/presets/python-bindings/python",
         "Python_EXECUTABLE": "$env{CUAJONE_PYTHON_EXECUTABLE}",
         "TENSORRT_ROOT": "$env{TENSORRT_ROOT}",
         "ONNXRUNTIME_ROOT": "$env{ONNXRUNTIME_ROOT}",
@@ -62,31 +60,26 @@
   "buildPresets": [
     {
       "name": "windows-msvc-release",
-      "configurePreset": "windows-msvc",
-      "configuration": "Release"
+      "configurePreset": "windows-msvc"
     },
     {
       "name": "cpu-tests-release",
-      "configurePreset": "cpu-tests",
-      "configuration": "Release"
+      "configurePreset": "cpu-tests"
     },
     {
       "name": "python-bindings-release",
-      "configurePreset": "python-bindings",
-      "configuration": "Release"
+      "configurePreset": "python-bindings"
     }
   ],
   "testPresets": [
     {
       "name": "cpu-tests-release",
       "configurePreset": "cpu-tests",
-      "configuration": "Release",
       "output": { "outputOnFailure": true }
     },
     {
       "name": "python-bindings-release",
       "configurePreset": "python-bindings",
-      "configuration": "Release",
       "output": { "outputOnFailure": true }
     }
   ]

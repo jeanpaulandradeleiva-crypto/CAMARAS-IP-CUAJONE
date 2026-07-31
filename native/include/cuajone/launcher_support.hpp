@@ -3,6 +3,7 @@
 #pragma once
 
 #include <filesystem>
+#include <utility>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -30,6 +31,8 @@ struct LauncherSettings {
     std::filesystem::path ppe_onnx;
     std::filesystem::path pose_onnx;
     std::wstring ppe_labels;
+    std::wstring source_label;
+    std::vector<std::pair<std::wstring, std::wstring>> runtime_options;
     bool show_window{};
 };
 

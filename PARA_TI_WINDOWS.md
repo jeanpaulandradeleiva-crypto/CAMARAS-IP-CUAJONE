@@ -7,7 +7,8 @@ para quien necesita abrir el iniciador gráfico y configurar una ejecución.
 ## Primera pantalla
 
 **Propósito:** preparar una VM Windows enrolada, verificar el paquete aprobado,
-instalarlo con registro, elegir cómputo y comprobar el iniciador sin modelos.
+instalarlo con registro, elegir cómputo y comprobar el iniciador sin configurar
+cámaras ni iniciar inferencia.
 
 **Archivos que recibe TI:**
 
@@ -24,11 +25,11 @@ instalarlo con registro, elegir cómputo y comprobar el iniciador sin modelos.
 3. Valida y enrola los certificados públicos con autorización explícita.
 4. Instala el MSI con interfaz o en silencio y guarda `/L*V`.
 5. Abre **Cuajone PPE Monitor**, confirma que aparece el formulario y ciérralo sin
-   completar una fuente ni cargar modelos.
+   completar una fuente ni iniciar la inferencia.
 
 **Resultado esperado:** el producto aparece en Aplicaciones instaladas y el
 iniciador gráfico abre sin error. Esta aceptación no configura cámaras, no ejecuta
-RTSP, no carga modelos y no inicia inferencia.
+RTSP y no inicia inferencia.
 
 ## Versiones y alcance
 
@@ -39,9 +40,9 @@ RTSP, no carga modelos y no inicia inferencia.
 | Builds desde fuente | Flujo de ingeniería futuro; requiere firma, revisión y sus propios gates. |
 
 El MSI no instala Python, PyTorch, Ultralytics, CVAT, Supervision, `cuajone_qa`, el
-binding `.pyd`, fixtures, modelos, engines ni recibos de paridad. Los modelos y
-engines operativos son artefactos externos aprobados; los demás componentes son
-exclusivamente de desarrollo y QA.
+binding `.pyd`, fixtures, engines TensorRT ni recibos de paridad. Instala por defecto
+el bundle ONNX opcional de EPP y pose; cualquier modelo o engine externo sigue siendo
+un artefacto aprobado aparte. Los demás componentes son exclusivamente de desarrollo y QA.
 
 ## Verificar SHA y firma
 

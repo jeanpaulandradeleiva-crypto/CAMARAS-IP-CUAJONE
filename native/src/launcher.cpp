@@ -9,9 +9,13 @@
 
 #include <algorithm>
 #include <atomic>
+#include <cwctype>
 #include <cwchar>
 #include <filesystem>
+#include <fstream>
 #include <iterator>
+#include <map>
+#include <optional>
 #include <stdexcept>
 #include <string>
 #include <thread>
@@ -22,11 +26,16 @@ namespace {
 using namespace cuajone::launcher;
 
 constexpr wchar_t kWindowClass[] = L"CuajoneLauncherWindow";
+constexpr wchar_t kBundledPpeLabels[] = L"Gloves,Hard_hat,Mask,Person,Safety_boots,Vest";
 constexpr UINT kProcessFinished = WM_APP + 1;
 constexpr ULONGLONG kGracefulStopMilliseconds = 30000;
 
+std::filesystem::path siblingRuntime();
+
 enum ControlId : int {
     SourceEdit = 100,
+    SourceLabelEdit,
+    LoadEnvButton,
     OutputEdit,
     OutputBrowse,
     AnalyticsCombo,
@@ -51,6 +60,7 @@ enum ControlId : int {
 struct LauncherWindow {
     HWND window{};
     HWND source{};
+    HWND source_label{};
     HWND output{};
     HWND analytics{};
     HWND compute{};
@@ -65,6 +75,7 @@ struct LauncherWindow {
     HWND stop{};
     HWND status{};
     HWND log_path{};
+    std::vector<std::pair<std::wstring, std::wstring>> runtime_options;
     HFONT font{};
     std::filesystem::path program_data;
     HANDLE process{};
@@ -91,6 +102,66 @@ void setText(HWND control, const std::filesystem::path& value) {
 
 void setStatus(LauncherWindow& state, std::wstring_view text) {
     SetWindowTextW(state.status, std::wstring(text).c_str());
+}
+
+std::wstring trim(std::wstring value) {
+    const auto first = std::find_if_not(value.begin(), value.end(), [](wchar_t character) {
+        return std::iswspace(character) != 0;
+    });
+    const auto last = std::find_if_not(value.rbegin(), value.rend(), [](wchar_t character) {
+        return std::iswspace(character) != 0;
+    }).base();
+    return first >= last ? std::wstring{} : std::wstring(first, last);
+}
+
+std::wstring upper(std::wstring value) {
+    std::transform(value.begin(), value.end(), value.begin(), [](wchar_t character) {
+        return static_cast<wchar_t>(std::towupper(character));
+    });
+    return value;
+}
+
+std::map<std::wstring, std::wstring> readEnvFile(const std::filesystem::path& path) {
+    std::ifstream input(path, std::ios::binary);
+    if (!input) throw std::runtime_error("Could not open the selected .env file");
+    std::map<std::wstring, std::wstring> values;
+    std::string line;
+    while (std::getline(input, line)) {
+        if (!line.empty() && line.back() == '\r') line.pop_back();
+        if (line.starts_with("\xEF\xBB\xBF")) line.erase(0, 3);
+        const int length = MultiByteToWideChar(
+            CP_UTF8, MB_ERR_INVALID_CHARS, line.data(), static_cast<int>(line.size()), nullptr, 0);
+        if (length <= 0) throw std::runtime_error("The selected .env file is not valid UTF-8");
+        std::wstring wide(static_cast<std::size_t>(length), L'\0');
+        MultiByteToWideChar(
+            CP_UTF8, MB_ERR_INVALID_CHARS, line.data(), static_cast<int>(line.size()), wide.data(), length);
+        wide = trim(wide);
+        if (wide.empty() || wide.starts_with(L"#")) continue;
+        const std::size_t separator = wide.find(L'=');
+        if (separator == std::wstring::npos) continue;
+        std::wstring key = upper(trim(wide.substr(0, separator)));
+        std::wstring value = trim(wide.substr(separator + 1));
+        if (value.size() >= 2 && value.front() == L'"' && value.back() == L'"') {
+            value = value.substr(1, value.size() - 2);
+        }
+        if (!key.empty()) values.insert_or_assign(std::move(key), std::move(value));
+    }
+    return values;
+}
+
+std::optional<std::wstring> envValue(
+    const std::map<std::wstring, std::wstring>& values,
+    std::wstring_view key) {
+    const auto found = values.find(std::wstring(key));
+    if (found == values.end() || found->second.empty()) return std::nullopt;
+    return found->second;
+}
+
+std::filesystem::path resolveEnvPath(
+    const std::filesystem::path& env_path,
+    const std::wstring& configured) {
+    std::filesystem::path path(configured);
+    return path.is_absolute() ? path : env_path.parent_path() / path;
 }
 
 HWND createControl(
@@ -144,6 +215,28 @@ std::filesystem::path knownProgramData() {
     return path / L"Cuajone PPE Monitor" / L"runtime";
 }
 
+bool hasModelBundleAt(const std::filesystem::path& root) {
+    std::error_code error;
+    const auto models = root / L"models";
+    return std::filesystem::is_regular_file(models / L"ppe.engine", error)
+        || std::filesystem::is_regular_file(models / L"pose.engine", error)
+        || std::filesystem::is_regular_file(models / L"ppe.onnx", error)
+        || std::filesystem::is_regular_file(models / L"pose.onnx", error);
+}
+
+std::filesystem::path preferredModelRoot() {
+    const std::filesystem::path install_root = siblingRuntime().parent_path();
+    const std::filesystem::path install_models = install_root / L"models";
+    const std::filesystem::path program_data_models = knownProgramData() / L"models";
+    if (hasModelBundleAt(install_root)) {
+        return install_models;
+    }
+    if (hasModelBundleAt(program_data_models.parent_path())) {
+        return program_data_models;
+    }
+    return install_models;
+}
+
 void createControls(LauncherWindow& state) {
     state.font = static_cast<HFONT>(GetStockObject(DEFAULT_GUI_FONT));
     constexpr int label_x = 16;
@@ -154,76 +247,101 @@ void createControls(LauncherWindow& state) {
     state.source = createEdit(state, SourceEdit, edit_x, 18, 724);
     SetWindowTextW(state.source, L"rtsp://");
 
-    createLabel(state, L"Output folder", label_x, 54, 120);
-    state.output = createEdit(state, OutputEdit, edit_x, 54, edit_width);
-    createBrowseButton(state, OutputBrowse, 54);
+    createLabel(state, L"Camera ID", label_x, 54, 120);
+    state.source_label = createEdit(state, SourceLabelEdit, edit_x, 54, edit_width);
+    createControl(
+        state, 0, L"BUTTON", L"Load .env...", WS_TABSTOP | BS_PUSHBUTTON,
+        778, 54, 92, 25, LoadEnvButton);
 
-    createLabel(state, L"Analytics mode", label_x, 92, 120);
+    createLabel(state, L"Output folder", label_x, 90, 120);
+    state.output = createEdit(state, OutputEdit, edit_x, 90, edit_width);
+    createBrowseButton(state, OutputBrowse, 90);
+
+    createLabel(state, L"Analytics mode", label_x, 128, 120);
     state.analytics = createControl(
         state, 0, WC_COMBOBOXW, L"", WS_TABSTOP | CBS_DROPDOWNLIST,
-        edit_x, 90, 220, 200, AnalyticsCombo);
+        edit_x, 126, 220, 200, AnalyticsCombo);
     SendMessageW(state.analytics, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(L"PPE only"));
     SendMessageW(state.analytics, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(L"PPE + fall"));
     SendMessageW(state.analytics, CB_SETCURSEL, 1, 0);
 
-    createLabel(state, L"Compute", 410, 92, 75);
+    createLabel(state, L"Compute", 410, 128, 75);
     state.compute = createControl(
         state, 0, WC_COMBOBOXW, L"", WS_TABSTOP | CBS_DROPDOWNLIST,
-        486, 90, 180, 200, ComputeCombo);
+        486, 126, 180, 200, ComputeCombo);
     SendMessageW(state.compute, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(L"Auto"));
     SendMessageW(state.compute, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(L"CUDA"));
     SendMessageW(state.compute, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(L"CPU"));
     SendMessageW(state.compute, CB_SETCURSEL, 0, 0);
 
-    createLabel(state, L"PPE engine", label_x, 128, 120);
-    state.ppe_engine = createEdit(state, PpeEngineEdit, edit_x, 128, edit_width);
-    createBrowseButton(state, PpeEngineBrowse, 128);
+    createLabel(state, L"PPE engine", label_x, 164, 120);
+    state.ppe_engine = createEdit(state, PpeEngineEdit, edit_x, 164, edit_width);
+    createBrowseButton(state, PpeEngineBrowse, 164);
 
-    createLabel(state, L"Pose engine", label_x, 164, 120);
-    state.pose_engine = createEdit(state, PoseEngineEdit, edit_x, 164, edit_width);
-    createBrowseButton(state, PoseEngineBrowse, 164);
+    createLabel(state, L"Pose engine", label_x, 200, 120);
+    state.pose_engine = createEdit(state, PoseEngineEdit, edit_x, 200, edit_width);
+    createBrowseButton(state, PoseEngineBrowse, 200);
 
-    createLabel(state, L"PPE ONNX", label_x, 200, 120);
-    state.ppe_onnx = createEdit(state, PpeOnnxEdit, edit_x, 200, edit_width);
-    createBrowseButton(state, PpeOnnxBrowse, 200);
+    createLabel(state, L"PPE ONNX", label_x, 236, 120);
+    state.ppe_onnx = createEdit(state, PpeOnnxEdit, edit_x, 236, edit_width);
+    createBrowseButton(state, PpeOnnxBrowse, 236);
 
-    createLabel(state, L"Pose ONNX", label_x, 236, 120);
-    state.pose_onnx = createEdit(state, PoseOnnxEdit, edit_x, 236, edit_width);
-    createBrowseButton(state, PoseOnnxBrowse, 236);
+    createLabel(state, L"Pose ONNX", label_x, 272, 120);
+    state.pose_onnx = createEdit(state, PoseOnnxEdit, edit_x, 272, edit_width);
+    createBrowseButton(state, PoseOnnxBrowse, 272);
 
-    createLabel(state, L"PPE labels", label_x, 272, 120);
-    state.labels = createEdit(state, LabelsEdit, edit_x, 272, edit_width);
+    createLabel(state, L"PPE labels", label_x, 308, 120);
+    state.labels = createEdit(state, LabelsEdit, edit_x, 308, edit_width);
 
     state.show = createControl(
         state, 0, L"BUTTON", L"Show annotated video window",
-        WS_TABSTOP | BS_AUTOCHECKBOX, edit_x, 308, 260, 24, ShowCheck);
+        WS_TABSTOP | BS_AUTOCHECKBOX, edit_x, 344, 260, 24, ShowCheck);
 
     state.validate = createControl(
         state, 0, L"BUTTON", L"Validate", WS_TABSTOP | BS_PUSHBUTTON,
-        edit_x, 348, 110, 30, ValidateButton);
+        edit_x, 384, 110, 30, ValidateButton);
     state.start = createControl(
         state, 0, L"BUTTON", L"Start", WS_TABSTOP | BS_DEFPUSHBUTTON,
-        270, 348, 110, 30, StartButton);
+        270, 384, 110, 30, StartButton);
     state.stop = createControl(
         state, 0, L"BUTTON", L"Stop", WS_TABSTOP | BS_PUSHBUTTON,
-        394, 348, 110, 30, StopButton);
+        394, 384, 110, 30, StopButton);
     EnableWindow(state.stop, FALSE);
 
-    createLabel(state, L"Status", label_x, 400, 120);
+    createLabel(state, L"Status", label_x, 436, 120);
     state.status = createControl(
         state, WS_EX_CLIENTEDGE, L"STATIC", L"Ready", SS_LEFT | SS_CENTERIMAGE,
-        edit_x, 396, 724, 30, StatusText);
-    createLabel(state, L"Log path", label_x, 444, 120);
-    state.log_path = createEdit(state, LogPathEdit, edit_x, 440, 724, true);
+        edit_x, 432, 724, 30, StatusText);
+    createLabel(state, L"Log path", label_x, 480, 120);
+    state.log_path = createEdit(state, LogPathEdit, edit_x, 476, 724, true);
 
     state.program_data = knownProgramData();
-    const auto models = state.program_data / L"models";
+    const auto models = preferredModelRoot();
     setText(state.output, state.program_data / L"output");
     setText(state.ppe_engine, models / L"ppe.engine");
     setText(state.pose_engine, models / L"pose.engine");
     setText(state.ppe_onnx, models / L"ppe.onnx");
     setText(state.pose_onnx, models / L"pose.onnx");
+    SetWindowTextW(state.labels, kBundledPpeLabels);
+    SetWindowTextW(state.source_label, L"CAM_CUAJONE_01");
     setText(state.log_path, state.program_data / L"logs");
+
+    std::error_code models_error;
+    const auto install_models = siblingRuntime().parent_path() / L"models";
+    const auto program_data_models = state.program_data / L"models";
+    const bool any_model_installed = std::filesystem::is_regular_file(install_models / L"ppe.engine", models_error)
+        || std::filesystem::is_regular_file(install_models / L"pose.engine", models_error)
+        || std::filesystem::is_regular_file(install_models / L"ppe.onnx", models_error)
+        || std::filesystem::is_regular_file(install_models / L"pose.onnx", models_error)
+        || std::filesystem::is_regular_file(program_data_models / L"ppe.engine", models_error)
+        || std::filesystem::is_regular_file(program_data_models / L"pose.engine", models_error)
+        || std::filesystem::is_regular_file(program_data_models / L"ppe.onnx", models_error)
+        || std::filesystem::is_regular_file(program_data_models / L"pose.onnx", models_error);
+    if (!any_model_installed) {
+        setStatus(
+            state,
+            L"No AI models are installed yet. Browse to ppe.engine / pose.engine or ppe.onnx / pose.onnx under the app folder or ProgramData.");
+    }
 }
 
 std::filesystem::path pickFile(HWND owner, const COMDLG_FILTERSPEC* filters, UINT filter_count) {
@@ -251,6 +369,106 @@ std::filesystem::path pickFile(HWND owner, const COMDLG_FILTERSPEC* filters, UIN
     }
     dialog->Release();
     return path;
+}
+
+void selectCombo(HWND control, std::wstring_view value, int fallback) {
+    const LRESULT index = SendMessageW(
+        control, CB_FINDSTRINGEXACT, static_cast<WPARAM>(-1),
+        reinterpret_cast<LPARAM>(std::wstring(value).c_str()));
+    SendMessageW(control, CB_SETCURSEL, index == CB_ERR ? fallback : index, 0);
+}
+
+std::wstring lowerExtension(const std::filesystem::path& path) {
+    std::wstring extension = path.extension().wstring();
+    std::transform(extension.begin(), extension.end(), extension.begin(), [](wchar_t character) {
+        return static_cast<wchar_t>(std::towlower(character));
+    });
+    return extension;
+}
+
+void loadEnv(LauncherWindow& state) {
+    static constexpr COMDLG_FILTERSPEC filters[] = {
+        {L"Environment file", L"*.env;*.txt"}, {L"All files", L"*.*"},
+    };
+    const std::filesystem::path env_path = pickFile(
+        state.window, filters, static_cast<UINT>(std::size(filters)));
+    if (env_path.empty()) return;
+
+    const auto values = readEnvFile(env_path);
+    const auto applyText = [&](std::wstring_view key, HWND control) {
+        if (const auto value = envValue(values, key)) SetWindowTextW(control, value->c_str());
+    };
+    applyText(L"RTSP_URL", state.source);
+    applyText(L"CAMERA_ID", state.source_label);
+    if (const auto output = envValue(values, L"OUTPUT_DIR")) {
+        setText(state.output, resolveEnvPath(env_path, *output));
+    }
+    if (const auto mode = envValue(values, L"ANALYTICS_MODE")) {
+        selectCombo(state.analytics, *mode == L"ppe-only" ? L"PPE only" : L"PPE + fall", 1);
+    }
+    if (const auto show = envValue(values, L"SHOW_WINDOW")) {
+        SendMessageW(state.show, BM_SETCHECK,
+            (*show == L"1" || upper(*show) == L"TRUE") ? BST_CHECKED : BST_UNCHECKED, 0);
+    }
+
+    std::vector<std::wstring> ignored;
+    const auto applyModel = [&](std::wstring_view key, HWND onnx, HWND engine) {
+        const auto configured = envValue(values, key);
+        if (!configured) return;
+        const std::filesystem::path model = resolveEnvPath(env_path, *configured);
+        if (lowerExtension(model) == L".onnx") SetWindowTextW(onnx, model.c_str());
+        else if (lowerExtension(model) == L".engine") SetWindowTextW(engine, model.c_str());
+        else ignored.emplace_back(std::wstring(key) + L" (native runtime requires .onnx or .engine)");
+    };
+    applyModel(L"PPE_MODEL_PATH", state.ppe_onnx, state.ppe_engine);
+    applyModel(L"POSE_MODEL_PATH", state.pose_onnx, state.pose_engine);
+
+    state.runtime_options.clear();
+    const auto append = [&](std::wstring_view key, std::wstring_view option) {
+        if (const auto value = envValue(values, key)) {
+            state.runtime_options.emplace_back(std::wstring(option), *value);
+        }
+    };
+    append(L"TARGET_INFERENCE_FPS", L"--target-fps");
+    append(L"POSE_CONF", L"--pose-conf");
+    append(L"PPE_CONF", L"--ppe-conf");
+    append(L"IOU_THRESHOLD", L"--nms-iou");
+    append(L"EPP_WINDOW", L"--ppe-window");
+    append(L"EPP_MIN_SAMPLES", L"--ppe-min-samples");
+    append(L"EPP_PRESENT_RATIO", L"--ppe-present-ratio");
+    append(L"EPP_ALERT_COOLDOWN_S", L"--ppe-cooldown");
+    append(L"FALL_CONFIRM_FRAMES", L"--fall-confirm-frames");
+    append(L"FALL_RESET_FRAMES", L"--fall-reset-frames");
+    append(L"FALL_ALERT_COOLDOWN_S", L"--fall-cooldown");
+    append(L"FALL_ASPECT_RATIO", L"--fall-aspect-ratio");
+    append(L"FALL_TORSO_ANGLE_DEG", L"--fall-torso-angle");
+    append(L"FALL_DESCENT_RATIO", L"--fall-descent-ratio");
+    append(L"FALL_NEAR_FLOOR_RATIO", L"--fall-near-floor-ratio");
+    if (const auto ttl = envValue(values, L"TRACK_TTL_S")) {
+        state.runtime_options.emplace_back(L"--ppe-track-ttl", *ttl);
+        state.runtime_options.emplace_back(L"--fall-track-ttl", *ttl);
+    }
+    append(L"RECONNECT_DELAY_S", L"--reconnect-delay");
+    append(L"RTSP_TRANSPORT", L"--rtsp-transport");
+    append(L"RTSP_OPEN_TIMEOUT_MS", L"--capture-open-timeout-ms");
+    append(L"RTSP_READ_TIMEOUT_MS", L"--capture-read-timeout-ms");
+    if (const auto device = envValue(values, L"YOLO_DEVICE")) {
+        if (upper(*device) != L"CPU" && upper(*device) != L"AUTO") {
+            state.runtime_options.emplace_back(L"--device", *device);
+        }
+    }
+
+    for (const std::wstring_view key : {
+             L"YOLO_TRACKER", L"USE_FP16", L"SHOW_TEMPORARY_TRACK_ID",
+             L"EXCEL_EXPORT_EVERY_EVENTS", L"POSE_IMGSZ", L"PPE_IMGSZ",
+             L"RTSP_SOCKET_TIMEOUT_S"}) {
+        if (envValue(values, key)) ignored.emplace_back(key);
+    }
+    if (ignored.empty()) {
+        setStatus(state, L"Loaded .env settings");
+    } else {
+        setStatus(state, L"Loaded .env; Python-only settings were ignored");
+    }
 }
 
 std::filesystem::path pickFolder(HWND owner) {
@@ -293,6 +511,8 @@ LauncherSettings readSettings(const LauncherWindow& state) {
     settings.ppe_onnx = editText(state.ppe_onnx);
     settings.pose_onnx = editText(state.pose_onnx);
     settings.ppe_labels = editText(state.labels);
+    settings.source_label = editText(state.source_label);
+    settings.runtime_options = state.runtime_options;
     settings.show_window = SendMessageW(state.show, BM_GETCHECK, 0, 0) == BST_CHECKED;
     return settings;
 }
@@ -530,10 +750,10 @@ void finishProcess(LauncherWindow& state, DWORD exit_code, bool preflight) {
     if (state.output_pump.joinable()) state.output_pump.join();
     closeProcessHandles(state);
     setRunning(state, false);
-    if (exit_code == 0) {
-        setStatus(state, preflight ? L"Validation passed" : L"Runtime completed successfully");
-    } else if (stopped) {
+    if (stopped) {
         setStatus(state, L"Runtime stopped (exit code " + std::to_wstring(exit_code) + L")");
+    } else if (exit_code == 0) {
+        setStatus(state, preflight ? L"Validation passed" : L"Runtime completed successfully");
     } else {
         setStatus(
             state,
@@ -606,6 +826,7 @@ LRESULT CALLBACK windowProcedure(HWND window, UINT message, WPARAM wparam, LPARA
                 if (id == ValidateButton) launchRuntime(*state, true);
                 else if (id == StartButton) launchRuntime(*state, false);
                 else if (id == StopButton) requestStop(*state);
+                else if (id == LoadEnvButton) loadEnv(*state);
                 else if (id == OutputBrowse
                     || id == PpeEngineBrowse || id == PoseEngineBrowse
                     || id == PpeOnnxBrowse || id == PoseOnnxBrowse) {
@@ -673,7 +894,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show_command) {
     HWND window = CreateWindowExW(
         0, kWindowClass, L"Cuajone PPE Monitor",
         WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX,
-        CW_USEDEFAULT, CW_USEDEFAULT, 906, 530,
+        CW_USEDEFAULT, CW_USEDEFAULT, 906, 570,
         nullptr, nullptr, instance, &state);
     if (window == nullptr) {
         MessageBoxW(nullptr, L"Launcher window creation failed", L"Cuajone launcher", MB_OK | MB_ICONERROR);

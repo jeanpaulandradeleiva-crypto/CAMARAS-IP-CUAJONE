@@ -103,6 +103,8 @@ void testModelMatrixAndArguments() {
     TemporaryTree tree;
     auto settings = baseSettings(tree);
     settings.compute_mode = ComputeMode::Auto;
+    settings.source_label = L"CAM_CUAJONE_01";
+    settings.runtime_options = {{L"--target-fps", L"12"}, {L"--ppe-conf", L"0.48"}};
     requireThrows([&] { buildLaunchPlan(settings, false); },
         "Auto accepted no model candidate");
 
@@ -118,6 +120,10 @@ void testModelMatrixAndArguments() {
     require(contains(cuda_auto.arguments, L"--preflight")
             && contains(cuda_auto.arguments, L"--ppe-engine")
             && contains(cuda_auto.arguments, L"--pose-engine")
+            && contains(cuda_auto.arguments, L"--source-label")
+            && contains(cuda_auto.arguments, L"CAM_CUAJONE_01")
+            && contains(cuda_auto.arguments, L"--target-fps")
+            && contains(cuda_auto.arguments, L"12")
             && !contains(cuda_auto.arguments, L"--ppe-onnx"),
         "CUDA Auto plan emitted the wrong arguments");
 

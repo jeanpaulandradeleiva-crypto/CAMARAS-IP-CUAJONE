@@ -177,6 +177,7 @@ int monitor(
     std::uint64_t sequence{};
     auto next_inference = Clock::time_point::min();
     std::optional<std::string> last_capture_error;
+    bool first_inference_logged{};
     if (config.show_window) cv::namedWindow("Cuajone native analytics", cv::WINDOW_NORMAL);
 
     while (!stop_requested.load(std::memory_order_relaxed)) {
@@ -203,6 +204,11 @@ int monitor(
             now.time_since_epoch()).count();
         const ProcessedFrame processed = pipeline.processFrame(
             frame, config.source_label, sequence, monotonic_ms, observedAtUtc());
+        if (!first_inference_logged) {
+            std::cout << "Inference: first frame processed | people: "
+                      << processed.canonical.people.size() << '\n';
+            first_inference_logged = true;
+        }
         const float keypoint_threshold = std::clamp(config.pose_confidence, 0.25F, 0.50F);
         for (const auto& person : processed.canonical.people) {
             if (config.analytics_mode == AnalyticsMode::PpeFall) {
@@ -234,7 +240,10 @@ int monitor(
         if (config.show_window) {
             cv::imshow("Cuajone native analytics", frame);
             const int key = cv::waitKey(1) & 0xFF;
-            if (key == 'q' || key == 27) stop_requested.store(true, std::memory_order_relaxed);
+            if (key == 'q' || key == 27
+                || cv::getWindowProperty("Cuajone native analytics", cv::WND_PROP_VISIBLE) < 1.0) {
+                stop_requested.store(true, std::memory_order_relaxed);
+            }
         }
     }
     capture.stop();

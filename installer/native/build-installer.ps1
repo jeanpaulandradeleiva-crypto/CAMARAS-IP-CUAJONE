@@ -12,23 +12,29 @@ param(
     [string]$BuildMode = "Release",
 
     [switch]$AllowUnsignedPreview,
+    [switch]$SkipModelBundle,
 
-    [string]$ToolRoot = "D:\DevTools\CuajoneNative",
-    [string]$WixToolRoot = "D:\DevTools\CuajoneNative\wix",
+    [string]$ToolRoot,
+    [string]$WixToolRoot,
     [string]$WixVersion = "6.0.2",
-    [string]$ReleaseExecutable = "D:\DevTools\CuajoneNative\build\presets\windows-msvc\Release\cuajone_native.exe",
-    [string]$LauncherExecutable = "D:\DevTools\CuajoneNative\build\presets\windows-msvc\Release\cuajone_launcher.exe",
-    [string]$HardwareProbeCustomAction = "D:\DevTools\CuajoneNative\build\presets\windows-msvc\Release\CuajoneHardwareProbeCA.dll",
-    [string]$StageDir = "D:\DevTools\CuajoneNative\installer\stage",
-    [string]$WixBuildDir = "D:\DevTools\CuajoneNative\installer\wix-build",
-    [string]$OutputDir = "D:\DevTools\CuajoneNative\installer\output",
-    [string]$SupersededOutputDir = "D:\DevTools\CuajoneNative\installer\superseded",
-    [string]$VerificationRoot = "D:\DevTools\CuajoneNative\installer\msi-verification",
+    [string]$ReleaseExecutable,
+    [string]$LauncherExecutable,
+    [string]$HardwareProbeCustomAction,
+    [string]$StageDir,
+    [string]$WixBuildDir,
+    [string]$OutputDir,
+    [string]$SupersededOutputDir,
+    [string]$VerificationRoot,
     [string]$SourceRevision = $env:CUAJONE_SOURCE_REVISION,
     [string]$SourceArchiveUrl = $env:CUAJONE_SOURCE_ARCHIVE_URL,
     [string]$SourceArchiveSha256 = $env:CUAJONE_SOURCE_ARCHIVE_SHA256,
     [string]$FfmpegSourceArchiveUrl = $env:CUAJONE_FFMPEG_SOURCE_ARCHIVE_URL,
     [string]$FfmpegSourceArchiveSha256 = $env:CUAJONE_FFMPEG_SOURCE_ARCHIVE_SHA256,
+    [string]$PythonExecutable = $env:CUAJONE_PYTHON_EXECUTABLE,
+    [string]$PpeModelPath = $env:CUAJONE_PPE_MODEL_PATH,
+    [string]$PoseModelPath = $env:CUAJONE_POSE_MODEL_PATH,
+    [string]$PpeEnginePath = $env:CUAJONE_PPE_ENGINE_PATH,
+    [string]$PoseEnginePath = $env:CUAJONE_POSE_ENGINE_PATH,
     [string]$ParityReceiptPath = $env:CUAJONE_PARITY_RECEIPT,
     [string]$SignToolPath = $env:CUAJONE_SIGNTOOL_PATH,
     [string]$SignCommand = $env:CUAJONE_SIGN_COMMAND
@@ -39,6 +45,18 @@ $ErrorActionPreference = "Stop"
 
 $scriptRoot = $PSScriptRoot
 $projectRoot = (Resolve-Path -LiteralPath (Join-Path $scriptRoot "..\..")).Path
+$localToolRoot = Join-Path $projectRoot ".tools\native"
+if ([string]::IsNullOrWhiteSpace($ToolRoot)) { $ToolRoot = $localToolRoot }
+if ([string]::IsNullOrWhiteSpace($WixToolRoot)) { $WixToolRoot = Join-Path $ToolRoot "wix" }
+$releaseDirectory = Join-Path $ToolRoot "build\presets\windows-msvc"
+if ([string]::IsNullOrWhiteSpace($ReleaseExecutable)) { $ReleaseExecutable = Join-Path $releaseDirectory "cuajone_native.exe" }
+if ([string]::IsNullOrWhiteSpace($LauncherExecutable)) { $LauncherExecutable = Join-Path $releaseDirectory "cuajone_launcher.exe" }
+if ([string]::IsNullOrWhiteSpace($HardwareProbeCustomAction)) { $HardwareProbeCustomAction = Join-Path $releaseDirectory "CuajoneHardwareProbeCA.dll" }
+if ([string]::IsNullOrWhiteSpace($StageDir)) { $StageDir = Join-Path $ToolRoot "installer\stage" }
+if ([string]::IsNullOrWhiteSpace($WixBuildDir)) { $WixBuildDir = Join-Path $ToolRoot "installer\wix-build" }
+if ([string]::IsNullOrWhiteSpace($OutputDir)) { $OutputDir = Join-Path $ToolRoot "installer\output" }
+if ([string]::IsNullOrWhiteSpace($SupersededOutputDir)) { $SupersededOutputDir = Join-Path $ToolRoot "installer\superseded" }
+if ([string]::IsNullOrWhiteSpace($VerificationRoot)) { $VerificationRoot = Join-Path $ToolRoot "installer\msi-verification" }
 $packageSource = Join-Path $scriptRoot "Package.wxs"
 $packageProject = Join-Path $scriptRoot "CuajonePpeMonitor.wixproj"
 $iconGenerator = Join-Path $scriptRoot "generate-icon.ps1"
@@ -64,10 +82,11 @@ function Assert-Directory([string]$Path, [string]$Description) {
     }
 }
 
-function Assert-DDrivePath([string]$Path, [string]$Description) {
+function Assert-ToolRootPath([string]$Path, [string]$Description) {
     $fullPath = [System.IO.Path]::GetFullPath($Path)
-    if (-not $fullPath.StartsWith("D:\", [System.StringComparison]::OrdinalIgnoreCase)) {
-        throw "$Description must remain on D: $fullPath"
+    $fullToolRoot = [System.IO.Path]::GetFullPath($localToolRoot).TrimEnd('\')
+    if ($fullPath -cne $fullToolRoot -and -not $fullPath.StartsWith("$fullToolRoot\", [System.StringComparison]::OrdinalIgnoreCase)) {
+        throw "$Description must remain under the repository-local tool root: $fullPath"
     }
 }
 
@@ -83,25 +102,149 @@ function Assert-Sha256([string]$Value, [string]$Description) {
     }
 }
 
+function Resolve-FirstExistingPath([string[]]$Candidates, [string]$Description) {
+    foreach ($candidate in $Candidates) {
+        if ([string]::IsNullOrWhiteSpace($candidate)) {
+            continue
+        }
+        $resolved = $candidate
+        if (-not [System.IO.Path]::IsPathRooted($resolved)) {
+            $resolved = Join-Path $projectRoot $resolved
+        }
+        if (Test-Path -LiteralPath $resolved -PathType Leaf) {
+            return (Resolve-Path -LiteralPath $resolved).Path
+        }
+    }
+    throw "$Description was not found. Checked: $($Candidates -join ', ')"
+}
+
+function Resolve-ModelSource([string]$ConfiguredPath, [string[]]$FallbackCandidates, [string]$Description) {
+    if (-not [string]::IsNullOrWhiteSpace($ConfiguredPath)) {
+        if (-not [System.IO.Path]::IsPathRooted($ConfiguredPath)) {
+            $ConfiguredPath = Join-Path $projectRoot $ConfiguredPath
+        }
+        Assert-File $ConfiguredPath $Description
+        return (Resolve-Path -LiteralPath $ConfiguredPath).Path
+    }
+    return Resolve-FirstExistingPath $FallbackCandidates $Description
+}
+
+function Export-OnnxModel(
+    [string]$PythonPath,
+    [string]$SourceModel,
+    [string]$OutputPath,
+    [string]$Task
+) {
+    Assert-File $PythonPath "Python executable for ONNX export"
+    Assert-File $SourceModel "Source model"
+    $outputParent = Split-Path -Parent $OutputPath
+    Ensure-Directory $outputParent
+
+    $pyCode = "import sys; from ultralytics import YOLO; model = YOLO(r'$SourceModel'); model.export(format='onnx', imgsz=640)"
+    $output = @(& $PythonPath -c $pyCode 2>&1)
+    if ($LASTEXITCODE -ne 0) {
+        throw "ONNX export failed for $SourceModel`n$($output -join [Environment]::NewLine)"
+    }
+
+    $generatedOnnx = [System.IO.Path]::ChangeExtension($SourceModel, ".onnx")
+    if (-not (Test-Path -LiteralPath $generatedOnnx -PathType Leaf)) {
+        throw "Expected ONNX file not found at $generatedOnnx after export"
+    }
+    Copy-Item -LiteralPath $generatedOnnx -Destination $OutputPath -Force
+    Assert-File $OutputPath "Exported ONNX model"
+    $sha256 = (Get-FileHash -Algorithm SHA256 -LiteralPath $OutputPath).Hash.ToLowerInvariant()
+
+    [pscustomobject]@{
+        source = (Resolve-Path -LiteralPath $SourceModel).Path
+        sourceSha256 = (Get-FileHash -Algorithm SHA256 -LiteralPath $SourceModel).Hash.ToLowerInvariant()
+        task = $Task
+        onnx = $OutputPath
+        onnxSha256 = $sha256
+    }
+}
+
+function Write-OnnxManifest(
+    [string]$PythonPath,
+    [string]$OnnxPath,
+    [ValidateSet("ppe", "pose")]
+    [string]$Role,
+    [string]$SourceModel
+) {
+    Assert-File $PythonPath "Python executable for ONNX manifest generation"
+    Assert-File $OnnxPath "ONNX model"
+    Assert-File $SourceModel "Source model"
+    $manifestPath = "$OnnxPath.manifest.json"
+    $python = @'
+import hashlib
+import json
+import sys
+
+import onnx
+
+model_path, role, source_model = sys.argv[1:]
+model = onnx.load(model_path, load_external_data=False)
+
+def tensor_contract(values):
+    if len(values) != 1:
+        raise RuntimeError("exported ONNX model must expose exactly one input and one output")
+    tensor = values[0].type.tensor_type
+    if tensor.elem_type != onnx.TensorProto.FLOAT:
+        raise RuntimeError("exported ONNX tensors must use float32")
+    shape = []
+    for dimension in tensor.shape.dim:
+        if not dimension.HasField("dim_value") or dimension.dim_value <= 0:
+            raise RuntimeError("exported ONNX tensors must use fixed positive dimensions")
+        shape.append(dimension.dim_value)
+    return {"name": values[0].name, "element_type": "float32", "shape": shape}
+
+with open(model_path, "rb") as stream:
+    model_bytes = stream.read()
+manifest = {
+    "schema_version": 1,
+    "artifact_type": "onnx",
+    "role": role,
+    "model_file": model_path.rsplit("\\", 1)[-1].rsplit("/", 1)[-1],
+    "model_sha256": hashlib.sha256(model_bytes).hexdigest(),
+    "model_size_bytes": len(model_bytes),
+    "external_data": False,
+    "custom_operators": False,
+    "input": tensor_contract(model.graph.input),
+    "output": tensor_contract(model.graph.output),
+    "provenance": {
+        "source_uri": "urn:cuajone:bundled-model:" + source_model,
+        "exporter": "ultralytics-onnx-export",
+        "license": "NOASSERTION",
+    },
+}
+print(json.dumps(manifest, separators=(",", ":")))
+'@
+    $output = @(& $PythonPath -c $python $OnnxPath $Role ([System.IO.Path]::GetFileName($SourceModel)) 2>&1)
+    if ($LASTEXITCODE -ne 0) {
+        throw "ONNX manifest generation failed for $OnnxPath`n$($output -join [Environment]::NewLine)"
+    }
+    ($output -join [Environment]::NewLine) | Set-Content -LiteralPath $manifestPath -Encoding utf8 -NoNewline
+    Assert-File $manifestPath "ONNX model manifest"
+    [pscustomobject]@{
+        path = $manifestPath
+        sha256 = (Get-FileHash -Algorithm SHA256 -LiteralPath $manifestPath).Hash.ToLowerInvariant()
+    }
+}
+
 function Ensure-Directory([string]$Path) {
-    Assert-DDrivePath $Path "Generated directory"
+    Assert-ToolRootPath $Path "Generated directory"
     if (Test-Path -LiteralPath $Path) {
         Assert-Directory $Path "Generated directory"
         return
     }
-    $parent = Split-Path -Parent $Path
-    Assert-Directory $parent "Generated directory parent"
-    New-Item -ItemType Directory -Path $Path | Out-Null
+    New-Item -ItemType Directory -Path $Path -Force | Out-Null
 }
 
 function Reset-Directory([string]$Path) {
-    Assert-DDrivePath $Path "Generated directory"
-    $parent = Split-Path -Parent $Path
-    Assert-Directory $parent "Generated directory parent"
+    Assert-ToolRootPath $Path "Generated directory"
     if (Test-Path -LiteralPath $Path) {
         Remove-Item -LiteralPath $Path -Recurse -Force
     }
-    New-Item -ItemType Directory -Path $Path | Out-Null
+    New-Item -ItemType Directory -Path $Path -Force | Out-Null
 }
 
 function Get-PeDependencies([string]$Path, [string]$Dumpbin) {
@@ -152,15 +295,28 @@ function ConvertTo-XmlValue([string]$Value) {
     [System.Security.SecurityElement]::Escape($Value)
 }
 
-function Write-PayloadSource([string]$Root, [string]$OutputPath) {
+function Write-PayloadSource {
+    param(
+        [string]$Root,
+        [string]$OutputPath,
+        [string]$ComponentGroupName = "PayloadComponents",
+        [string]$IncludePrefix = $null,
+        [string]$ExcludePrefix = $null
+    )
     $lines = [System.Collections.Generic.List[string]]::new()
     $lines.Add('<!-- Generated by build-installer.ps1. Do not commit. -->')
     $lines.Add('<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs">')
     $lines.Add('  <Fragment>')
-    $lines.Add('    <ComponentGroup Id="PayloadComponents" Directory="INSTALLFOLDER">')
+    $lines.Add("    <ComponentGroup Id=`"$ComponentGroupName`" Directory=`"INSTALLFOLDER`">")
 
     foreach ($file in Get-ChildItem -LiteralPath $Root -Recurse -File | Sort-Object FullName) {
         $relative = [System.IO.Path]::GetRelativePath($Root, $file.FullName).Replace('/', '\')
+        if ($IncludePrefix -and -not $relative.StartsWith($IncludePrefix, [StringComparison]::OrdinalIgnoreCase)) {
+            continue
+        }
+        if ($ExcludePrefix -and $relative.StartsWith($ExcludePrefix, [StringComparison]::OrdinalIgnoreCase)) {
+            continue
+        }
         $hex = Get-StableHex $relative
         $componentId = "Component_$($hex.Substring(0, 24))"
         $fileId = switch -CaseSensitive ($relative) {
@@ -205,7 +361,7 @@ function Write-PayloadSource([string]$Root, [string]$OutputPath) {
 }
 
 foreach ($path in @($StageDir, $WixBuildDir, $OutputDir, $SupersededOutputDir, $VerificationRoot, $WixToolRoot)) {
-    Assert-DDrivePath $path "Build path"
+    Assert-ToolRootPath $path "Build path"
 }
 Assert-Directory $ToolRoot "Native tool root"
 Assert-Directory $WixToolRoot "WiX tool root"
@@ -583,6 +739,98 @@ $ffmpegSourceAvailability = if ($BuildMode -eq "Release") {
 } else {
     "NOT PUBLISHED FOR THIS INTERNAL PREVIEW. External distribution is blocked."
 }
+$includeModelBundle = -not $SkipModelBundle
+$hasModels = $false
+$ppeEngineSha256 = $null
+$poseEngineSha256 = $null
+
+if ($PpeEnginePath -or $PoseEnginePath) {
+    if (-not $PpeEnginePath) { throw "-PpeEnginePath is required when providing pre-built engines" }
+    if (-not $PoseEnginePath) { throw "-PoseEnginePath is required when providing pre-built engines" }
+    Assert-File $PpeEnginePath "Pre-built PPE TensorRT engine"
+    Assert-File $PoseEnginePath "Pre-built pose TensorRT engine"
+    $stageModelsDir = New-Item -ItemType Directory -Path (Join-Path $StageDir "bin\models") -Force
+    Copy-StagedInput $PpeEnginePath (Join-Path $stageModelsDir.FullName "ppe.engine") "tool" "Pre-built PPE TensorRT engine"
+    Copy-StagedInput $PoseEnginePath (Join-Path $stageModelsDir.FullName "pose.engine") "tool" "Pre-built pose TensorRT engine"
+    $ppeEngineSha256 = (Get-FileHash -Algorithm SHA256 -LiteralPath $PpeEnginePath).Hash.ToLowerInvariant()
+    $poseEngineSha256 = (Get-FileHash -Algorithm SHA256 -LiteralPath $PoseEnginePath).Hash.ToLowerInvariant()
+    $hasModels = $true
+    $modelBundleSource = "pre-built"
+    @"
+Cuajone PPE Monitor model bundle
+
+Build mode: $BuildMode
+Bundle source: Pre-built external engines
+Bundle included: yes
+
+PPE engine: $PpeEnginePath
+PPE engine SHA-256: $ppeEngineSha256
+
+Pose engine: $PoseEnginePath
+Pose engine SHA-256: $poseEngineSha256
+"@ | Set-Content -LiteralPath (Join-Path $stageDocs.FullName "MODEL-BUNDLE.txt") -Encoding UTF8
+} elseif ($includeModelBundle) {
+    $pythonExecutable = Resolve-FirstExistingPath @(
+        $PythonExecutable,
+        ".venv\Scripts\python.exe"
+    ) "Python executable for ONNX export"
+    $ppeModelSource = Resolve-ModelSource $PpeModelPath @(
+        "best_ppe.pt"
+    ) "Bundled PPE source model"
+    $poseModelSource = Resolve-ModelSource $PoseModelPath @(
+        "yolo26s-pose.pt",
+        "yolo26n-pose.pt"
+    ) "Bundled pose source model"
+    $exportRoot = Join-Path $ToolRoot "installer\model-export\$Version"
+    Reset-Directory $exportRoot
+
+    Write-Host "Step 1/2: Exporting PPE .pt -> .onnx..."
+    $ppeOnnxResult = Export-OnnxModel $pythonExecutable $ppeModelSource (Join-Path $exportRoot "ppe\ppe.onnx") "detect"
+    $ppeManifest = Write-OnnxManifest $pythonExecutable $ppeOnnxResult.onnx "ppe" $ppeModelSource
+    Write-Host "Step 2/2: Exporting pose .pt -> .onnx..."
+    $poseOnnxResult = Export-OnnxModel $pythonExecutable $poseModelSource (Join-Path $exportRoot "pose\pose.onnx") "pose"
+    $poseManifest = Write-OnnxManifest $pythonExecutable $poseOnnxResult.onnx "pose" $poseModelSource
+
+    $null = New-Item -ItemType Directory -Path (Join-Path $StageDir "bin\models") -Force
+    Copy-StagedInput $ppeOnnxResult.onnx (Join-Path $StageDir "bin\models\ppe.onnx") "tool" "Auto-exported PPE ONNX model"
+    Copy-StagedInput $ppeManifest.path (Join-Path $StageDir "bin\models\ppe.onnx.manifest.json") "tool" "PPE ONNX model manifest"
+    Copy-StagedInput $poseOnnxResult.onnx (Join-Path $StageDir "bin\models\pose.onnx") "tool" "Auto-exported pose ONNX model"
+    Copy-StagedInput $poseManifest.path (Join-Path $StageDir "bin\models\pose.onnx.manifest.json") "tool" "Pose ONNX model manifest"
+    $hasModels = $true
+    $modelBundleSource = "auto-exported-onnx"
+
+    @"
+Cuajone PPE Monitor model bundle
+
+Build mode: $BuildMode
+Bundle source: Auto-exported from .pt via Ultralytics ONNX export
+Bundle included: yes
+
+PPE source model: $($ppeOnnxResult.source)
+PPE source SHA-256: $($ppeOnnxResult.sourceSha256)
+PPE ONNX: $($ppeOnnxResult.onnx)
+PPE ONNX SHA-256: $($ppeOnnxResult.onnxSha256)
+PPE ONNX manifest SHA-256: $($ppeManifest.sha256)
+
+Pose source model: $($poseOnnxResult.source)
+Pose source SHA-256: $($poseOnnxResult.sourceSha256)
+Pose ONNX: $($poseOnnxResult.onnx)
+Pose ONNX SHA-256: $($poseOnnxResult.onnxSha256)
+Pose ONNX manifest SHA-256: $($poseManifest.sha256)
+"@ | Set-Content -LiteralPath (Join-Path $stageDocs.FullName "MODEL-BUNDLE.txt") -Encoding UTF8
+} else {
+    @"
+Cuajone PPE Monitor model bundle
+
+Build mode: $BuildMode
+Bundle included: no
+
+The MSI was built without AI models. The launcher will use bundled ONNX or TensorRT
+models when present under INSTALLFOLDER\bin\models; otherwise browse to externally
+supplied model files before starting the runtime.
+"@ | Set-Content -LiteralPath (Join-Path $stageDocs.FullName "MODEL-BUNDLE.txt") -Encoding UTF8
+}
+
 @"
 Cuajone PPE Monitor source offer and release correspondence
 
@@ -720,6 +968,54 @@ $metadata = [ordered]@{
     ffmpegBinaryMd5 = $ffmpegMd5
     ffmpegUpstreamVersion = "n4.4.6"
     ffmpegOpenCvBinariesCommit = "ea9240e39bc0d6a69d2b1f0ba4513bdc7612a41e"
+    modelBundle = if ($PpeEnginePath -or $PoseEnginePath) {
+        [ordered]@{
+            included = $true
+            source = "pre-built"
+            installRoot = "INSTALLFOLDER\bin\models"
+            ppe = [ordered]@{
+                source = $PpeEnginePath
+                sourceSha256 = $ppeEngineSha256
+                artifact = "bin/models/ppe.engine"
+            }
+            pose = [ordered]@{
+                source = $PoseEnginePath
+                sourceSha256 = $poseEngineSha256
+                artifact = "bin/models/pose.engine"
+            }
+        }
+    } elseif ($includeModelBundle) {
+        [ordered]@{
+            included = $true
+            source = "auto-exported-onnx"
+            installRoot = "INSTALLFOLDER\bin\models"
+            ppe = [ordered]@{
+                source = $ppeOnnxResult.source
+                sourceSha256 = $ppeOnnxResult.sourceSha256
+                artifact = "bin/models/ppe.onnx"
+                artifactSha256 = $ppeOnnxResult.onnxSha256
+                manifest = "bin/models/ppe.onnx.manifest.json"
+                manifestSha256 = $ppeManifest.sha256
+            }
+            pose = [ordered]@{
+                source = $poseOnnxResult.source
+                sourceSha256 = $poseOnnxResult.sourceSha256
+                artifact = "bin/models/pose.onnx"
+                artifactSha256 = $poseOnnxResult.onnxSha256
+                manifest = "bin/models/pose.onnx.manifest.json"
+                manifestSha256 = $poseManifest.sha256
+            }
+        }
+    } else {
+        [ordered]@{
+            included = $false
+            reason = if ($SkipModelBundle) {
+                "Model bundle was explicitly skipped"
+            } else {
+                "No model bundle was requested"
+            }
+        }
+    }
     projectLicenseSha256 = (Get-FileHash -Algorithm SHA256 -LiteralPath (Join-Path $projectRoot "LICENSE")).Hash.ToLowerInvariant()
     signingPolicy = if ($isInternalPilotSigning) {
         "Private Authenticode for enrolled internal pilot machines"
@@ -751,6 +1047,7 @@ $metadata = [ordered]@{
         "CuajonePPEMonitor.ico"
         "build-metadata.json"
         "docs/SOURCE-OFFER.txt"
+        "docs/MODEL-BUNDLE.txt"
         "docs/sbom.spdx.json"
         "licenses/Microsoft-VC-Runtime-REDISTRIBUTION-REFERENCE.txt"
         "licenses/NVIDIA-TensorRT-LICENSE-REFERENCE.txt"
@@ -788,8 +1085,13 @@ $licenseRtf = Join-Path $WixBuildDir "AGPL-3.0.rtf"
     Set-Content -LiteralPath $licenseRtf -Encoding ASCII
 
 $payloadSource = Join-Path $WixBuildDir "Payload.wxs"
-Write-PayloadSource $StageDir $payloadSource
+Write-PayloadSource $StageDir $payloadSource -ComponentGroupName "PayloadComponents" -ExcludePrefix "bin\models\"
 Assert-File $payloadSource "Generated WiX payload source"
+if ($hasModels) {
+    $modelsPayloadSource = Join-Path $WixBuildDir "Models.wxs"
+    Write-PayloadSource $StageDir $modelsPayloadSource -ComponentGroupName "ModelComponents" -IncludePrefix "bin\models\"
+    Assert-File $modelsPayloadSource "Generated WiX model source"
+}
 
 $outputBaseFilename = if ($BuildMode -eq "Preview") {
     "CuajonePPEMonitor-$Version-x64-Internal"
@@ -818,12 +1120,12 @@ $arpComments = if ($BuildMode -eq "Preview") {
 } else {
     "Open-source AGPL-3.0 release. Third-party components retain their own license terms."
 }
-$wixArguments = @(
-    "build",
-    $packageSource,
-    $payloadSource,
+$wixSourceFiles = @($packageSource, $payloadSource)
+if ($hasModels) { $wixSourceFiles += $modelsPayloadSource }
+$wixArguments = @("build") + $wixSourceFiles + @(
     "-arch", "x64",
     "-d", "StageDir=$StageDir",
+    "-d", "HasModels=$(if ($hasModels) { '1' } else { '0' })",
     "-d", "AppVersion=$Version",
     "-d", "MsiVersion=$msiVersion",
     "-d", "ArpComments=$arpComments",

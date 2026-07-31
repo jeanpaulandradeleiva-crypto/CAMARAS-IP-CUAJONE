@@ -2,8 +2,11 @@
 
 #include "cuajone/launcher_support.hpp"
 
+#define NOMINMAX
+
 #include <algorithm>
 #include <cwctype>
+#include <windows.h>
 #include <stdexcept>
 
 namespace cuajone::launcher {
@@ -60,6 +63,19 @@ bool hasNonWhitespace(std::wstring_view value) {
     });
 }
 
+std::string utf8FromWide(std::wstring_view value) {
+    if (value.empty()) return {};
+    const int required = WideCharToMultiByte(
+        CP_UTF8, 0, value.data(), static_cast<int>(value.size()), nullptr, 0, nullptr, nullptr);
+    if (required <= 0) return {};
+    std::string result(static_cast<std::size_t>(required), '\0');
+    const int written = WideCharToMultiByte(
+        CP_UTF8, 0, value.data(), static_cast<int>(value.size()),
+        result.data(), required, nullptr, nullptr);
+    if (written <= 0) return {};
+    return result;
+}
+
 void appendOption(
     std::vector<std::wstring>& arguments,
     std::wstring_view option,
@@ -100,20 +116,26 @@ LaunchPlan buildLaunchPlan(const LauncherSettings& settings, bool preflight) {
             && regularFile(adjacentOnnxManifest(settings.pose_onnx))));
 
     if (settings.compute_mode == ComputeMode::Cuda && !cuda_candidate) {
+        std::wstring message = needs_pose
+            ? L"CUDA requires PPE and pose TensorRT .engine files. This MSI includes ONNX models for CPU, not TensorRT engines; browse to valid .engine files under "
+            : L"CUDA requires a PPE TensorRT .engine file. This MSI includes ONNX models for CPU, not TensorRT engines; browse to a valid .engine file under ";
+        message += settings.ppe_engine.parent_path().wstring();
         throw std::invalid_argument(
-            needs_pose
-                ? "CUDA requires existing PPE and pose engines in PPE+fall mode"
-                : "CUDA requires an existing PPE engine");
+            utf8FromWide(message));
     }
     if (settings.compute_mode == ComputeMode::Cpu && !cpu_candidate) {
+        std::wstring message = needs_pose
+            ? L"CPU requires PPE and pose ONNX files, adjacent manifests, and PPE labels. The bundled ONNX model set is missing or incomplete; browse to valid .onnx files under "
+            : L"CPU requires a PPE ONNX file, its adjacent manifest, and PPE labels. The bundled ONNX model is missing or incomplete; browse to a valid .onnx file under ";
+        message += settings.ppe_onnx.parent_path().wstring();
         throw std::invalid_argument(
-            needs_pose
-                ? "CPU requires PPE and pose ONNX files, adjacent manifests, and PPE labels in PPE+fall mode"
-                : "CPU requires a PPE ONNX file, adjacent manifest, and PPE labels");
+            utf8FromWide(message));
     }
     if (settings.compute_mode == ComputeMode::Auto && !cuda_candidate && !cpu_candidate) {
+        std::wstring message = L"Auto requires a complete CUDA candidate or a complete CPU candidate. No usable bundled model set was found; browse to .engine or .onnx files under ";
+        message += settings.ppe_engine.parent_path().wstring();
         throw std::invalid_argument(
-            "Auto requires a complete CUDA candidate, a complete CPU candidate, or both");
+            utf8FromWide(message));
     }
 
     LaunchPlan result;
@@ -122,6 +144,10 @@ LaunchPlan buildLaunchPlan(const LauncherSettings& settings, bool preflight) {
     if (preflight) result.arguments.emplace_back(L"--preflight");
     result.arguments.emplace_back(L"--source");
     result.arguments.push_back(settings.source);
+    if (hasNonWhitespace(settings.source_label)) {
+        result.arguments.emplace_back(L"--source-label");
+        result.arguments.push_back(settings.source_label);
+    }
     appendOption(result.arguments, L"--output", settings.output);
     result.arguments.emplace_back(L"--mode");
     result.arguments.emplace_back(needs_pose ? L"ppe-fall" : L"ppe-only");
@@ -145,6 +171,12 @@ LaunchPlan buildLaunchPlan(const LauncherSettings& settings, bool preflight) {
     if (hasNonWhitespace(settings.ppe_labels)) {
         result.arguments.emplace_back(L"--ppe-labels");
         result.arguments.push_back(settings.ppe_labels);
+    }
+    for (const auto& [option, value] : settings.runtime_options) {
+        if (!option.empty() && hasNonWhitespace(value)) {
+            result.arguments.push_back(option);
+            result.arguments.push_back(value);
+        }
     }
     if (settings.show_window) result.arguments.emplace_back(L"--show");
     return result;

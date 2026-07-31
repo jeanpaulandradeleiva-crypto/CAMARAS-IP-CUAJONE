@@ -68,7 +68,11 @@
     <UI Id="CuajoneComputeUI">
       <Dialog Id="ComputeDlg" Width="370" Height="270" Title="Cuajone PPE Monitor - Compute">
         <Control Id="Next" Type="PushButton" X="236" Y="243" Width="56" Height="17" Default="yes" Text="Next">
+          <?if $(var.HasModels)=1 ?>
+          <Publish Event="NewDialog" Value="CustomizeDlg" />
+          <?else?>
           <Publish Event="NewDialog" Value="VerifyReadyDlg" />
+          <?endif?>
         </Control>
         <Control Id="Back" Type="PushButton" X="180" Y="243" Width="56" Height="17" Text="Back">
           <Publish Event="NewDialog" Value="InstallDirDlg" />
@@ -100,14 +104,26 @@
       </Dialog>
       <Publish Dialog="InstallDirDlg" Control="Next" Event="NewDialog" Value="ComputeDlg"
                Order="5" Condition="NOT Installed" />
+      <?if $(var.HasModels)=1 ?>
+      <Publish Dialog="CustomizeDlg" Control="Back" Event="NewDialog" Value="ComputeDlg" Order="1" />
+      <Publish Dialog="CustomizeDlg" Control="Next" Event="NewDialog" Value="VerifyReadyDlg" Order="1" />
+      <Publish Dialog="VerifyReadyDlg" Control="Back" Event="NewDialog" Value="CustomizeDlg"
+               Order="3" Condition="NOT Installed" />
+      <?else?>
       <Publish Dialog="VerifyReadyDlg" Control="Back" Event="NewDialog" Value="ComputeDlg"
                Order="3" Condition="NOT Installed" />
+      <?endif?>
     </UI>
 
     <Feature Id="MainFeature" Title="Cuajone PPE Monitor" Level="1">
       <ComponentGroupRef Id="PayloadComponents" />
       <ComponentGroupRef Id="RuntimeDataDirectories" />
     </Feature>
+    <?if $(var.HasModels)=1 ?>
+    <Feature Id="ModelsFeature" Title="AI Models (ONNX)" Description="Bundled ONNX models for PPE and pose detection. Uncheck to skip; the launcher can browse to external files." Level="1">
+      <ComponentGroupRef Id="ModelComponents" />
+    </Feature>
+    <?endif?>
   </Package>
 
   <Fragment>

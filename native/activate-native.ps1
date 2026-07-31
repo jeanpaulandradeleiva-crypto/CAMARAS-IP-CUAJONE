@@ -7,7 +7,8 @@ param(
 
 $ErrorActionPreference = "Stop"
 
-$toolRoot = "D:\DevTools\CuajoneNative"
+$projectRoot = Split-Path -Parent $PSScriptRoot
+$toolRoot = Join-Path $projectRoot ".tools\native"
 $vsRoot = "$toolRoot\vs"
 $cmakeBin = "$toolRoot\cmake\cmake-3.31.8-windows-x86_64\bin"
 $ninjaBin = "$toolRoot\ninja"
@@ -20,10 +21,10 @@ $openCvRoot = "$toolRoot\opencv\opencv\build"
 $openCvLib = "$openCvRoot\x64\vc16\lib"
 $openCvBin = "$openCvRoot\x64\vc16\bin"
 $tempRoot = "$toolRoot\temp"
-$vsDevShell = "$vsRoot\Common7\Tools\Launch-VsDevShell.ps1"
+$vsDevCmd = "$vsRoot\Common7\Tools\VsDevCmd.bat"
 
 $requiredPaths = @(
-    $vsDevShell,
+    $vsDevCmd,
     "$cmakeBin\cmake.exe",
     "$ninjaBin\ninja.exe",
     "$onnxRuntimeRoot\include\onnxruntime_cxx_api.h",
@@ -65,6 +66,17 @@ if ($CpuOnly) {
     $env:PATH = "$cmakeBin;$ninjaBin;$cudaRoot\bin;$tensorRtRoot\bin;$onnxRuntimeRoot\lib;$openCvBin;$env:PATH"
 }
 
-& $vsDevShell -Arch amd64 -HostArch amd64 -SkipAutomaticLocation
+$developerEnvironment = @(
+    & $env:ComSpec /d /s /c "call `"$vsDevCmd`" -arch=amd64 -host_arch=amd64 >nul && set"
+)
+if ($LASTEXITCODE -ne 0) {
+    throw "Could not activate the local Visual Studio developer environment"
+}
+foreach ($entry in $developerEnvironment) {
+    $separator = $entry.IndexOf('=')
+    if ($separator -gt 0) {
+        Set-Item -LiteralPath "Env:$($entry.Substring(0, $separator))" -Value $entry.Substring($separator + 1)
+    }
+}
 
 Write-Host "Cuajone native MSVC environment activated from $toolRoot (CPU only: $CpuOnly)"

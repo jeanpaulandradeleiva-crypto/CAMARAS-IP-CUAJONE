@@ -7,13 +7,14 @@ usa ONNX CPU. `ppe_reportev2.py` continúa siendo la referencia de comportamient
 El target WIN32 separado `cuajone_launcher.exe` ofrece la interfaz gráfica y no
 enlaza `cuajone_runtime`, OpenCV, ONNX Runtime, CUDA ni TensorRT.
 
-> Toolchain local: las herramientas y SDK se instalaron bajo
-> `D:\DevTools\CuajoneNative`. La activación no modifica el PATH global y los
-> builds permanecen fuera del repositorio, también en D.
+> Toolchain local: las herramientas y SDK viven bajo `.tools\native`, carpeta
+> ignorada por Git dentro del repositorio. La activación no modifica el PATH
+> global. Para migrar una instalación existente, ejecuta
+> `./Migrate-NativeToolchain.ps1 -LegacyToolRoot <ruta>` una sola vez.
 
 ## Ruta rápida
 
-1. Instala por separado las herramientas y SDK indicados en Prerrequisitos.
+1. Prepara `.tools\native` con las herramientas y SDK indicados en Prerrequisitos.
 2. Define `ONNXRUNTIME_ROOT`, `TENSORRT_ROOT` y `OpenCV_DIR` sin copiar binarios al repositorio.
 3. Compila y ejecuta primero `cpu-tests`.
 4. Compila `windows-msvc` y ejecuta `--preflight` con engines compatibles.
@@ -80,7 +81,7 @@ rutas globales. La configuración informa el header y la import library elegidos
 falla si el SDK no cumple ese contrato de TensorRT 11.
 
 Este host usa el runtime oficial NVIDIA CUDA 12.9.79 extraído, sin `nvcc`, bajo
-`D:\DevTools\CuajoneNative\cuda-runtime\nvidia\cuda_runtime`. Para este layout,
+`.tools\native\cuda-runtime\nvidia\cuda_runtime`. Para este layout,
 `CUDA_RUNTIME_ROOT` debe contener `include/cuda_runtime_api.h`,
 `include/cuda_fp16.h`, `lib/x64/cudart.lib` y `bin/cudart64_12.dll`. Si la variable
 queda vacía, CMake conserva el flujo normal mediante `find_package(CUDAToolkit)`.
@@ -104,7 +105,7 @@ ctest --preset cpu-tests-release
 . .\activate-native.ps1
 cmake --preset windows-msvc
 cmake --build --preset windows-msvc-release
-ctest --test-dir D:\DevTools\CuajoneNative\build\presets\windows-msvc -C Release --output-on-failure
+ctest --test-dir ..\.tools\native\build\presets\windows-msvc --output-on-failure
 ```
 
 El preset CPU compila el ejecutable y el probe con `CUAJONE_ENABLE_TENSORRT=OFF`:
@@ -112,8 +113,8 @@ no busca ni enlaza CUDA/TensorRT. El preset completo habilita ambos backends.
 
 Las rutas activadas son TensorRT `11.1.0.106`, CUDA runtime `12.9.79`, OpenCV
 `4.12.0` (`vc16`, ABI compatible con VS2022), CMake `3.31.8`, Ninja `1.13.1` y
-Visual Studio Build Tools 2022 `17.14`. No copies DLL al repositorio: la activación
-agrega temporalmente sus directorios externos al PATH del proceso actual. CMake sí
+Visual Studio Build Tools 2022 `17.14`. No versiones DLL ni SDK en Git: la activación
+agrega temporalmente las rutas de `.tools\native` al PATH del proceso actual. CMake sí
 copia el `onnxruntime.dll` 1.25.0 fijado junto a los ejecutables externos de build;
 esto evita que Windows resuelva por error otra versión instalada en `System32`.
 
@@ -124,6 +125,9 @@ El launcher resuelve el runtime hermano mediante la ruta absoluta de su propio
 módulo y usa `CreateProcessW`; no busca ejecutables mediante `PATH`. La interfaz
 expone la URL RTSP de la cámara, carpeta de salida, modo `PPE only`/`PPE + fall`,
 cómputo `Auto`/`CUDA`/`CPU`, los cuatro artefactos de modelo, labels EPP y `Show`.
+`Load .env...` importa la configuración compatible del runtime nativo y conserva el
+archivo local fuera de Git; las opciones exclusivas de Python se ignoran y se
+informan en el estado.
 `Validate` ejecuta el mismo plan con `--preflight`; `Start` inicia el procesamiento.
 
 Las rutas iniciales se derivan de `FOLDERID_ProgramData`:
@@ -343,7 +347,7 @@ No ejecutes esa ruta hasta validar toolchain, SDK, GPU y engine en el host desti
 ### Binding Python de QA
 
 `CUAJONE_BUILD_PYTHON_BINDINGS` vale `OFF` por defecto. Con `ON`, CMake exige
-Python 3.12 y `pybind11` 3.0.4 desde una ruta explícita en D:. El ejecutable no
+Python 3.12 y `pybind11` 3.0.4 desde una ruta explícita bajo `.tools\native`. El ejecutable no
 enlaza Python. Consulta la [guía de acoplamiento](../docs/python-cpp-coupling.md)
 para compilación, API sintética, runtime externo y paridad.
 

@@ -19,8 +19,9 @@ la [guía simple de instalación](../../INSTALACION_WINDOWS.md).
 
 El MSI está construido con WiX Toolset. Instala el iniciador gráfico
 `cuajone_launcher.exe`, el runtime de consola `cuajone_native.exe`, las DLL runtime
-demostradas, licencias, avisos, hashes y procedencia. No incluye engines, modelos,
-credenciales, SDK, configuración de cámaras ni datos operativos.
+demostradas, licencias, avisos, hashes y procedencia. Por defecto incluye el bundle
+opcional de modelos ONNX para EPP y pose; no incluye credenciales, SDK, configuración
+de cámaras ni datos operativos.
 
 También falla cerrado si staging o extracción contienen Python, `.py`, `.pyc`,
 `.pyd`, runtime Python, PyTorch, Ultralytics, CVAT, Supervision, datasets, fixtures,
@@ -208,7 +209,7 @@ timestamp RFC3339 debe estar en UTC: se toleran cinco minutos hacia el futuro y 
 recibo vence después de siete días. Un recibo sintético no atraviesa ese gate.
 
 El MSI, su `.sha256`, staging, SBOM SPDX 2.3, temporales y evidencia quedan bajo
-`D:\DevTools\CuajoneNative\installer`. El script firma primero
+`.tools\native\installer`. El script firma primero
 `cuajone_native.exe`, `cuajone_launcher.exe` y `CuajoneHardwareProbeCA.dll`,
 construye/firma el MSI y realiza extracción administrativa en D. Ambos ejecutables
 son raíces independientes del recorrido de imports PE. Nunca vuelve a firmar DLL
@@ -235,15 +236,15 @@ HTTPS con SHA-256.
 
 ## 9. Toolchain fijado
 
-Las herramientas locales se mantienen fuera del repositorio:
+Las herramientas locales se mantienen bajo `.tools\native`, ignoradas por Git:
 
 | Componente | Ruta | Versión usada |
 | --- | --- | --- |
-| .NET SDK | `D:\DevTools\CuajoneNative\dotnet-sdk` | 8.0.423 |
-| WiX CLI | `D:\DevTools\CuajoneNative\wix` | 6.0.2 |
-| Extensiones UI/Util | `D:\DevTools\CuajoneNative\wix\.wix` | 6.0.2 |
-| NuGet | `D:\DevTools\CuajoneNative\cache\nuget` | caché local |
-| Temporales | `D:\DevTools\CuajoneNative\temp\wix` | proceso local |
+| .NET SDK | `.tools\native\dotnet-sdk` | 8.0.423 |
+| WiX CLI | `.tools\native\wix` | 6.0.2 |
+| Extensiones UI/Util | `.tools\native\wix\.wix` | 6.0.2 |
+| NuGet | `.tools\native\cache\nuget` | caché local |
+| Temporales | `.tools\native\temp\wix` | proceso local |
 
 NuGet publica WiX 7.0.0 como versión más reciente, pero su binario exige aceptar
 el acuerdo OSMF y puede requerir una tarifa para uso generador de ingresos. Este
@@ -275,8 +276,8 @@ determinista por ruta staged; ese archivo no se versiona.
 
 ```powershell
 .\installer\native\test-installer.ps1 `
-  -InstallerPath "D:\DevTools\CuajoneNative\installer\output\<paquete>.msi" `
-  -StageDir "D:\DevTools\CuajoneNative\installer\stage" `
+  -InstallerPath ".tools\native\installer\output\<paquete>.msi" `
+  -StageDir ".tools\native\installer\stage" `
   -ExpectedSignatureStatus Signed `
   -AllowInternalPilotTrust
 ```

@@ -8,8 +8,8 @@ param(
     [Parameter(Mandatory)]
     [string]$StageDir,
 
-    [string]$AcceptanceRoot = "D:\DevTools\CuajoneNative\installer\msi-verification",
-    [string]$WixToolRoot = "D:\DevTools\CuajoneNative\wix",
+    [string]$AcceptanceRoot,
+    [string]$WixToolRoot,
     [string]$SignToolPath = $env:CUAJONE_SIGNTOOL_PATH,
 
     [ValidateSet("NotSigned", "Signed")]
@@ -26,6 +26,10 @@ $ErrorActionPreference = "Stop"
 $upgradeCode = "88A886C2-8F6D-4669-B6FB-7DFC1E7B0397"
 $signatureVerifier = Join-Path $PSScriptRoot "sign-release.ps1"
 $payloadPolicy = Join-Path $PSScriptRoot "payload-policy.ps1"
+$projectRoot = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot "..\..")).Path
+$toolRoot = Join-Path $projectRoot ".tools\native"
+if ([string]::IsNullOrWhiteSpace($AcceptanceRoot)) { $AcceptanceRoot = Join-Path $toolRoot "installer\msi-verification" }
+if ([string]::IsNullOrWhiteSpace($WixToolRoot)) { $WixToolRoot = Join-Path $toolRoot "wix" }
 
 function Assert-File([string]$Path, [string]$Description) {
     if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) {
@@ -39,10 +43,11 @@ function Assert-Directory([string]$Path, [string]$Description) {
     }
 }
 
-function Assert-DDrivePath([string]$Path, [string]$Description) {
+function Assert-ToolRootPath([string]$Path, [string]$Description) {
     $fullPath = [System.IO.Path]::GetFullPath($Path)
-    if (-not $fullPath.StartsWith("D:\", [System.StringComparison]::OrdinalIgnoreCase)) {
-        throw "$Description must remain on D: $fullPath"
+    $fullToolRoot = [System.IO.Path]::GetFullPath($toolRoot).TrimEnd('\')
+    if ($fullPath -cne $fullToolRoot -and -not $fullPath.StartsWith("$fullToolRoot\", [System.StringComparison]::OrdinalIgnoreCase)) {
+        throw "$Description must remain under the repository-local tool root: $fullPath"
     }
 }
 
@@ -126,10 +131,10 @@ function ConvertTo-PropertyMap([object[]]$Rows) {
 $installer = (Resolve-Path -LiteralPath $InstallerPath).Path
 $stage = (Resolve-Path -LiteralPath $StageDir).Path
 $wix = Join-Path $WixToolRoot "wix.exe"
-Assert-DDrivePath $installer "MSI"
-Assert-DDrivePath $stage "Stage"
-Assert-DDrivePath $AcceptanceRoot "Acceptance root"
-Assert-DDrivePath $WixToolRoot "WiX tool root"
+Assert-ToolRootPath $installer "MSI"
+Assert-ToolRootPath $stage "Stage"
+Assert-ToolRootPath $AcceptanceRoot "Acceptance root"
+Assert-ToolRootPath $WixToolRoot "WiX tool root"
 Assert-File $installer "MSI"
 Assert-Directory $stage "Stage"
 Assert-File $wix "WiX CLI"
@@ -211,7 +216,6 @@ if ($sbom.spdxVersion -cne "SPDX-2.3" -or $sbom.dataLicense -cne "CC0-1.0" -or
     }).Count -ne 1) {
     throw "SPDX SBOM does not identify the approved ONNX Runtime package"
 }
-$projectRoot = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot "..\..")).Path
 if ([System.IO.Path]::GetFullPath($stageMetadata.sourceRoots.repository) -cne $projectRoot) {
     throw "Staged provenance does not identify the current repository root"
 }

@@ -49,7 +49,8 @@ def build_export_plan(args: argparse.Namespace) -> dict[str, Any]:
     }
     if args.data:
         export["data"] = args.data
-    artifact = model.with_suffix(".engine")
+    artifact_root = Path(args.output_dir) if args.output_dir else model.parent
+    artifact = artifact_root / f"{model.stem}.engine"
     return {
         "plan_version": PLAN_VERSION,
         "model": str(model),
@@ -75,6 +76,10 @@ def create_parser() -> argparse.ArgumentParser:
     parser.set_defaults(dynamic=False)
     parser.add_argument("--quantize", type=int, choices=(8, 16, 32), default=16)
     parser.add_argument("--data", help="Dataset YAML obligatorio para calibración INT8.")
+    parser.add_argument(
+        "--output-dir",
+        help="Directorio de salida para el artefacto .engine y su manifest.",
+    )
     parser.add_argument("--dry-run", action="store_true", help="Imprime el plan sin importar ni cargar YOLO.")
     return parser
 

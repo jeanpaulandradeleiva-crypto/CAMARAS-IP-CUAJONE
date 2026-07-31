@@ -2,12 +2,19 @@
 
 [CmdletBinding()]
 param(
-    [string]$TestRoot = "D:\DevTools\CuajoneNative\temp\release-gate-test"
+    [string]$TestRoot
 )
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 . (Join-Path $PSScriptRoot "release-gates.ps1")
+$projectRoot = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot "..\..")).Path
+$toolRoot = Join-Path $projectRoot ".tools\native"
+if ([string]::IsNullOrWhiteSpace($TestRoot)) { $TestRoot = Join-Path $toolRoot "temp\release-gate-test" }
+$fullToolRoot = [System.IO.Path]::GetFullPath($toolRoot).TrimEnd('\')
+if (-not [System.IO.Path]::GetFullPath($TestRoot).StartsWith("$fullToolRoot\", [System.StringComparison]::OrdinalIgnoreCase)) {
+    throw "TestRoot must remain under the repository-local tool root: $TestRoot"
+}
 
 function New-TestHash([char]$Character) {
     (([string]$Character * 64) -join "")

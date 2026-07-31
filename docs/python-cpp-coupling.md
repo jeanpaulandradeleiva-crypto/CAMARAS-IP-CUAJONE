@@ -63,15 +63,15 @@ URLs RTSP, userinfo ni campos arbitrarios de contraseña.
 ## Binding nativo
 
 El target está desactivado por defecto. Requiere `pybind11==3.0.4` desde un entorno
-Python 3.12 alojado en D: y nunca usa `FetchContent` ni vendoriza binarios.
+Python 3.12 alojado bajo `.tools\native` y nunca usa `FetchContent` ni versiona binarios.
 
 ```powershell
-cmake -S native -B D:\DevTools\CuajoneNative\build\coupling-pybind `
+cmake -S native -B .tools\native\build\coupling-pybind `
   -DCUAJONE_BUILD_RUNTIME=ON `
   -DCUAJONE_BUILD_PYTHON_BINDINGS=ON `
-  -DCUAJONE_PYBIND11_ROOT=D:\DevTools\CuajoneNative\venvs\coupling-py312\Lib\site-packages\pybind11\share\cmake\pybind11 `
-  -DPython_EXECUTABLE=D:\DevTools\CuajoneNative\venvs\coupling-py312\Scripts\python.exe
-cmake --build D:\DevTools\CuajoneNative\build\coupling-pybind --config Release
+  -DCUAJONE_PYBIND11_ROOT=.tools\native\venvs\coupling-py312\Lib\site-packages\pybind11\share\cmake\pybind11 `
+  -DPython_EXECUTABLE=.tools\native\venvs\coupling-py312\Scripts\python.exe
+cmake --build .tools\native\build\coupling-pybind --config Release
 ```
 
 `AnalyticsPipeline` procesa observaciones CPU sintéticas. `EnginePipeline` aparece

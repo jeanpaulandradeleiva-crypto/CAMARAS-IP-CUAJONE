@@ -2,13 +2,16 @@
 
 [CmdletBinding()]
 param(
-    [string]$OutputDirectory = "D:\DevTools\CuajoneNative\signing",
+    [string]$OutputDirectory,
     [int]$RootValidityYears = 10,
     [int]$LeafValidityYears = 2
 )
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
+$projectRoot = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot "..\..")).Path
+$toolRoot = Join-Path $projectRoot ".tools\native"
+if ([string]::IsNullOrWhiteSpace($OutputDirectory)) { $OutputDirectory = Join-Path $toolRoot "signing" }
 
 $storeLocation = "Cert:\CurrentUser\My"
 $rootSubject = "CN=Cuajone PPE Monitor Internal Pilot Root CA 2026, O=Cuajone PPE Monitor Project"
@@ -215,8 +218,9 @@ if ($LeafValidityYears -lt 1 -or $LeafValidityYears -ge $RootValidityYears) {
 }
 
 $fullOutputDirectory = [System.IO.Path]::GetFullPath($OutputDirectory)
-if (-not $fullOutputDirectory.StartsWith("D:\", [System.StringComparison]::OrdinalIgnoreCase)) {
-    throw "Public certificate output must remain on D: $fullOutputDirectory"
+$fullToolRoot = [System.IO.Path]::GetFullPath($toolRoot).TrimEnd('\')
+if (-not $fullOutputDirectory.StartsWith("$fullToolRoot\", [System.StringComparison]::OrdinalIgnoreCase)) {
+    throw "Public certificate output must remain under the repository-local tool root: $fullOutputDirectory"
 }
 $outputParent = Split-Path -Parent $fullOutputDirectory
 if (-not (Test-Path -LiteralPath $outputParent -PathType Container)) {

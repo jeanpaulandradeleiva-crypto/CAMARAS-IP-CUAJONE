@@ -2,13 +2,17 @@
 
 [CmdletBinding()]
 param(
-    [string]$RootCertificatePath = "D:\DevTools\CuajoneNative\signing\Cuajone-PPE-Monitor-Internal-Pilot-Root-CA-2026.cer",
-    [string]$LeafCertificatePath = "D:\DevTools\CuajoneNative\signing\Cuajone-PPE-Monitor-Internal-Pilot-Code-Signing-2026.cer",
+    [string]$RootCertificatePath,
+    [string]$LeafCertificatePath,
     [switch]$ValidateOnly
 )
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
+$projectRoot = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot "..\..")).Path
+$signingRoot = Join-Path $projectRoot ".tools\native\signing"
+if ([string]::IsNullOrWhiteSpace($RootCertificatePath)) { $RootCertificatePath = Join-Path $signingRoot "Cuajone-PPE-Monitor-Internal-Pilot-Root-CA-2026.cer" }
+if ([string]::IsNullOrWhiteSpace($LeafCertificatePath)) { $LeafCertificatePath = Join-Path $signingRoot "Cuajone-PPE-Monitor-Internal-Pilot-Code-Signing-2026.cer" }
 
 $rootSubject = "CN=Cuajone PPE Monitor Internal Pilot Root CA 2026, O=Cuajone PPE Monitor Project"
 $leafSubject = "CN=Cuajone PPE Monitor Internal Pilot Code Signing 2026, O=Cuajone PPE Monitor Project"

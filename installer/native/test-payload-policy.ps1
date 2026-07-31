@@ -2,12 +2,19 @@
 
 [CmdletBinding()]
 param(
-    [string]$TestRoot = "D:\DevTools\CuajoneNative\temp\payload-policy-test"
+    [string]$TestRoot
 )
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 . (Join-Path $PSScriptRoot "payload-policy.ps1")
+$projectRoot = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot "..\..")).Path
+$toolRoot = Join-Path $projectRoot ".tools\native"
+if ([string]::IsNullOrWhiteSpace($TestRoot)) { $TestRoot = Join-Path $toolRoot "temp\payload-policy-test" }
+$fullToolRoot = [System.IO.Path]::GetFullPath($toolRoot).TrimEnd('\')
+if (-not [System.IO.Path]::GetFullPath($TestRoot).StartsWith("$fullToolRoot\", [System.StringComparison]::OrdinalIgnoreCase)) {
+    throw "TestRoot must remain under the repository-local tool root: $TestRoot"
+}
 
 $parent = Split-Path -Parent $TestRoot
 if (-not (Test-Path -LiteralPath $parent -PathType Container)) {

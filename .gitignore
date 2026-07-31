@@ -25,6 +25,7 @@ __pycache__/
 *.onnx
 
 # Generated native, packaging, and installer output
+.tools/
 /build/
 /dist/
 /native/build/

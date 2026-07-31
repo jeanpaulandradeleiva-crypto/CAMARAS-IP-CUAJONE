@@ -8,6 +8,14 @@ function Get-ForbiddenPayloadFiles([string]$Root) {
         'bin\cuajone_launcher.exe',
         'bin\cuajone_native.exe'
     )
+    $allowedModelPaths = @(
+        'bin\models\ppe.engine',
+        'bin\models\pose.engine',
+        'bin\models\ppe.onnx',
+        'bin\models\ppe.onnx.manifest.json',
+        'bin\models\pose.onnx',
+        'bin\models\pose.onnx.manifest.json'
+    )
     $patterns = @(
         '(^|[\\/])\.env($|\.)',
         '\.(pt|pth|engine|plan|onnx|safetensors|csv|xlsx|xls|parquet|arrow|feather|bin|pkl|pickle|weights|whl|py|pyc|pyo|pyd|jsonl)$',
@@ -24,6 +32,9 @@ function Get-ForbiddenPayloadFiles([string]$Root) {
         $relative = [System.IO.Path]::GetRelativePath($Root, $file.FullName)
         if ($file.Extension -ieq '.exe' -and $relative -notin $allowedExecutablePaths) {
             $relative
+            continue
+        }
+        if ($relative -in $allowedModelPaths) {
             continue
         }
         foreach ($pattern in $patterns) {
