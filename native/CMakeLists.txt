@@ -16,6 +16,20 @@ set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
+if(WIN32 AND (CUAJONE_BUILD_LAUNCHER OR CUAJONE_BUILD_RUNTIME))
+    set(CUAJONE_PRODUCT_ICON "${CMAKE_CURRENT_BINARY_DIR}/CuajonePPEMonitor.ico")
+    set(CUAJONE_PRODUCT_RESOURCE "${CMAKE_CURRENT_BINARY_DIR}/product_icon.rc")
+    add_custom_command(
+        OUTPUT "${CUAJONE_PRODUCT_ICON}"
+        COMMAND powershell -NoProfile -ExecutionPolicy Bypass -File
+            "${CMAKE_CURRENT_SOURCE_DIR}/../installer/native/generate-icon.ps1"
+            -OutputPath "${CUAJONE_PRODUCT_ICON}"
+        DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/../installer/native/generate-icon.ps1"
+        VERBATIM)
+    configure_file(resources/launcher.rc.in "${CUAJONE_PRODUCT_RESOURCE}" @ONLY)
+    add_custom_target(cuajone_product_icon DEPENDS "${CUAJONE_PRODUCT_ICON}")
+endif()
+
 if(CUAJONE_BUILD_LAUNCHER)
     add_library(cuajone_launcher_support
         src/launcher/launcher_support.cpp
@@ -29,21 +43,10 @@ if(CUAJONE_BUILD_LAUNCHER)
     endif()
 
     if(WIN32)
-        set(CUAJONE_LAUNCHER_ICON "${CMAKE_CURRENT_BINARY_DIR}/CuajonePPEMonitor.ico")
-        set(CUAJONE_LAUNCHER_RESOURCE "${CMAKE_CURRENT_BINARY_DIR}/launcher.rc")
-        add_custom_command(
-            OUTPUT "${CUAJONE_LAUNCHER_ICON}"
-            COMMAND powershell -NoProfile -ExecutionPolicy Bypass -File
-                "${CMAKE_CURRENT_SOURCE_DIR}/../installer/native/generate-icon.ps1"
-                -OutputPath "${CUAJONE_LAUNCHER_ICON}"
-            DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/../installer/native/generate-icon.ps1"
-            VERBATIM)
-        configure_file(resources/launcher.rc.in "${CUAJONE_LAUNCHER_RESOURCE}" @ONLY)
-        add_executable(cuajone_launcher WIN32 src/launcher/launcher.cpp "${CUAJONE_LAUNCHER_RESOURCE}")
-        add_custom_target(cuajone_launcher_icon DEPENDS "${CUAJONE_LAUNCHER_ICON}")
-        add_dependencies(cuajone_launcher cuajone_launcher_icon)
+        add_executable(cuajone_launcher WIN32 src/launcher/launcher.cpp "${CUAJONE_PRODUCT_RESOURCE}")
+        add_dependencies(cuajone_launcher cuajone_product_icon)
         target_link_libraries(cuajone_launcher PRIVATE
-            cuajone_launcher_support comctl32 ole32 shell32)
+            cuajone_launcher_support advapi32 comctl32 ole32 shell32)
         target_compile_definitions(cuajone_launcher PRIVATE
             UNICODE _UNICODE NOMINMAX WIN32_LEAN_AND_MEAN)
         if(MSVC)
@@ -100,6 +103,7 @@ target_compile_features(cuajone_inference PUBLIC cxx_std_20)
 
 add_library(cuajone_core
     src/app/cli.cpp
+    src/app/runtime_execution_plan.cpp
 )
 target_include_directories(cuajone_core PUBLIC include)
 target_link_libraries(cuajone_core PUBLIC cuajone_contracts cuajone_analytics cuajone_inference cuajone_compute)
@@ -270,8 +274,10 @@ if(CUAJONE_BUILD_RUNTIME)
         endif()
     endif()
 
-    add_executable(cuajone_native src/app/main.cpp)
+    add_executable(cuajone_native src/app/main.cpp "${CUAJONE_PRODUCT_RESOURCE}")
+    add_dependencies(cuajone_native cuajone_product_icon)
     target_link_libraries(cuajone_native PRIVATE cuajone_runtime)
+    target_compile_options(cuajone_native PRIVATE /W4 /permissive- /EHsc /utf-8)
     add_custom_command(TARGET cuajone_native POST_BUILD
         COMMAND ${CMAKE_COMMAND} -E copy_if_different
             $<TARGET_FILE:cuajone_onnxruntime>

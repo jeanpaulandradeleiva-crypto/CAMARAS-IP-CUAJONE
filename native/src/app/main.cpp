@@ -4,9 +4,17 @@
 #include "cuajone/cli.hpp"
 #include "cuajone/engine_pipeline.hpp"
 #include "cuajone/evidence.hpp"
+#include "cuajone/runtime_execution_plan.hpp"
 
 #include <opencv2/highgui.hpp>
 #include <opencv2/imgproc.hpp>
+
+#ifdef _WIN32
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+#endif
 
 #include <algorithm>
 #include <atomic>
@@ -31,10 +39,36 @@ using namespace cuajone;
 using Clock = std::chrono::steady_clock;
 
 std::atomic_bool stop_requested{};
+constexpr char kLiveAnalyticsWindowTitle[] = "NexoAI Vision — Live Analytics";
 
 void requestStop(int) {
     stop_requested.store(true, std::memory_order_relaxed);
 }
+
+#ifdef _WIN32
+void applyLiveAnalyticsWindowIcon() {
+    const HICON icon = LoadIconW(GetModuleHandleW(nullptr), MAKEINTRESOURCEW(101));
+    if (icon == nullptr) return;
+    const int length = MultiByteToWideChar(
+        CP_UTF8, MB_ERR_INVALID_CHARS, kLiveAnalyticsWindowTitle, -1, nullptr, 0);
+    if (length <= 0) return;
+    std::wstring title(static_cast<std::size_t>(length), L'\0');
+    if (MultiByteToWideChar(
+            CP_UTF8, MB_ERR_INVALID_CHARS, kLiveAnalyticsWindowTitle, -1,
+            title.data(), length) <= 0) {
+        return;
+    }
+    HWND window = nullptr;
+    while ((window = FindWindowExW(nullptr, window, nullptr, title.c_str())) != nullptr) {
+        DWORD process_id{};
+        GetWindowThreadProcessId(window, &process_id);
+        if (process_id != GetCurrentProcessId()) continue;
+        SendMessageW(window, WM_SETICON, ICON_SMALL, reinterpret_cast<LPARAM>(icon));
+        SendMessageW(window, WM_SETICON, ICON_BIG, reinterpret_cast<LPARAM>(icon));
+        return;
+    }
+}
+#endif
 
 void validateSourceWithoutOpening(const std::string& source) {
     const bool network = isRtspSource(source);
@@ -47,9 +81,12 @@ void validateSourceWithoutOpening(const std::string& source) {
     }
 }
 
-EnginePipelineConfig enginePipelineConfig(const RuntimeConfig& config, ComputeBackend backend) {
+EnginePipelineConfig enginePipelineConfig(
+    const RuntimeConfig& config,
+    const ComputeSelection& selection) {
     return {
-        backend,
+        selection.backend,
+        selection.provider,
         config.ppe_engine,
         config.pose_engine,
         config.ppe_onnx,
@@ -76,13 +113,13 @@ EnginePipelineConfig enginePipelineConfig(const RuntimeConfig& config, ComputeBa
 
 std::unique_ptr<NativeEnginePipeline> runBasePreflight(
     const RuntimeConfig& config,
-    ComputeBackend backend) {
+    const ComputeSelection& selection) {
     validateSourceWithoutOpening(config.source);
     validateWritableOutput(config.output);
-    auto pipeline = std::make_unique<NativeEnginePipeline>(enginePipelineConfig(config, backend));
+    auto pipeline = std::make_unique<NativeEnginePipeline>(enginePipelineConfig(config, selection));
     const auto& summary = pipeline->summary();
     std::cout << "OpenCV: " << CV_VERSION << " | provider: " << summary.provider << '\n';
-    if (backend == ComputeBackend::Cuda) {
+    if (selection.backend == ComputeBackend::Cuda) {
         std::cout << "CUDA device " << summary.device_index << ": " << summary.device_name
                   << " | SM " << summary.compute_major << '.' << summary.compute_minor
                   << " | devices: " << summary.device_count << '\n';
@@ -101,12 +138,13 @@ std::unique_ptr<NativeEnginePipeline> runBasePreflight(
     return pipeline;
 }
 
-bool modelSetAvailable(
-    const std::filesystem::path& ppe,
-    const std::filesystem::path& pose,
-    AnalyticsMode mode) {
-    return std::filesystem::is_regular_file(ppe)
-        && (mode == AnalyticsMode::PpeOnly || std::filesystem::is_regular_file(pose));
+ModelArtifactAvailability modelArtifactAvailability(const RuntimeConfig& config) {
+    return {
+        std::filesystem::is_regular_file(config.ppe_engine),
+        std::filesystem::is_regular_file(config.pose_engine),
+        std::filesystem::is_regular_file(config.ppe_onnx),
+        std::filesystem::is_regular_file(config.pose_onnx),
+    };
 }
 
 void drawPose(cv::Mat& frame, std::span<const Keypoint> keypoints, float threshold) {
@@ -178,7 +216,12 @@ int monitor(
     auto next_inference = Clock::time_point::min();
     std::optional<std::string> last_capture_error;
     bool first_inference_logged{};
-    if (config.show_window) cv::namedWindow("Cuajone native analytics", cv::WINDOW_NORMAL);
+    if (config.show_window) {
+        cv::namedWindow(kLiveAnalyticsWindowTitle, cv::WINDOW_NORMAL);
+#ifdef _WIN32
+        applyLiveAnalyticsWindowIcon();
+#endif
+    }
 
     while (!stop_requested.load(std::memory_order_relaxed)) {
         cv::Mat frame;
@@ -238,10 +281,10 @@ int monitor(
         }
 
         if (config.show_window) {
-            cv::imshow("Cuajone native analytics", frame);
+            cv::imshow(kLiveAnalyticsWindowTitle, frame);
             const int key = cv::waitKey(1) & 0xFF;
             if (key == 'q' || key == 27
-                || cv::getWindowProperty("Cuajone native analytics", cv::WND_PROP_VISIBLE) < 1.0) {
+                || cv::getWindowProperty(kLiveAnalyticsWindowTitle, cv::WND_PROP_VISIBLE) < 1.0) {
                 stop_requested.store(true, std::memory_order_relaxed);
             }
         }
@@ -270,43 +313,43 @@ int main(int argc, char** argv) {
             std::cout << hardwareProbeJson(probe) << '\n';
             return hardwareProbeExitCode(probe.status);
         }
-        if (!config.compute_explicit) {
-            if (const auto installed = installedComputeBackend()) config.compute_backend = *installed;
-        }
+        std::optional<ComputeBackend> installed_backend;
+        if (!config.compute_explicit) installed_backend = installedComputeBackend();
+        const ComputeBackend requested_backend = resolveRequestedComputeBackend(
+            config.compute_backend, config.compute_explicit, installed_backend);
         HardwareProbeStatus hardware_status = HardwareProbeStatus::NoNvidiaAdapter;
-        if (config.compute_backend != ComputeBackend::Cpu) {
+        if (requested_backend != ComputeBackend::Cpu) {
             const HardwareProbeResult probe = probeHardware();
             hardware_status = probe.status;
             std::cout << "Hardware probe: " << hardwareProbeStatusName(probe.status)
                       << " | " << hardwareProbeSummary(probe)
                       << " | " << probe.detail << '\n';
         }
-        const bool tensor_rt_models = modelSetAvailable(
-            config.ppe_engine, config.pose_engine, config.analytics_mode);
-        const bool onnx_models = modelSetAvailable(
-            config.ppe_onnx, config.pose_onnx, config.analytics_mode);
-        const ComputeSelection selection = selectComputeBackend(config.compute_backend, {
-            hardware_status,
-            tensorRtBackendCompiled(),
-            onnxCudaExecutionProviderCompiled(),
-            tensor_rt_models,
-            onnx_models,
+        const RuntimeExecutionPlan plan = planRuntimeExecution({
+            config.compute_backend,
+            config.compute_explicit,
+            installed_backend,
+            config.analytics_mode,
+            {
+                hardware_status,
+                tensorRtBackendCompiled(),
+                onnxCudaExecutionProviderCompiled(),
+            },
+            modelArtifactAvailability(config),
         });
-        std::cout << "Compute: " << computeBackendName(selection.backend)
-                  << " | " << selection.reason << '\n';
+        std::cout << "Compute: " << computeBackendName(plan.selection.backend)
+                  << " | " << plan.selection.reason << '\n';
         std::unique_ptr<NativeEnginePipeline> pipeline;
-        ComputeBackend effective_backend = selection.backend;
+        ComputeSelection effective_selection = plan.selection;
         try {
-            pipeline = runBasePreflight(config, effective_backend);
+            pipeline = runBasePreflight(config, effective_selection);
         } catch (const std::exception& cuda_error) {
-            if (config.compute_backend != ComputeBackend::Auto
-                || effective_backend != ComputeBackend::Cuda
-                || !onnx_models) {
+            if (!plan.preflight_failure_fallback) {
                 throw;
             }
             std::cerr << "Auto CUDA validation failed; selecting CPU: " << cuda_error.what() << '\n';
-            effective_backend = ComputeBackend::Cpu;
-            pipeline = runBasePreflight(config, effective_backend);
+            effective_selection = *plan.preflight_failure_fallback;
+            pipeline = runBasePreflight(config, effective_selection);
         }
         std::cout << "Preflight: OK\n";
         if (config.preflight) return 0;

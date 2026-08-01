@@ -7,6 +7,7 @@
 #include <shellapi.h>
 #include <shlobj.h>
 #include <shobjidl.h>
+#include <wincred.h>
 
 #include <algorithm>
 #include <atomic>
@@ -19,6 +20,7 @@
 #include <optional>
 #include <stdexcept>
 #include <string>
+#include <string_view>
 #include <thread>
 #include <vector>
 
@@ -66,6 +68,10 @@ enum ControlId : int {
     StopButton,
     StatusText,
     LogPathEdit,
+    SavedCameraCombo,
+    SaveCameraButton,
+    LoadCameraButton,
+    DeleteCameraButton,
 };
 
 struct LocalizedText {
@@ -78,6 +84,10 @@ struct LauncherWindow {
     HWND window{};
     HWND source{};
     HWND source_label{};
+    HWND saved_camera{};
+    HWND save_camera{};
+    HWND load_camera{};
+    HWND delete_camera{};
     HWND language{};
     HWND output{};
     HWND analytics{};
@@ -175,6 +185,127 @@ std::wstring upper(std::wstring value) {
         return static_cast<wchar_t>(std::towupper(character));
     });
     return value;
+}
+
+std::string utf8FromWide(std::wstring_view value) {
+    if (value.empty()) return {};
+    const int required = WideCharToMultiByte(
+        CP_UTF8, 0, value.data(), static_cast<int>(value.size()), nullptr, 0, nullptr, nullptr);
+    if (required <= 0) return {};
+    std::string result(static_cast<std::size_t>(required), '\0');
+    WideCharToMultiByte(
+        CP_UTF8, 0, value.data(), static_cast<int>(value.size()), result.data(), required, nullptr, nullptr);
+    return result;
+}
+
+std::runtime_error savedCameraProfileError(std::string_view action, std::wstring_view profile) {
+    return std::runtime_error(std::string(action) + ": " + utf8FromWide(profile));
+}
+
+std::optional<std::wstring> selectedSavedCameraProfile(const LauncherWindow& state) {
+    const LRESULT selection = SendMessageW(state.saved_camera, CB_GETCURSEL, 0, 0);
+    if (selection == CB_ERR) return std::nullopt;
+    const LRESULT length = SendMessageW(state.saved_camera, CB_GETLBTEXTLEN, selection, 0);
+    if (length == CB_ERR) return std::nullopt;
+    std::wstring profile(static_cast<std::size_t>(length) + 1, L'\0');
+    SendMessageW(state.saved_camera, CB_GETLBTEXT, selection, reinterpret_cast<LPARAM>(profile.data()));
+    profile.resize(static_cast<std::size_t>(length));
+    return isValidSavedCameraProfileName(profile) ? std::optional<std::wstring>(std::move(profile)) : std::nullopt;
+}
+
+void refreshSavedCameraProfiles(LauncherWindow& state, std::wstring_view preferred = {}) {
+    std::vector<std::wstring> profiles;
+    PCREDENTIALW* credentials = nullptr;
+    DWORD count{};
+    const std::wstring filter = std::wstring(savedCameraCredentialTargetPrefix()) + L"*";
+    if (CredEnumerateW(filter.c_str(), 0, &count, &credentials)) {
+        for (DWORD index = 0; index < count; ++index) {
+            const std::wstring_view target(credentials[index]->TargetName);
+            const std::wstring_view prefix = savedCameraCredentialTargetPrefix();
+            if (!target.starts_with(prefix)) continue;
+            const std::wstring_view profile = target.substr(prefix.size());
+            if (isValidSavedCameraProfileName(profile)) profiles.emplace_back(profile);
+        }
+        CredFree(credentials);
+    } else if (GetLastError() != ERROR_NOT_FOUND) {
+        throw std::runtime_error("Could not list saved camera profiles");
+    }
+    std::sort(profiles.begin(), profiles.end());
+    profiles.erase(std::unique(profiles.begin(), profiles.end()), profiles.end());
+    SendMessageW(state.saved_camera, CB_RESETCONTENT, 0, 0);
+    for (const auto& profile : profiles) {
+        const LRESULT index = SendMessageW(
+            state.saved_camera, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(profile.c_str()));
+        if (index != CB_ERR && profile == preferred) {
+            SendMessageW(state.saved_camera, CB_SETCURSEL, index, 0);
+        }
+    }
+}
+
+void saveSavedCameraProfile(LauncherWindow& state) {
+    const std::wstring profile = trim(editText(state.source_label));
+    if (!isValidSavedCameraProfileName(profile)) {
+        throw std::invalid_argument("Saved camera profile name is invalid");
+    }
+    const std::wstring source = trim(editText(state.source));
+    validateRtspCameraUrl(source);
+    if (source.size() > CRED_MAX_CREDENTIAL_BLOB_SIZE / sizeof(wchar_t)) {
+        throw std::invalid_argument("RTSP camera URL is too long to save");
+    }
+    const std::wstring target = savedCameraCredentialTarget(profile);
+    CREDENTIALW credential{};
+    credential.Type = CRED_TYPE_GENERIC;
+    credential.TargetName = const_cast<LPWSTR>(target.c_str());
+    credential.CredentialBlobSize = static_cast<DWORD>(source.size() * sizeof(wchar_t));
+    credential.CredentialBlob = reinterpret_cast<LPBYTE>(const_cast<wchar_t*>(source.data()));
+    credential.Persist = CRED_PERSIST_LOCAL_MACHINE;
+    if (!CredWriteW(&credential, 0)) {
+        throw savedCameraProfileError("Could not save camera profile", profile);
+    }
+    SetWindowTextW(state.source_label, profile.c_str());
+    refreshSavedCameraProfiles(state, profile);
+    setStatus(state, (state.spanish ? L"Perfil de cámara guardado: " : L"Saved camera profile: ") + profile);
+}
+
+void loadSavedCameraProfile(LauncherWindow& state) {
+    const auto profile = selectedSavedCameraProfile(state);
+    if (!profile) throw std::invalid_argument("Select a saved camera profile");
+    const std::wstring target = savedCameraCredentialTarget(*profile);
+    PCREDENTIALW credential = nullptr;
+    if (!CredReadW(target.c_str(), CRED_TYPE_GENERIC, 0, &credential)) {
+        throw savedCameraProfileError("Could not load camera profile", *profile);
+    }
+    const bool valid_blob = credential->CredentialBlob != nullptr
+        && credential->CredentialBlobSize != 0
+        && credential->CredentialBlobSize % sizeof(wchar_t) == 0;
+    std::wstring source;
+    if (valid_blob) {
+        const auto* text = reinterpret_cast<const wchar_t*>(credential->CredentialBlob);
+        source.assign(text, credential->CredentialBlobSize / sizeof(wchar_t));
+    }
+    CredFree(credential);
+    if (!valid_blob) {
+        throw savedCameraProfileError("Saved camera profile is invalid", *profile);
+    }
+    try {
+        validateRtspCameraUrl(source);
+    } catch (const std::exception&) {
+        throw savedCameraProfileError("Saved camera profile is invalid", *profile);
+    }
+    SetWindowTextW(state.source_label, profile->c_str());
+    SetWindowTextW(state.source, source.c_str());
+    setStatus(state, (state.spanish ? L"Perfil de cámara cargado: " : L"Saved camera profile loaded: ") + *profile);
+}
+
+void deleteSavedCameraProfile(LauncherWindow& state) {
+    const auto profile = selectedSavedCameraProfile(state);
+    if (!profile) throw std::invalid_argument("Select a saved camera profile");
+    const std::wstring target = savedCameraCredentialTarget(*profile);
+    if (!CredDeleteW(target.c_str(), CRED_TYPE_GENERIC, 0)) {
+        throw savedCameraProfileError("Could not delete camera profile", *profile);
+    }
+    refreshSavedCameraProfiles(state);
+    setStatus(state, (state.spanish ? L"Perfil de cámara eliminado: " : L"Saved camera profile deleted: ") + *profile);
 }
 
 std::map<std::wstring, std::wstring> readEnvFile(const std::filesystem::path& path) {
@@ -383,92 +514,111 @@ void createControls(LauncherWindow& state) {
     addLocalizedText(state, load_env, L"Load .env...", L"Cargar .env...");
 
     addLocalizedText(
-        state, createLabel(state, L"Output folder", label_x, row_y + 72, 120),
-        L"Output folder", L"Carpeta de salida");
-    state.output = createEdit(state, OutputEdit, edit_x, row_y + 72, edit_width);
-    addLocalizedText(state, createBrowseButton(state, OutputBrowse, row_y + 72), L"Browse...", L"Explorar...");
+        state, createLabel(state, L"Saved camera", label_x, row_y + 72, 120),
+        L"Saved camera", L"Cámara guardada");
+    state.saved_camera = createControl(
+        state, 0, WC_COMBOBOXW, L"", WS_TABSTOP | CBS_DROPDOWNLIST,
+        edit_x, row_y + 72, 430, 200, SavedCameraCombo);
+    state.save_camera = createControl(
+        state, 0, L"BUTTON", L"Save", WS_TABSTOP | BS_PUSHBUTTON,
+        586, row_y + 72, 80, 25, SaveCameraButton);
+    addLocalizedText(state, state.save_camera, L"Save", L"Guardar");
+    state.load_camera = createControl(
+        state, 0, L"BUTTON", L"Load", WS_TABSTOP | BS_PUSHBUTTON,
+        674, row_y + 72, 80, 25, LoadCameraButton);
+    addLocalizedText(state, state.load_camera, L"Load", L"Cargar");
+    state.delete_camera = createControl(
+        state, 0, L"BUTTON", L"Delete", WS_TABSTOP | BS_PUSHBUTTON,
+        762, row_y + 72, 108, 25, DeleteCameraButton);
+    addLocalizedText(state, state.delete_camera, L"Delete", L"Eliminar");
 
     addLocalizedText(
-        state, createLabel(state, L"Analytics mode", label_x, row_y + 110, 120),
+        state, createLabel(state, L"Output folder", label_x, row_y + 108, 120),
+        L"Output folder", L"Carpeta de salida");
+    state.output = createEdit(state, OutputEdit, edit_x, row_y + 108, edit_width);
+    addLocalizedText(state, createBrowseButton(state, OutputBrowse, row_y + 108), L"Browse...", L"Explorar...");
+
+    addLocalizedText(
+        state, createLabel(state, L"Analytics mode", label_x, row_y + 146, 120),
         L"Analytics mode", L"Modo de análisis");
     state.analytics = createControl(
         state, 0, WC_COMBOBOXW, L"", WS_TABSTOP | CBS_DROPDOWNLIST,
-        edit_x, row_y + 108, 220, 200, AnalyticsCombo);
+        edit_x, row_y + 144, 220, 200, AnalyticsCombo);
     updateAnalyticsOptions(state);
 
     addLocalizedText(
-        state, createLabel(state, L"Compute", 410, row_y + 110, 75),
+        state, createLabel(state, L"Compute", 410, row_y + 146, 75),
         L"Compute", L"Cómputo");
     state.compute = createControl(
         state, 0, WC_COMBOBOXW, L"", WS_TABSTOP | CBS_DROPDOWNLIST,
-        486, row_y + 108, 180, 200, ComputeCombo);
+        486, row_y + 144, 180, 200, ComputeCombo);
     SendMessageW(state.compute, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(L"Auto"));
     SendMessageW(state.compute, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(L"CUDA"));
     SendMessageW(state.compute, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(L"CPU"));
     SendMessageW(state.compute, CB_SETCURSEL, 0, 0);
 
     addLocalizedText(
-        state, createLabel(state, L"PPE engine", label_x, row_y + 146, 120),
+        state, createLabel(state, L"PPE engine", label_x, row_y + 182, 120),
         L"PPE engine", L"Motor EPP");
-    state.ppe_engine = createEdit(state, PpeEngineEdit, edit_x, row_y + 146, edit_width);
-    addLocalizedText(state, createBrowseButton(state, PpeEngineBrowse, row_y + 146), L"Browse...", L"Explorar...");
+    state.ppe_engine = createEdit(state, PpeEngineEdit, edit_x, row_y + 182, edit_width);
+    addLocalizedText(state, createBrowseButton(state, PpeEngineBrowse, row_y + 182), L"Browse...", L"Explorar...");
 
     addLocalizedText(
-        state, createLabel(state, L"Pose engine", label_x, row_y + 182, 120),
+        state, createLabel(state, L"Pose engine", label_x, row_y + 218, 120),
         L"Pose engine", L"Motor de pose");
-    state.pose_engine = createEdit(state, PoseEngineEdit, edit_x, row_y + 182, edit_width);
-    addLocalizedText(state, createBrowseButton(state, PoseEngineBrowse, row_y + 182), L"Browse...", L"Explorar...");
+    state.pose_engine = createEdit(state, PoseEngineEdit, edit_x, row_y + 218, edit_width);
+    addLocalizedText(state, createBrowseButton(state, PoseEngineBrowse, row_y + 218), L"Browse...", L"Explorar...");
 
     addLocalizedText(
-        state, createLabel(state, L"PPE ONNX", label_x, row_y + 218, 120),
+        state, createLabel(state, L"PPE ONNX", label_x, row_y + 254, 120),
         L"PPE ONNX", L"ONNX EPP");
-    state.ppe_onnx = createEdit(state, PpeOnnxEdit, edit_x, row_y + 218, edit_width);
-    addLocalizedText(state, createBrowseButton(state, PpeOnnxBrowse, row_y + 218), L"Browse...", L"Explorar...");
+    state.ppe_onnx = createEdit(state, PpeOnnxEdit, edit_x, row_y + 254, edit_width);
+    addLocalizedText(state, createBrowseButton(state, PpeOnnxBrowse, row_y + 254), L"Browse...", L"Explorar...");
 
     addLocalizedText(
-        state, createLabel(state, L"Pose ONNX", label_x, row_y + 254, 120),
+        state, createLabel(state, L"Pose ONNX", label_x, row_y + 290, 120),
         L"Pose ONNX", L"ONNX de pose");
-    state.pose_onnx = createEdit(state, PoseOnnxEdit, edit_x, row_y + 254, edit_width);
-    addLocalizedText(state, createBrowseButton(state, PoseOnnxBrowse, row_y + 254), L"Browse...", L"Explorar...");
+    state.pose_onnx = createEdit(state, PoseOnnxEdit, edit_x, row_y + 290, edit_width);
+    addLocalizedText(state, createBrowseButton(state, PoseOnnxBrowse, row_y + 290), L"Browse...", L"Explorar...");
 
     addLocalizedText(
-        state, createLabel(state, L"PPE labels", label_x, row_y + 290, 120),
+        state, createLabel(state, L"PPE labels", label_x, row_y + 326, 120),
         L"PPE labels", L"Etiquetas EPP");
-    state.labels = createEdit(state, LabelsEdit, edit_x, row_y + 290, edit_width);
+    state.labels = createEdit(state, LabelsEdit, edit_x, row_y + 326, edit_width);
 
     state.show = createControl(
         state, 0, L"BUTTON", L"Show annotated video window",
-        WS_TABSTOP | BS_AUTOCHECKBOX, edit_x, row_y + 326, 340, 24, ShowCheck);
+        WS_TABSTOP | BS_AUTOCHECKBOX, edit_x, row_y + 362, 340, 24, ShowCheck);
     addLocalizedText(
         state, state.show, L"Show annotated video window", L"Mostrar ventana de video anotada");
 
     state.validate = createControl(
         state, 0, L"BUTTON", L"Validate", WS_TABSTOP | BS_OWNERDRAW,
-        edit_x, row_y + 366, 110, 32, ValidateButton);
+        edit_x, row_y + 402, 110, 32, ValidateButton);
     addLocalizedText(state, state.validate, L"Validate", L"Validar");
     state.start = createControl(
         state, 0, L"BUTTON", L"Start", WS_TABSTOP | BS_OWNERDRAW,
-        270, row_y + 366, 110, 32, StartButton);
+        270, row_y + 402, 110, 32, StartButton);
     addLocalizedText(state, state.start, L"Start", L"Iniciar");
     state.stop = createControl(
         state, 0, L"BUTTON", L"Stop", WS_TABSTOP | BS_OWNERDRAW,
-        394, row_y + 366, 110, 32, StopButton);
+        394, row_y + 402, 110, 32, StopButton);
     addLocalizedText(state, state.stop, L"Stop", L"Detener");
     EnableWindow(state.stop, FALSE);
 
     addLocalizedText(
-        state, createLabel(state, L"Status", label_x, row_y + 418, 120),
+        state, createLabel(state, L"Status", label_x, row_y + 454, 120),
         L"Status", L"Estado");
     state.status = createControl(
         state, WS_EX_CLIENTEDGE, L"STATIC", L"Ready", SS_LEFT | SS_CENTERIMAGE,
-        edit_x, row_y + 414, 724, 32, StatusText);
+        edit_x, row_y + 450, 724, 32, StatusText);
     addLocalizedText(
-        state, createLabel(state, L"Log path", label_x, row_y + 462, 120),
+        state, createLabel(state, L"Log path", label_x, row_y + 498, 120),
         L"Log path", L"Ruta del log");
-    state.log_path = createEdit(state, LogPathEdit, edit_x, row_y + 458, 620, true);
+    state.log_path = createEdit(state, LogPathEdit, edit_x, row_y + 494, 620, true);
     const HWND open_log = createControl(
         state, 0, L"BUTTON", L"Open log", WS_TABSTOP | BS_PUSHBUTTON,
-        778, row_y + 458, 92, 25, OpenLogButton);
+        778, row_y + 494, 92, 25, OpenLogButton);
     addLocalizedText(state, open_log, L"Open log", L"Abrir log");
 
     state.program_data = knownProgramData();
@@ -481,6 +631,7 @@ void createControls(LauncherWindow& state) {
     SetWindowTextW(state.labels, kBundledPpeLabels);
     SetWindowTextW(state.source_label, L"CAM_CUAJONE_01");
     setText(state.log_path, state.program_data / L"logs");
+    refreshSavedCameraProfiles(state);
 
     std::error_code models_error;
     const auto install_models = siblingRuntime().parent_path() / L"models";
@@ -1017,6 +1168,9 @@ LRESULT CALLBACK windowProcedure(HWND window, UINT message, WPARAM wparam, LPARA
                 }
                 else if (id == StartButton) launchRuntime(*state, false);
                 else if (id == StopButton) requestStop(*state);
+                else if (id == SaveCameraButton) saveSavedCameraProfile(*state);
+                else if (id == LoadCameraButton) loadSavedCameraProfile(*state);
+                else if (id == DeleteCameraButton) deleteSavedCameraProfile(*state);
                 else if (id == LanguageCombo && HIWORD(wparam) == CBN_SELCHANGE) {
                     state->spanish = SendMessageW(state->language, CB_GETCURSEL, 0, 0) == 1;
                     refreshLanguage(*state);

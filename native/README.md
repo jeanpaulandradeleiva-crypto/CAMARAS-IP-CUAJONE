@@ -163,6 +163,12 @@ informan en el estado. El selector `Language` permite cambiar inmediatamente las
 etiquetas, botones y modos de análisis entre English y Español sin alterar la
 configuración o los argumentos del runtime.
 `Validate` ejecuta el mismo plan con `--preflight`; `Start` inicia el procesamiento.
+`Saved camera` usa el `Camera ID` como nombre de perfil y guarda la URL RTSP
+completa solamente como una credencial genérica por usuario en Windows Credential
+Manager. Los perfiles se enumeran al abrir el launcher; `Save`, `Load` y `Delete`
+no exportan ni registran la URL. Las URLs RTSP completas nunca se escriben en
+`.env`, ProgramData ni logs; la salida del runtime continúa redactando userinfo
+antes de persistirse.
 
 Las rutas iniciales se derivan de `FOLDERID_ProgramData`:
 
@@ -184,9 +190,8 @@ el contenido de engines, ONNX ni manifests: el `--preflight` del runtime conserv
 esa autoridad.
 
 Stdout y stderr pasan por un pipe y se redacta el userinfo de URLs RTSP antes de
-escribir el log visible. El launcher no guarda formularios ni configuración, por
-lo que las credenciales RTSP no se persisten. El proceso pertenece a un Job Object
-con `KILL_ON_JOB_CLOSE`; `Stop` envía `CTRL_BREAK_EVENT`, espera hasta 30
+escribir el log visible. El proceso pertenece a un Job Object con
+`KILL_ON_JOB_CLOSE`; `Stop` envía `CTRL_BREAK_EVENT`, espera hasta 30
 segundos fuera del hilo UI y, si no termina, finaliza el job. El runtime continúa
 siendo un ejecutable de consola y maneja `SIGBREAK` mediante su ruta normal de
 apagado cooperativo.

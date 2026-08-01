@@ -236,6 +236,23 @@ void testCredentialRedaction() {
         "Credential-free RTSP URL changed");
 }
 
+void testSavedCameraProfileNames() {
+    require(isValidSavedCameraProfileName(L"CAM_CUAJONE_01"),
+        "Camera ID format was rejected");
+    require(isValidSavedCameraProfileName(L"Gate 2-East"),
+        "Safe saved camera profile name was rejected");
+    for (const std::wstring_view invalid : {
+             L"", L"camera:554", L"user@camera", L"camera/path", L"camera?query"}) {
+        require(!isValidSavedCameraProfileName(invalid),
+            "Saved camera profile name accepted a reserved character");
+    }
+    require(savedCameraCredentialTarget(L"CAM_CUAJONE_01")
+                == L"NexoAI Vision/RTSP/CAM_CUAJONE_01",
+        "Saved camera credential target changed");
+    requireThrows([] { savedCameraCredentialTarget(L"camera@host"); },
+        "Saved camera credential target accepted an unsafe profile name");
+}
+
 }  // namespace
 
 int main() {
@@ -245,6 +262,7 @@ int main() {
         {"PPE-only pose omission", testPpeOnlyOmitsPoseArguments},
         {"Windows command-line quoting", testWindowsQuoting},
         {"RTSP credential redaction", testCredentialRedaction},
+        {"saved camera profile names", testSavedCameraProfileNames},
     };
     for (const auto& [name, test] : tests) {
         try {

@@ -47,5 +47,9 @@ LaunchPlan buildLaunchPlan(const LauncherSettings& settings, bool preflight);
 std::wstring quoteWindowsArgument(std::wstring_view argument);
 std::wstring buildWindowsCommandLine(const std::vector<std::wstring>& arguments);
 std::string redactRtspCredentials(std::string_view text);
+bool isValidSavedCameraProfileName(std::wstring_view name);
+std::wstring_view savedCameraCredentialTargetPrefix();
+std::wstring savedCameraCredentialTarget(std::wstring_view name);
+void validateRtspCameraUrl(std::wstring_view source);
 
 }  // namespace cuajone::launcher

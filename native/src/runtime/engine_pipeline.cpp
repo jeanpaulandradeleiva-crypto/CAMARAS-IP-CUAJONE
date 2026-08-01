@@ -47,9 +47,18 @@ struct NativeEnginePipeline::Impl {
             || config.maximum_detections > DecodeLimits{}.max_nms_candidates) {
             throw std::invalid_argument("maximum_detections is outside the supported range");
         }
-        if (config.backend == ComputeBackend::Cpu) loadCpu();
-        else if (config.backend == ComputeBackend::Cuda) loadCuda();
-        else throw std::invalid_argument("Engine pipeline requires a resolved cpu or cuda backend");
+        if (config.backend == ComputeBackend::Cpu
+            && config.provider == InferenceProvider::OnnxRuntimeCpu) {
+            loadCpu();
+        } else if (config.backend == ComputeBackend::Cuda
+            && config.provider == InferenceProvider::TensorRt) {
+            loadCuda();
+        } else if (config.backend == ComputeBackend::Cuda
+            && config.provider == InferenceProvider::OnnxRuntimeCuda) {
+            loadCudaOnnx();
+        } else {
+            throw std::invalid_argument("Engine pipeline requires a resolved backend and matching provider");
+        }
     }
 
     void loadCpu() {
@@ -94,11 +103,6 @@ struct NativeEnginePipeline::Impl {
     }
 
     void loadCuda() {
-        if (config.ppe_engine.empty()
-            && (config.analytics.mode == AnalyticsMode::PpeOnly || config.pose_engine.empty())) {
-            loadCudaOnnx();
-            return;
-        }
 #ifdef CUAJONE_WITH_TENSORRT
         summary.backend = ComputeBackend::Cuda;
         summary.provider = "TensorRT 11/CUDA";

@@ -20,6 +20,7 @@ namespace cuajone {
 
 struct EnginePipelineConfig {
     ComputeBackend backend{ComputeBackend::Cuda};
+    InferenceProvider provider{InferenceProvider::TensorRt};
     std::filesystem::path ppe_engine;
     std::filesystem::path pose_engine;
     std::filesystem::path ppe_onnx;

@@ -8,6 +8,7 @@
 #include "cuajone/iou_tracker.hpp"
 #include "cuajone/ppe_analytics.hpp"
 #include "cuajone/preprocess.hpp"
+#include "cuajone/runtime_execution_plan.hpp"
 #include "cuajone/yolo_decode.hpp"
 
 #include <opencv2/core.hpp>
@@ -435,6 +436,98 @@ void testComputeSelectionAndProbeContract() {
         "Hardware probe exit-code contract changed");
 }
 
+void testRuntimeExecutionPlanning() {
+    const ModelArtifactAvailability all_models{true, true, true, true};
+    const ModelArtifactAvailability ppe_only_onnx{false, false, true, false};
+    struct PlanCase {
+        std::string name;
+        RuntimeExecutionPlanningInput input;
+        std::optional<ComputeBackend> backend;
+        std::optional<InferenceProvider> provider;
+        std::optional<ComputeBackend> fallback;
+        bool pose_required{};
+        std::string error;
+    };
+    const std::vector<PlanCase> cases{
+        {
+            "Auto ONNX CUDA falls back to CPU after preflight",
+            {ComputeBackend::Auto, true, std::nullopt, AnalyticsMode::PpeFall,
+             {HardwareProbeStatus::CudaReady, false, true}, all_models},
+            ComputeBackend::Cuda, InferenceProvider::OnnxRuntimeCuda,
+            ComputeBackend::Cpu, true, {},
+        },
+        {
+            "CPU selects ONNX CPU without a CUDA fallback",
+            {ComputeBackend::Cpu, true, std::nullopt, AnalyticsMode::PpeFall,
+             {HardwareProbeStatus::NoNvidiaAdapter, false, false}, all_models},
+            ComputeBackend::Cpu, InferenceProvider::OnnxRuntimeCpu,
+            std::nullopt, true, {},
+        },
+        {
+            "CUDA selects ONNX CUDA without a CPU fallback",
+            {ComputeBackend::Cuda, true, std::nullopt, AnalyticsMode::PpeFall,
+             {HardwareProbeStatus::CudaReady, false, true}, all_models},
+            ComputeBackend::Cuda, InferenceProvider::OnnxRuntimeCuda,
+            std::nullopt, true, {},
+        },
+        {
+            "Auto prefers TensorRT over ONNX CUDA",
+            {ComputeBackend::Auto, true, std::nullopt, AnalyticsMode::PpeFall,
+             {HardwareProbeStatus::CudaReady, true, true}, all_models},
+            ComputeBackend::Cuda, InferenceProvider::TensorRt,
+            ComputeBackend::Cpu, true, {},
+        },
+        {
+            "PPE-only ONNX does not require a pose model",
+            {ComputeBackend::Cpu, true, std::nullopt, AnalyticsMode::PpeOnly,
+             {HardwareProbeStatus::NoNvidiaAdapter, false, false}, ppe_only_onnx},
+            ComputeBackend::Cpu, InferenceProvider::OnnxRuntimeCpu,
+            std::nullopt, false, {},
+        },
+        {
+            "CPU plan rejects missing ONNX models",
+            {ComputeBackend::Cpu, true, std::nullopt, AnalyticsMode::PpeFall,
+             {HardwareProbeStatus::NoNvidiaAdapter, false, false}, {}},
+            std::nullopt, std::nullopt, std::nullopt, true,
+            "CPU mode requires compatible PPE and pose ONNX models",
+        },
+        {
+            "CUDA plan rejects an unavailable runtime",
+            {ComputeBackend::Cuda, true, std::nullopt, AnalyticsMode::PpeFall,
+             {HardwareProbeStatus::CudaReady, false, false}, all_models},
+            std::nullopt, std::nullopt, std::nullopt, true,
+            "CUDA mode is unavailable in this CPU-only build",
+        },
+        {
+            "Auto plan rejects absent model paths",
+            {ComputeBackend::Auto, true, std::nullopt, AnalyticsMode::PpeFall,
+             {HardwareProbeStatus::NoNvidiaAdapter, false, false}, {}},
+            std::nullopt, std::nullopt, std::nullopt, true,
+            "Auto mode found neither a ready TensorRT path nor compatible ONNX models",
+        },
+    };
+    for (const auto& test : cases) {
+        try {
+            const RuntimeExecutionPlan plan = planRuntimeExecution(test.input);
+            require(test.error.empty(), test.name + " did not reject its invalid plan");
+            require(plan.selection.backend == *test.backend, test.name + " selected the wrong backend");
+            require(plan.selection.provider == *test.provider, test.name + " selected the wrong provider");
+            require(plan.model_requirements.pose_required == test.pose_required,
+                test.name + " resolved pose requirements incorrectly");
+            require(plan.preflight_failure_fallback.has_value() == test.fallback.has_value(),
+                test.name + " resolved the wrong fallback policy");
+            if (test.fallback) {
+                require(plan.preflight_failure_fallback->backend == *test.fallback,
+                    test.name + " selected the wrong fallback backend");
+            }
+        } catch (const std::exception& error) {
+            require(!test.error.empty(), test.name + " unexpectedly failed: " + error.what());
+            require(std::string(error.what()).find(test.error) != std::string::npos,
+                test.name + " returned the wrong error: " + error.what());
+        }
+    }
+}
+
 void testTrackerContinuityAndExpiry() {
     IoUTracker tracker({0.3F, 2, 4});
     const std::array<Box, 1> first{{{0, 0, 100, 100}}};
@@ -632,6 +725,7 @@ int main() {
         {"pose decode", testPoseSchemaAndDecode},
         {"CLI URLs and invariants", testCliUrlsAndInvariantDefense},
         {"compute selection and probe contract", testComputeSelectionAndProbeContract},
+        {"runtime execution planning", testRuntimeExecutionPlanning},
         {"IoU tracker", testTrackerContinuityAndExpiry},
         {"PPE analytics", testPpeAssociationVotingAndCooldown},
         {"fall analytics", testFallConfirmationRecoveryAndCooldown},

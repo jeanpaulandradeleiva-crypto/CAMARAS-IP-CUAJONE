@@ -12,6 +12,8 @@
 namespace cuajone::launcher {
 namespace {
 
+constexpr wchar_t kSavedCameraCredentialTargetPrefix[] = L"NexoAI Vision/RTSP/";
+
 bool regularFile(const std::filesystem::path& path) {
     std::error_code error;
     return !path.empty() && std::filesystem::is_regular_file(path, error) && !error;
@@ -32,7 +34,30 @@ bool isRtspSource(std::wstring_view source) {
     return source.starts_with(L"rtsp://") || source.starts_with(L"rtsps://");
 }
 
-void requireRtspCamera(std::wstring_view source) {
+bool isSavedCameraProfileCharacter(wchar_t character) {
+    return std::iswalnum(character) != 0 || character == L' ' || character == L'_'
+        || character == L'-' || character == L'.';
+}
+
+}  // namespace
+
+bool isValidSavedCameraProfileName(std::wstring_view name) {
+    return !name.empty() && name.size() <= 80
+        && std::all_of(name.begin(), name.end(), isSavedCameraProfileCharacter);
+}
+
+std::wstring_view savedCameraCredentialTargetPrefix() {
+    return kSavedCameraCredentialTargetPrefix;
+}
+
+std::wstring savedCameraCredentialTarget(std::wstring_view name) {
+    if (!isValidSavedCameraProfileName(name)) {
+        throw std::invalid_argument("Saved camera profile name is invalid");
+    }
+    return std::wstring(kSavedCameraCredentialTargetPrefix) + std::wstring(name);
+}
+
+void validateRtspCameraUrl(std::wstring_view source) {
     if (!isRtspSource(source)) {
         throw std::invalid_argument("Source must be an rtsp:// or rtsps:// camera URL");
     }
@@ -56,6 +81,8 @@ void requireRtspCamera(std::wstring_view source) {
         throw std::invalid_argument("RTSP camera URL must include a host");
     }
 }
+
+namespace {
 
 bool hasNonWhitespace(std::wstring_view value) {
     return std::any_of(value.begin(), value.end(), [](wchar_t character) {
@@ -96,7 +123,7 @@ LaunchPlan buildLaunchPlan(const LauncherSettings& settings, bool preflight) {
     if (settings.source.empty()) {
         throw std::invalid_argument("RTSP camera URL is required");
     }
-    requireRtspCamera(settings.source);
+    validateRtspCameraUrl(settings.source);
     if (settings.output.empty()) {
         throw std::invalid_argument("Output folder is required");
     }
