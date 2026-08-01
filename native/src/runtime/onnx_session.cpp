@@ -10,8 +10,11 @@
 #include <utility>
 
 namespace cuajone {
-struct OnnxCpuSession::Impl {
-    Impl(const std::filesystem::path& model_path, ModelRole expected_role)
+struct OnnxSession::Impl {
+    Impl(
+        const std::filesystem::path& model_path,
+        ModelRole expected_role,
+        const OnnxSessionOptions& options)
         : environment(ORT_LOGGING_LEVEL_WARNING, "cuajone_native"),
           session_options(),
           session(nullptr),
@@ -19,6 +22,14 @@ struct OnnxCpuSession::Impl {
         session_options.SetGraphOptimizationLevel(GraphOptimizationLevel::ORT_ENABLE_ALL);
         session_options.SetExecutionMode(ExecutionMode::ORT_SEQUENTIAL);
         session_options.DisableMemPattern();
+        if (options.execution_provider == OnnxExecutionProvider::Cuda) {
+            if (!options.cuda_device) {
+                throw std::invalid_argument("ONNX CUDA execution provider requires a CUDA device index");
+            }
+            OrtCUDAProviderOptions provider_options{};
+            provider_options.device_id = *options.cuda_device;
+            session_options.AppendExecutionProvider_CUDA(provider_options);
+        }
         session = Ort::Session(
             environment, verified_model.bytes.data(), verified_model.bytes.size(), session_options);
         if (session.GetInputCount() != 1 || session.GetOutputCount() != 1) {
@@ -30,7 +41,7 @@ struct OnnxCpuSession::Impl {
         const auto output_info = session.GetOutputTypeInfo(0).GetTensorTypeAndShapeInfo();
         if (input_info.GetElementType() != ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT
             || output_info.GetElementType() != ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT) {
-            throw std::runtime_error("ONNX CPU models must use float32 input and output tensors");
+            throw std::runtime_error("ONNX models must use float32 input and output tensors");
         }
         input_shape = input_info.GetShape();
         output_shape = output_info.GetShape();
@@ -100,13 +111,16 @@ struct OnnxCpuSession::Impl {
     std::size_t input_elements{};
 };
 
-OnnxCpuSession::OnnxCpuSession(const std::filesystem::path& model_path, ModelRole expected_role)
-    : impl_(std::make_unique<Impl>(model_path, expected_role)) {}
+OnnxSession::OnnxSession(
+    const std::filesystem::path& model_path,
+    ModelRole expected_role,
+    OnnxSessionOptions options)
+    : impl_(std::make_unique<Impl>(model_path, expected_role, options)) {}
 
-OnnxCpuSession::~OnnxCpuSession() = default;
-int OnnxCpuSession::inputWidth() const noexcept { return impl_->input_width; }
-int OnnxCpuSession::inputHeight() const noexcept { return impl_->input_height; }
-const std::vector<std::int64_t>& OnnxCpuSession::outputShape() const noexcept { return impl_->output_shape; }
-InferenceOutput OnnxCpuSession::infer(std::span<const float> input) { return impl_->run(input); }
+OnnxSession::~OnnxSession() = default;
+int OnnxSession::inputWidth() const noexcept { return impl_->input_width; }
+int OnnxSession::inputHeight() const noexcept { return impl_->input_height; }
+const std::vector<std::int64_t>& OnnxSession::outputShape() const noexcept { return impl_->output_shape; }
+InferenceOutput OnnxSession::infer(std::span<const float> input) { return impl_->run(input); }
 
 }  // namespace cuajone

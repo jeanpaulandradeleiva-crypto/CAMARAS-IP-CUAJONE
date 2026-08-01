@@ -35,6 +35,14 @@ def test_binding_import_versions_and_synthetic_pipeline() -> None:
     if native.ENGINE_RUNTIME_AVAILABLE:
         assert hasattr(native, "EngineConfig")
         assert hasattr(native, "EnginePipeline")
+        assert native.ComputeBackend.CPU != native.ComputeBackend.CUDA
+        config = native.EngineConfig()
+        config.backend = native.ComputeBackend.CPU
+        config.ppe_onnx = "ppe.onnx"
+        config.pose_onnx = "pose.onnx"
+        assert config.backend == native.ComputeBackend.CPU
+        assert config.ppe_onnx == "ppe.onnx"
+        assert config.pose_onnx == "pose.onnx"
 
 
 def test_binding_validates_numpy_without_implicit_copy() -> None:

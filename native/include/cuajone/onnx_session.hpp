@@ -7,15 +7,29 @@
 
 #include <filesystem>
 #include <memory>
+#include <optional>
 
 namespace cuajone {
 
-class OnnxCpuSession final : public InferenceSession {
+enum class OnnxExecutionProvider {
+    Cpu,
+    Cuda,
+};
+
+struct OnnxSessionOptions {
+    OnnxExecutionProvider execution_provider{OnnxExecutionProvider::Cpu};
+    std::optional<int> cuda_device;
+};
+
+class OnnxSession final : public InferenceSession {
 public:
-    OnnxCpuSession(const std::filesystem::path& model_path, ModelRole expected_role);
-    ~OnnxCpuSession() override;
-    OnnxCpuSession(const OnnxCpuSession&) = delete;
-    OnnxCpuSession& operator=(const OnnxCpuSession&) = delete;
+    OnnxSession(
+        const std::filesystem::path& model_path,
+        ModelRole expected_role,
+        OnnxSessionOptions options = {});
+    ~OnnxSession() override;
+    OnnxSession(const OnnxSession&) = delete;
+    OnnxSession& operator=(const OnnxSession&) = delete;
 
     [[nodiscard]] int inputWidth() const noexcept override;
     [[nodiscard]] int inputHeight() const noexcept override;

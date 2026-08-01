@@ -74,6 +74,58 @@ uv usa `pyproject.toml` como manifiesto, `.python-version` para preferir Python
 uv en este repositorio. `uv sync --locked` exige que el bloqueo corresponda al
 manifiesto y recrea `.venv` cuando el intérprete no es compatible.
 
+## Local Python binding for development and QA
+
+`cuajone_native` is a local development/QA binding only. It MUST NOT be added to
+the production MSI or copied into an installer staging directory. Build output
+stays under `.tools\native\build\presets\python-bindings\python` and is ignored
+by Git.
+
+Create the dedicated Python 3.12 environment and install only the binding test
+dependencies:
+
+```powershell
+py -3.12 -m venv .tools\native\venvs\coupling-py312
+.tools\native\venvs\coupling-py312\Scripts\python.exe -m pip install --upgrade pip
+.tools\native\venvs\coupling-py312\Scripts\python.exe -m pip install "pybind11==3.0.4" "pytest>=8,<10" "numpy>=1.26,<3" "jsonschema==4.25.1"
+```
+
+Configure, build, and run the native tests from PowerShell. Keep these commands
+in one PowerShell session because `activate-native.ps1` configures only the
+current process:
+
+```powershell
+Push-Location native
+. .\activate-native.ps1
+$env:CUAJONE_PYTHON_EXECUTABLE = (Resolve-Path "..\.tools\native\venvs\coupling-py312\Scripts\python.exe").Path
+$env:CUAJONE_PYBIND11_ROOT = (Resolve-Path "..\.tools\native\venvs\coupling-py312\Lib\site-packages\pybind11\share\cmake\pybind11").Path
+cmake --preset python-bindings
+cmake --build --preset python-bindings-release
+ctest --preset python-bindings-release
+Pop-Location
+```
+
+Before importing the full runtime-linked extension, register its local DLL
+directories and expose the local output directory to Python:
+
+```powershell
+$buildPython = (Resolve-Path ".tools\native\build\presets\python-bindings\python").Path
+$env:CUAJONE_NATIVE_DLL_DIRS = @(
+    $buildPython,
+    (Resolve-Path ".tools\native\onnxruntime-win-x64-1.25.0\lib").Path,
+    (Resolve-Path ".tools\native\opencv\opencv\build\x64\vc16\bin").Path,
+    (Resolve-Path ".tools\native\cuda-runtime\nvidia\cuda_runtime\bin").Path,
+    (Resolve-Path ".tools\native\tensorrt\TensorRT-11.1.0.106\bin").Path
+) -join [IO.Path]::PathSeparator
+$env:PYTHONPATH = "$buildPython$([IO.Path]::PathSeparator)$PWD"
+
+.tools\native\venvs\coupling-py312\Scripts\python.exe -c "import os; dll_handles=[os.add_dll_directory(path) for path in os.environ['CUAJONE_NATIVE_DLL_DIRS'].split(os.pathsep) if path]; import cuajone_native; print(cuajone_native.CONTRACT_VERSION)"
+.tools\native\venvs\coupling-py312\Scripts\python.exe -m pytest -q tests\test_native_binding.py tests\test_native_backend_config.py
+```
+
+The compiled extension is named `cuajone_native*.pyd` for its CPython ABI. Its
+only valid output location is `.tools\native\build\presets\python-bindings\python`.
+
 ## Instalación opcional de PyTorch con CUDA
 
 La configuración `YOLO_DEVICE=0` y la consulta `torch.cuda.is_available()` no

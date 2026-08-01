@@ -44,10 +44,12 @@ extern "C" __declspec(dllexport) UINT __stdcall DetectComputeHardware(MSIHANDLE 
             installation,
             L"CUDA_READY",
             probe.status == cuajone::HardwareProbeStatus::CudaReady ? L"1" : L"0");
+        setProperty(installation, L"CUDA_DETAILS", wide(cuajone::hardwareProbeSummary(probe)));
         return ERROR_SUCCESS;
     } catch (...) {
         MsiSetPropertyW(installation, L"NVIDIA_STATUS", L"probe_error");
         MsiSetPropertyW(installation, L"CUDA_READY", L"0");
+        MsiSetPropertyW(installation, L"CUDA_DETAILS", L"CUDA probe failed");
         return ERROR_SUCCESS;
     }
 }

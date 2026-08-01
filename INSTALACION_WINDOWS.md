@@ -1,4 +1,4 @@
-# Instalar Cuajone PPE Monitor en Windows
+# Instalar NexoAI Vision en Windows
 
 Esta guía es para la persona que usará la aplicación. No necesitas conocer
 PowerShell ni escribir comandos.
@@ -16,7 +16,7 @@ PowerShell ni escribir comandos.
    instalador.
 3. Deja la carpeta propuesta o selecciona **Browse** para elegir otra.
 
-   La carpeta propuesta es `C:\Program Files\Cuajone PPE Monitor`.
+    La carpeta propuesta es `C:\Program Files\NexoAI Vision`.
 
 4. Elige cómo procesará la aplicación:
 
@@ -32,8 +32,8 @@ PowerShell ni escribir comandos.
 ## Abrir y configurar el monitor
 
 1. Abre el menú Inicio de Windows.
-2. Busca **Cuajone PPE Monitor**.
-3. Abre **Cuajone PPE Monitor**. Este es el iniciador gráfico para el uso normal.
+2. Busca **NexoAI Vision**.
+3. Abre **NexoAI Vision**. Este es el iniciador gráfico para el uso normal.
 4. Completa los campos con los valores aprobados por el responsable de la
    aplicación:
 
@@ -53,7 +53,7 @@ No escribas una contraseña RTSP en documentos, capturas o tickets. El iniciador
 la guarda como configuración permanente; deberás volver a proporcionarla cuando
 corresponda.
 
-**Cuajone PPE Monitor - Command Help** permanece en el menú Inicio para soporte y
+**NexoAI Vision - Command Help** permanece en el menú Inicio para soporte y
 uso avanzado. No es la forma normal de iniciar el monitor.
 
 ## Configurar cámaras después
@@ -67,7 +67,11 @@ aplicación.
 La versión piloto tiene un alcance limitado. El bundle ONNX incluido se instala
 junto al runtime; los modelos externos siguen requiriendo aprobación de TI o del
 responsable de la aplicación. La configuración y los datos mutables se guardan
-fuera de la carpeta de instalación, bajo `C:\ProgramData\Cuajone PPE Monitor`.
+fuera de la carpeta de instalación, bajo `C:\ProgramData\NexoAI Vision`.
+
+Al actualizar desde Cuajone PPE Monitor, NexoAI Vision usa la carpeta nueva para
+archivos nuevos. No elimina ni mueve la carpeta anterior; el iniciador también
+detecta modelos que permanezcan bajo `C:\ProgramData\Cuajone PPE Monitor`.
 
 Se espera que versiones futuras permitan agregar más configuraciones de cámara
 sin reinstalar la aplicación en otra carpeta. Esto dependerá del soporte del

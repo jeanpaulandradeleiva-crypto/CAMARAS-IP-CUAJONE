@@ -12,7 +12,7 @@ cámaras ni iniciar inferencia.
 
 **Archivos que recibe TI:**
 
-- MSI `CuajonePPEMonitor-0.1.0-internal.3-x64-Internal.msi`;
+- MSI `NexoAIVision-<version>-x64-Internal.msi`;
 - hash SHA-256 aprobado por un canal independiente;
 - certificados públicos raíz y hoja `.cer`, con hashes y huellas aprobados;
 - `Install-Pilot.ps1` e `Install-InternalPilotTrust.ps1`;
@@ -24,7 +24,7 @@ cámaras ni iniciar inferencia.
 2. Compara SHA-256, huellas y firma antes de modificar confianza.
 3. Valida y enrola los certificados públicos con autorización explícita.
 4. Instala el MSI con interfaz o en silencio y guarda `/L*V`.
-5. Abre **Cuajone PPE Monitor**, confirma que aparece el formulario y ciérralo sin
+5. Abre **NexoAI Vision**, confirma que aparece el formulario y ciérralo sin
    completar una fuente ni iniciar la inferencia.
 
 **Resultado esperado:** el producto aparece en Aplicaciones instaladas y el
@@ -130,7 +130,13 @@ msiexec.exe /i "<RUTA_MSI>" /qn /norestart `
 ```
 
 `INSTALLFOLDER` cambia los binarios; los datos mutables permanecen bajo
-`C:\ProgramData\Cuajone PPE Monitor`.
+`C:\ProgramData\NexoAI Vision`.
+
+Durante una actualización desde Cuajone PPE Monitor, conserva la carpeta heredada
+sin moverla ni eliminarla. NexoAI Vision escribe datos nuevos en su propia carpeta
+y el iniciador puede leer modelos de la ubicación heredada. El modo de cómputo se
+lee primero desde `HKLM\SOFTWARE\NexoAI Vision\ComputeMode` y, si no existe, desde
+la clave heredada; las instalaciones nuevas escriben solo la clave NexoAI Vision.
 
 `COMPUTE_MODE` acepta únicamente `auto`, `cuda` o `cpu`. El valor se persiste en
 HKLM. `cuda` falla si el custom action DXGI/CUDA no confirma hardware y driver;
@@ -145,13 +151,13 @@ Conserva el archivo indicado por `/L*V`, el hash del MSI, la salida de firma y l
 versión de Windows. La comprobación aceptada es:
 
 1. Confirma el producto en Aplicaciones instaladas.
-2. Abre **Cuajone PPE Monitor** desde Inicio.
+2. Abre **NexoAI Vision** desde Inicio.
 3. Confirma que el formulario permite elegir fuente, análisis, cómputo, modelos
    externos, salida y visualización.
 4. Cierra el iniciador sin completar credenciales, abrir la fuente o cargar modelos.
 
 No uses `--preflight` como smoke test: puede seleccionar CUDA y deserializar
-engines. **Cuajone PPE Monitor - Command Help** y `cuajone_native.exe` quedan para
+engines. **NexoAI Vision - Command Help** y `cuajone_native.exe` quedan para
 diagnóstico o automatización avanzada, no como ruta normal del operador.
 
 ## CLI avanzado

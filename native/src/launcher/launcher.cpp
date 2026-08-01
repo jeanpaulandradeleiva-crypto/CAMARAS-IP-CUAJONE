@@ -4,6 +4,7 @@
 
 #include <windows.h>
 #include <commctrl.h>
+#include <shellapi.h>
 #include <shlobj.h>
 #include <shobjidl.h>
 
@@ -25,17 +26,27 @@ namespace {
 
 using namespace cuajone::launcher;
 
-constexpr wchar_t kWindowClass[] = L"CuajoneLauncherWindow";
+constexpr wchar_t kWindowClass[] = L"NexoAIVisionLauncherWindow";
+constexpr wchar_t kProductName[] = L"NexoAI Vision";
+constexpr wchar_t kLegacyProductName[] = L"Cuajone PPE Monitor";
 constexpr wchar_t kBundledPpeLabels[] = L"Gloves,Hard_hat,Mask,Person,Safety_boots,Vest";
 constexpr UINT kProcessFinished = WM_APP + 1;
 constexpr ULONGLONG kGracefulStopMilliseconds = 30000;
+constexpr COLORREF kWindowColor = RGB(246, 248, 252);
+constexpr COLORREF kInputColor = RGB(255, 255, 255);
+constexpr COLORREF kTextColor = RGB(31, 41, 55);
+constexpr COLORREF kMutedTextColor = RGB(75, 85, 99);
+constexpr COLORREF kPrimaryColor = RGB(22, 91, 170);
+constexpr COLORREF kPrimaryPressedColor = RGB(17, 72, 136);
 
 std::filesystem::path siblingRuntime();
 
 enum ControlId : int {
     SourceEdit = 100,
     SourceLabelEdit,
+    LanguageCombo,
     LoadEnvButton,
+    OpenLogButton,
     OutputEdit,
     OutputBrowse,
     AnalyticsCombo,
@@ -57,10 +68,17 @@ enum ControlId : int {
     LogPathEdit,
 };
 
+struct LocalizedText {
+    HWND control{};
+    const wchar_t* english{};
+    const wchar_t* spanish{};
+};
+
 struct LauncherWindow {
     HWND window{};
     HWND source{};
     HWND source_label{};
+    HWND language{};
     HWND output{};
     HWND analytics{};
     HWND compute{};
@@ -75,8 +93,14 @@ struct LauncherWindow {
     HWND stop{};
     HWND status{};
     HWND log_path{};
+    std::vector<LocalizedText> localized_text;
     std::vector<std::pair<std::wstring, std::wstring>> runtime_options;
     HFONT font{};
+    HFONT heading_font{};
+    HFONT button_font{};
+    HBRUSH window_brush{};
+    HBRUSH input_brush{};
+    HBRUSH status_brush{};
     std::filesystem::path program_data;
     HANDLE process{};
     HANDLE job{};
@@ -86,6 +110,7 @@ struct LauncherWindow {
     std::atomic_bool stop_requested{};
     std::atomic<ULONGLONG> stop_deadline{};
     bool close_requested{};
+    bool spanish{};
 };
 
 std::wstring editText(HWND control) {
@@ -102,6 +127,37 @@ void setText(HWND control, const std::filesystem::path& value) {
 
 void setStatus(LauncherWindow& state, std::wstring_view text) {
     SetWindowTextW(state.status, std::wstring(text).c_str());
+}
+
+void addLocalizedText(
+    LauncherWindow& state,
+    HWND control,
+    const wchar_t* english,
+    const wchar_t* spanish) {
+    state.localized_text.push_back({control, english, spanish});
+}
+
+void updateAnalyticsOptions(LauncherWindow& state) {
+    const LRESULT selection = SendMessageW(state.analytics, CB_GETCURSEL, 0, 0);
+    SendMessageW(state.analytics, CB_RESETCONTENT, 0, 0);
+    SendMessageW(
+        state.analytics, CB_ADDSTRING, 0,
+        reinterpret_cast<LPARAM>(state.spanish ? L"Solo EPP" : L"PPE only"));
+    SendMessageW(
+        state.analytics, CB_ADDSTRING, 0,
+        reinterpret_cast<LPARAM>(state.spanish ? L"EPP + caídas" : L"PPE + fall"));
+    SendMessageW(state.analytics, CB_SETCURSEL, selection == CB_ERR ? 1 : selection, 0);
+}
+
+void refreshLanguage(LauncherWindow& state) {
+    for (const auto& text : state.localized_text) {
+        SetWindowTextW(text.control, state.spanish ? text.spanish : text.english);
+    }
+    updateAnalyticsOptions(state);
+    const std::wstring current_status = editText(state.status);
+    if (current_status == L"Ready" || current_status == L"Listo") {
+        setStatus(state, state.spanish ? L"Listo" : L"Ready");
+    }
 }
 
 std::wstring trim(std::wstring value) {
@@ -181,12 +237,15 @@ HWND createControl(
         reinterpret_cast<HMENU>(static_cast<INT_PTR>(id)),
         GetModuleHandleW(nullptr), nullptr);
     if (control == nullptr) throw std::runtime_error("Could not create launcher control");
-    SendMessageW(control, WM_SETFONT, reinterpret_cast<WPARAM>(state.font), TRUE);
+    const HFONT font = std::wcscmp(class_name, L"BUTTON") == 0 && state.button_font != nullptr
+        ? state.button_font
+        : state.font;
+    SendMessageW(control, WM_SETFONT, reinterpret_cast<WPARAM>(font), TRUE);
     return control;
 }
 
-void createLabel(LauncherWindow& state, const wchar_t* text, int x, int y, int width) {
-    createControl(state, 0, L"STATIC", text, SS_LEFT, x, y + 4, width, 22, 0);
+HWND createLabel(LauncherWindow& state, const wchar_t* text, int x, int y, int width) {
+    return createControl(state, 0, L"STATIC", text, SS_LEFT, x, y + 4, width, 22, 0);
 }
 
 HWND createEdit(LauncherWindow& state, int id, int x, int y, int width, bool read_only = false) {
@@ -200,8 +259,34 @@ HWND createEdit(LauncherWindow& state, int id, int x, int y, int width, bool rea
 
 HWND createBrowseButton(LauncherWindow& state, int id, int y) {
     return createControl(
-        state, 0, L"BUTTON", L"Browse...", WS_TABSTOP | BS_PUSHBUTTON,
+        state, 0, L"BUTTON", L"Browse...", WS_TABSTOP | BS_OWNERDRAW,
         778, y, 92, 25, id);
+}
+
+void drawButton(const DRAWITEMSTRUCT& item) {
+    const bool disabled = (item.itemState & ODS_DISABLED) != 0;
+    const bool pressed = (item.itemState & (ODS_SELECTED | ODS_HOTLIGHT)) != 0;
+    const int id = static_cast<int>(item.CtlID);
+    const bool primary = id == StartButton;
+    const COLORREF fill = disabled ? RGB(229, 231, 235)
+        : primary ? (pressed ? kPrimaryPressedColor : kPrimaryColor)
+        : (pressed ? RGB(219, 234, 254) : RGB(255, 255, 255));
+    const COLORREF border = disabled ? RGB(209, 213, 219) : primary ? fill : RGB(203, 213, 225);
+    HBRUSH brush = CreateSolidBrush(fill);
+    HPEN pen = CreatePen(PS_SOLID, 1, border);
+    HGDIOBJ old_brush = SelectObject(item.hDC, brush);
+    HGDIOBJ old_pen = SelectObject(item.hDC, pen);
+    RoundRect(item.hDC, item.rcItem.left, item.rcItem.top, item.rcItem.right, item.rcItem.bottom, 8, 8);
+    SelectObject(item.hDC, old_brush);
+    SelectObject(item.hDC, old_pen);
+    DeleteObject(pen);
+    DeleteObject(brush);
+
+    wchar_t text[128]{};
+    GetWindowTextW(item.hwndItem, text, static_cast<int>(std::size(text)));
+    SetBkMode(item.hDC, TRANSPARENT);
+    SetTextColor(item.hDC, disabled ? RGB(156, 163, 175) : primary ? RGB(255, 255, 255) : kTextColor);
+    DrawTextW(item.hDC, text, -1, const_cast<RECT*>(&item.rcItem), DT_CENTER | DT_VCENTER | DT_SINGLELINE);
 }
 
 std::filesystem::path knownProgramData() {
@@ -212,7 +297,18 @@ std::filesystem::path knownProgramData() {
     }
     std::filesystem::path path(raw_path);
     CoTaskMemFree(raw_path);
-    return path / L"Cuajone PPE Monitor" / L"runtime";
+    return path / kProductName / L"runtime";
+}
+
+std::filesystem::path legacyProgramData() {
+    PWSTR raw_path = nullptr;
+    const HRESULT result = SHGetKnownFolderPath(FOLDERID_ProgramData, KF_FLAG_DEFAULT, nullptr, &raw_path);
+    if (FAILED(result) || raw_path == nullptr) {
+        throw std::runtime_error("SHGetKnownFolderPath(FOLDERID_ProgramData) failed");
+    }
+    std::filesystem::path path(raw_path);
+    CoTaskMemFree(raw_path);
+    return path / kLegacyProductName / L"runtime";
 }
 
 bool hasModelBundleAt(const std::filesystem::path& root) {
@@ -228,92 +324,152 @@ std::filesystem::path preferredModelRoot() {
     const std::filesystem::path install_root = siblingRuntime().parent_path();
     const std::filesystem::path install_models = install_root / L"models";
     const std::filesystem::path program_data_models = knownProgramData() / L"models";
+    const std::filesystem::path legacy_program_data_models = legacyProgramData() / L"models";
     if (hasModelBundleAt(install_root)) {
         return install_models;
     }
     if (hasModelBundleAt(program_data_models.parent_path())) {
         return program_data_models;
     }
+    if (hasModelBundleAt(legacy_program_data_models.parent_path())) {
+        return legacy_program_data_models;
+    }
     return install_models;
 }
 
 void createControls(LauncherWindow& state) {
-    state.font = static_cast<HFONT>(GetStockObject(DEFAULT_GUI_FONT));
+    state.font = CreateFontW(-15, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE, DEFAULT_CHARSET,
+        OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, DEFAULT_PITCH, L"Segoe UI");
+    state.heading_font = CreateFontW(-24, 0, 0, 0, FW_SEMIBOLD, FALSE, FALSE, FALSE, DEFAULT_CHARSET,
+        OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, DEFAULT_PITCH, L"Segoe UI");
+    state.button_font = CreateFontW(-15, 0, 0, 0, FW_SEMIBOLD, FALSE, FALSE, FALSE, DEFAULT_CHARSET,
+        OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, DEFAULT_PITCH, L"Segoe UI");
+    state.window_brush = CreateSolidBrush(kWindowColor);
+    state.input_brush = CreateSolidBrush(kInputColor);
+    state.status_brush = CreateSolidBrush(RGB(232, 240, 254));
     constexpr int label_x = 16;
     constexpr int edit_x = 146;
     constexpr int edit_width = 620;
+    constexpr int row_y = 80;
 
-    createLabel(state, L"RTSP camera", label_x, 18, 120);
-    state.source = createEdit(state, SourceEdit, edit_x, 18, 724);
+    const HWND heading = createControl(state, 0, L"STATIC", kProductName, SS_LEFT, 16, 14, 400, 30, 0);
+    SendMessageW(heading, WM_SETFONT, reinterpret_cast<WPARAM>(state.heading_font), TRUE);
+    const HWND subtitle = createControl(
+        state, 0, L"STATIC", L"Camera analytics control center", SS_LEFT, 18, 46, 400, 20, 0);
+    addLocalizedText(state, subtitle, L"Camera analytics control center", L"Centro de control de analítica de cámaras");
+
+    addLocalizedText(
+        state, createLabel(state, L"RTSP camera", label_x, row_y, 120),
+        L"RTSP camera", L"Cámara RTSP");
+    state.source = createEdit(state, SourceEdit, edit_x, row_y, 724);
     SetWindowTextW(state.source, L"rtsp://");
 
-    createLabel(state, L"Camera ID", label_x, 54, 120);
-    state.source_label = createEdit(state, SourceLabelEdit, edit_x, 54, edit_width);
-    createControl(
+    addLocalizedText(
+        state, createLabel(state, L"Camera ID", label_x, row_y + 36, 120),
+        L"Camera ID", L"ID de cámara");
+    state.source_label = createEdit(state, SourceLabelEdit, edit_x, row_y + 36, 430);
+    addLocalizedText(
+        state, createLabel(state, L"Language", 590, row_y + 36, 72),
+        L"Language", L"Idioma");
+    state.language = createControl(
+        state, 0, WC_COMBOBOXW, L"", WS_TABSTOP | CBS_DROPDOWNLIST,
+        664, row_y + 36, 104, 200, LanguageCombo);
+    SendMessageW(state.language, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(L"English"));
+    SendMessageW(state.language, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(L"Español"));
+    SendMessageW(state.language, CB_SETCURSEL, 0, 0);
+    const HWND load_env = createControl(
         state, 0, L"BUTTON", L"Load .env...", WS_TABSTOP | BS_PUSHBUTTON,
-        778, 54, 92, 25, LoadEnvButton);
+        778, row_y + 36, 92, 25, LoadEnvButton);
+    addLocalizedText(state, load_env, L"Load .env...", L"Cargar .env...");
 
-    createLabel(state, L"Output folder", label_x, 90, 120);
-    state.output = createEdit(state, OutputEdit, edit_x, 90, edit_width);
-    createBrowseButton(state, OutputBrowse, 90);
+    addLocalizedText(
+        state, createLabel(state, L"Output folder", label_x, row_y + 72, 120),
+        L"Output folder", L"Carpeta de salida");
+    state.output = createEdit(state, OutputEdit, edit_x, row_y + 72, edit_width);
+    addLocalizedText(state, createBrowseButton(state, OutputBrowse, row_y + 72), L"Browse...", L"Explorar...");
 
-    createLabel(state, L"Analytics mode", label_x, 128, 120);
+    addLocalizedText(
+        state, createLabel(state, L"Analytics mode", label_x, row_y + 110, 120),
+        L"Analytics mode", L"Modo de análisis");
     state.analytics = createControl(
         state, 0, WC_COMBOBOXW, L"", WS_TABSTOP | CBS_DROPDOWNLIST,
-        edit_x, 126, 220, 200, AnalyticsCombo);
-    SendMessageW(state.analytics, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(L"PPE only"));
-    SendMessageW(state.analytics, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(L"PPE + fall"));
-    SendMessageW(state.analytics, CB_SETCURSEL, 1, 0);
+        edit_x, row_y + 108, 220, 200, AnalyticsCombo);
+    updateAnalyticsOptions(state);
 
-    createLabel(state, L"Compute", 410, 128, 75);
+    addLocalizedText(
+        state, createLabel(state, L"Compute", 410, row_y + 110, 75),
+        L"Compute", L"Cómputo");
     state.compute = createControl(
         state, 0, WC_COMBOBOXW, L"", WS_TABSTOP | CBS_DROPDOWNLIST,
-        486, 126, 180, 200, ComputeCombo);
+        486, row_y + 108, 180, 200, ComputeCombo);
     SendMessageW(state.compute, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(L"Auto"));
     SendMessageW(state.compute, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(L"CUDA"));
     SendMessageW(state.compute, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(L"CPU"));
     SendMessageW(state.compute, CB_SETCURSEL, 0, 0);
 
-    createLabel(state, L"PPE engine", label_x, 164, 120);
-    state.ppe_engine = createEdit(state, PpeEngineEdit, edit_x, 164, edit_width);
-    createBrowseButton(state, PpeEngineBrowse, 164);
+    addLocalizedText(
+        state, createLabel(state, L"PPE engine", label_x, row_y + 146, 120),
+        L"PPE engine", L"Motor EPP");
+    state.ppe_engine = createEdit(state, PpeEngineEdit, edit_x, row_y + 146, edit_width);
+    addLocalizedText(state, createBrowseButton(state, PpeEngineBrowse, row_y + 146), L"Browse...", L"Explorar...");
 
-    createLabel(state, L"Pose engine", label_x, 200, 120);
-    state.pose_engine = createEdit(state, PoseEngineEdit, edit_x, 200, edit_width);
-    createBrowseButton(state, PoseEngineBrowse, 200);
+    addLocalizedText(
+        state, createLabel(state, L"Pose engine", label_x, row_y + 182, 120),
+        L"Pose engine", L"Motor de pose");
+    state.pose_engine = createEdit(state, PoseEngineEdit, edit_x, row_y + 182, edit_width);
+    addLocalizedText(state, createBrowseButton(state, PoseEngineBrowse, row_y + 182), L"Browse...", L"Explorar...");
 
-    createLabel(state, L"PPE ONNX", label_x, 236, 120);
-    state.ppe_onnx = createEdit(state, PpeOnnxEdit, edit_x, 236, edit_width);
-    createBrowseButton(state, PpeOnnxBrowse, 236);
+    addLocalizedText(
+        state, createLabel(state, L"PPE ONNX", label_x, row_y + 218, 120),
+        L"PPE ONNX", L"ONNX EPP");
+    state.ppe_onnx = createEdit(state, PpeOnnxEdit, edit_x, row_y + 218, edit_width);
+    addLocalizedText(state, createBrowseButton(state, PpeOnnxBrowse, row_y + 218), L"Browse...", L"Explorar...");
 
-    createLabel(state, L"Pose ONNX", label_x, 272, 120);
-    state.pose_onnx = createEdit(state, PoseOnnxEdit, edit_x, 272, edit_width);
-    createBrowseButton(state, PoseOnnxBrowse, 272);
+    addLocalizedText(
+        state, createLabel(state, L"Pose ONNX", label_x, row_y + 254, 120),
+        L"Pose ONNX", L"ONNX de pose");
+    state.pose_onnx = createEdit(state, PoseOnnxEdit, edit_x, row_y + 254, edit_width);
+    addLocalizedText(state, createBrowseButton(state, PoseOnnxBrowse, row_y + 254), L"Browse...", L"Explorar...");
 
-    createLabel(state, L"PPE labels", label_x, 308, 120);
-    state.labels = createEdit(state, LabelsEdit, edit_x, 308, edit_width);
+    addLocalizedText(
+        state, createLabel(state, L"PPE labels", label_x, row_y + 290, 120),
+        L"PPE labels", L"Etiquetas EPP");
+    state.labels = createEdit(state, LabelsEdit, edit_x, row_y + 290, edit_width);
 
     state.show = createControl(
         state, 0, L"BUTTON", L"Show annotated video window",
-        WS_TABSTOP | BS_AUTOCHECKBOX, edit_x, 344, 260, 24, ShowCheck);
+        WS_TABSTOP | BS_AUTOCHECKBOX, edit_x, row_y + 326, 340, 24, ShowCheck);
+    addLocalizedText(
+        state, state.show, L"Show annotated video window", L"Mostrar ventana de video anotada");
 
     state.validate = createControl(
-        state, 0, L"BUTTON", L"Validate", WS_TABSTOP | BS_PUSHBUTTON,
-        edit_x, 384, 110, 30, ValidateButton);
+        state, 0, L"BUTTON", L"Validate", WS_TABSTOP | BS_OWNERDRAW,
+        edit_x, row_y + 366, 110, 32, ValidateButton);
+    addLocalizedText(state, state.validate, L"Validate", L"Validar");
     state.start = createControl(
-        state, 0, L"BUTTON", L"Start", WS_TABSTOP | BS_DEFPUSHBUTTON,
-        270, 384, 110, 30, StartButton);
+        state, 0, L"BUTTON", L"Start", WS_TABSTOP | BS_OWNERDRAW,
+        270, row_y + 366, 110, 32, StartButton);
+    addLocalizedText(state, state.start, L"Start", L"Iniciar");
     state.stop = createControl(
-        state, 0, L"BUTTON", L"Stop", WS_TABSTOP | BS_PUSHBUTTON,
-        394, 384, 110, 30, StopButton);
+        state, 0, L"BUTTON", L"Stop", WS_TABSTOP | BS_OWNERDRAW,
+        394, row_y + 366, 110, 32, StopButton);
+    addLocalizedText(state, state.stop, L"Stop", L"Detener");
     EnableWindow(state.stop, FALSE);
 
-    createLabel(state, L"Status", label_x, 436, 120);
+    addLocalizedText(
+        state, createLabel(state, L"Status", label_x, row_y + 418, 120),
+        L"Status", L"Estado");
     state.status = createControl(
         state, WS_EX_CLIENTEDGE, L"STATIC", L"Ready", SS_LEFT | SS_CENTERIMAGE,
-        edit_x, 432, 724, 30, StatusText);
-    createLabel(state, L"Log path", label_x, 480, 120);
-    state.log_path = createEdit(state, LogPathEdit, edit_x, 476, 724, true);
+        edit_x, row_y + 414, 724, 32, StatusText);
+    addLocalizedText(
+        state, createLabel(state, L"Log path", label_x, row_y + 462, 120),
+        L"Log path", L"Ruta del log");
+    state.log_path = createEdit(state, LogPathEdit, edit_x, row_y + 458, 620, true);
+    const HWND open_log = createControl(
+        state, 0, L"BUTTON", L"Open log", WS_TABSTOP | BS_PUSHBUTTON,
+        778, row_y + 458, 92, 25, OpenLogButton);
+    addLocalizedText(state, open_log, L"Open log", L"Abrir log");
 
     state.program_data = knownProgramData();
     const auto models = preferredModelRoot();
@@ -342,6 +498,7 @@ void createControls(LauncherWindow& state) {
             state,
             L"No AI models are installed yet. Browse to ppe.engine / pose.engine or ppe.onnx / pose.onnx under the app folder or ProgramData.");
     }
+    refreshLanguage(state);
 }
 
 std::filesystem::path pickFile(HWND owner, const COMDLG_FILTERSPEC* filters, UINT filter_count) {
@@ -371,13 +528,6 @@ std::filesystem::path pickFile(HWND owner, const COMDLG_FILTERSPEC* filters, UIN
     return path;
 }
 
-void selectCombo(HWND control, std::wstring_view value, int fallback) {
-    const LRESULT index = SendMessageW(
-        control, CB_FINDSTRINGEXACT, static_cast<WPARAM>(-1),
-        reinterpret_cast<LPARAM>(std::wstring(value).c_str()));
-    SendMessageW(control, CB_SETCURSEL, index == CB_ERR ? fallback : index, 0);
-}
-
 std::wstring lowerExtension(const std::filesystem::path& path) {
     std::wstring extension = path.extension().wstring();
     std::transform(extension.begin(), extension.end(), extension.begin(), [](wchar_t character) {
@@ -404,7 +554,7 @@ void loadEnv(LauncherWindow& state) {
         setText(state.output, resolveEnvPath(env_path, *output));
     }
     if (const auto mode = envValue(values, L"ANALYTICS_MODE")) {
-        selectCombo(state.analytics, *mode == L"ppe-only" ? L"PPE only" : L"PPE + fall", 1);
+        SendMessageW(state.analytics, CB_SETCURSEL, *mode == L"ppe-only" ? 0 : 1, 0);
     }
     if (const auto show = envValue(values, L"SHOW_WINDOW")) {
         SendMessageW(state.show, BM_SETCHECK,
@@ -768,7 +918,7 @@ void showError(LauncherWindow& state, const std::exception& error) {
     const std::string narrow(error.what());
     const std::wstring message(narrow.begin(), narrow.end());
     setStatus(state, L"Configuration error");
-    MessageBoxW(state.window, message.c_str(), L"Cuajone launcher", MB_OK | MB_ICONERROR);
+    MessageBoxW(state.window, message.c_str(), kProductName, MB_OK | MB_ICONERROR);
 }
 
 void browseInto(LauncherWindow& state, int id) {
@@ -821,11 +971,56 @@ LRESULT CALLBACK windowProcedure(HWND window, UINT message, WPARAM wparam, LPARA
             case WM_CREATE:
                 createControls(*state);
                 return 0;
+            case WM_ERASEBKGND: {
+                RECT client{};
+                GetClientRect(window, &client);
+                FillRect(reinterpret_cast<HDC>(wparam), &client, state->window_brush);
+                return 1;
+            }
+            case WM_CTLCOLOREDIT:
+            case WM_CTLCOLORLISTBOX:
+                SetTextColor(reinterpret_cast<HDC>(wparam), kTextColor);
+                SetBkColor(reinterpret_cast<HDC>(wparam), kInputColor);
+                return reinterpret_cast<LRESULT>(state->input_brush);
+            case WM_CTLCOLORSTATIC:
+                if (reinterpret_cast<HWND>(lparam) == state->status) {
+                    SetTextColor(reinterpret_cast<HDC>(wparam), kPrimaryColor);
+                    SetBkColor(reinterpret_cast<HDC>(wparam), RGB(232, 240, 254));
+                    return reinterpret_cast<LRESULT>(state->status_brush);
+                }
+                SetTextColor(reinterpret_cast<HDC>(wparam), kMutedTextColor);
+                SetBkMode(reinterpret_cast<HDC>(wparam), TRANSPARENT);
+                return reinterpret_cast<LRESULT>(state->window_brush);
+            case WM_CTLCOLORBTN:
+                SetTextColor(reinterpret_cast<HDC>(wparam), kTextColor);
+                SetBkMode(reinterpret_cast<HDC>(wparam), TRANSPARENT);
+                return reinterpret_cast<LRESULT>(state->window_brush);
+            case WM_DRAWITEM:
+                if (const auto* item = reinterpret_cast<const DRAWITEMSTRUCT*>(lparam);
+                    item->CtlType == ODT_BUTTON) {
+                    drawButton(*item);
+                    return TRUE;
+                }
+                break;
             case WM_COMMAND: {
                 const int id = LOWORD(wparam);
                 if (id == ValidateButton) launchRuntime(*state, true);
+                else if (id == OpenLogButton) {
+                    const std::wstring path = editText(state->log_path);
+                    if (!std::filesystem::is_regular_file(path)) {
+                        throw std::runtime_error("The current log file does not exist yet");
+                    }
+                    if (reinterpret_cast<INT_PTR>(ShellExecuteW(
+                            state->window, L"open", path.c_str(), nullptr, nullptr, SW_SHOWNORMAL)) <= 32) {
+                        throw std::runtime_error("Could not open the current log file");
+                    }
+                }
                 else if (id == StartButton) launchRuntime(*state, false);
                 else if (id == StopButton) requestStop(*state);
+                else if (id == LanguageCombo && HIWORD(wparam) == CBN_SELCHANGE) {
+                    state->spanish = SendMessageW(state->language, CB_GETCURSEL, 0, 0) == 1;
+                    refreshLanguage(*state);
+                }
                 else if (id == LoadEnvButton) loadEnv(*state);
                 else if (id == OutputBrowse
                     || id == PpeEngineBrowse || id == PoseEngineBrowse
@@ -847,6 +1042,12 @@ LRESULT CALLBACK windowProcedure(HWND window, UINT message, WPARAM wparam, LPARA
                 return 0;
             case WM_DESTROY:
                 shutdown(*state);
+                DeleteObject(state->status_brush);
+                DeleteObject(state->input_brush);
+                DeleteObject(state->window_brush);
+                DeleteObject(state->button_font);
+                DeleteObject(state->heading_font);
+                DeleteObject(state->font);
                 PostQuitMessage(0);
                 return 0;
             default:
@@ -864,7 +1065,7 @@ LRESULT CALLBACK windowProcedure(HWND window, UINT message, WPARAM wparam, LPARA
 int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show_command) {
     const HRESULT com = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE);
     if (FAILED(com)) {
-        MessageBoxW(nullptr, L"COM initialization failed", L"Cuajone launcher", MB_OK | MB_ICONERROR);
+        MessageBoxW(nullptr, L"COM initialization failed", kProductName, MB_OK | MB_ICONERROR);
         return 1;
     }
     if (AllocConsole()) {
@@ -880,11 +1081,12 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show_command) {
     window_class.lpfnWndProc = windowProcedure;
     window_class.hInstance = instance;
     window_class.hCursor = LoadCursorW(nullptr, IDC_ARROW);
-    window_class.hIcon = LoadIconW(nullptr, IDI_APPLICATION);
-    window_class.hbrBackground = reinterpret_cast<HBRUSH>(COLOR_WINDOW + 1);
+    window_class.hIcon = LoadIconW(instance, MAKEINTRESOURCEW(101));
+    window_class.hIconSm = window_class.hIcon;
+    window_class.hbrBackground = nullptr;
     window_class.lpszClassName = kWindowClass;
     if (RegisterClassExW(&window_class) == 0) {
-        MessageBoxW(nullptr, L"Window registration failed", L"Cuajone launcher", MB_OK | MB_ICONERROR);
+        MessageBoxW(nullptr, L"Window registration failed", kProductName, MB_OK | MB_ICONERROR);
         FreeConsole();
         CoUninitialize();
         return 1;
@@ -892,12 +1094,12 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show_command) {
 
     LauncherWindow state;
     HWND window = CreateWindowExW(
-        0, kWindowClass, L"Cuajone PPE Monitor",
+        0, kWindowClass, kProductName,
         WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX,
-        CW_USEDEFAULT, CW_USEDEFAULT, 906, 570,
+        CW_USEDEFAULT, CW_USEDEFAULT, 906, 650,
         nullptr, nullptr, instance, &state);
     if (window == nullptr) {
-        MessageBoxW(nullptr, L"Launcher window creation failed", L"Cuajone launcher", MB_OK | MB_ICONERROR);
+        MessageBoxW(nullptr, L"Launcher window creation failed", kProductName, MB_OK | MB_ICONERROR);
         FreeConsole();
         CoUninitialize();
         return 1;

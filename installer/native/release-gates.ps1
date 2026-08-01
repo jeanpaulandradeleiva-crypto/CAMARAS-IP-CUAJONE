@@ -28,9 +28,6 @@ function Assert-ProductionParityReceipt(
         throw "Production Release requires a parity receipt: $Path"
     }
     $fullPath = [System.IO.Path]::GetFullPath($Path)
-    if (-not $fullPath.StartsWith("D:\", [System.StringComparison]::OrdinalIgnoreCase)) {
-        throw "Parity receipt must remain on D: $fullPath"
-    }
     if (-not (Test-Path -LiteralPath $script:CuajoneParityReceiptSchema -PathType Leaf)) {
         throw "Parity receipt schema was not found: $script:CuajoneParityReceiptSchema"
     }

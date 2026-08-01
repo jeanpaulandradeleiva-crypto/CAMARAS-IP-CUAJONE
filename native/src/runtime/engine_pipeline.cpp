@@ -12,6 +12,7 @@
 #endif
 
 #include <optional>
+#include <algorithm>
 #include <stdexcept>
 #include <utility>
 
@@ -67,7 +68,7 @@ struct NativeEnginePipeline::Impl {
         ppe_names = *config.ppe_labels;
         validateContiguousNames(ppe_names, "PPE ONNX model");
         ppe_classes = resolvePpeClasses(ppe_names);
-        ppe_session = std::make_unique<OnnxCpuSession>(config.ppe_onnx, ModelRole::Ppe);
+        ppe_session = std::make_unique<OnnxSession>(config.ppe_onnx, ModelRole::Ppe);
         validateDetectSchema(ppe_session->outputShape(), ppe_names.size());
         ppe_preprocessor = std::make_unique<LetterboxPreprocessor>(
             ppe_session->inputWidth(), ppe_session->inputHeight());
@@ -81,7 +82,7 @@ struct NativeEnginePipeline::Impl {
             if (keypoint_shape[1] < 3) {
                 throw std::runtime_error("Pose keypoint dimensions must include x, y, and confidence");
             }
-            pose_session = std::make_unique<OnnxCpuSession>(config.pose_onnx, ModelRole::Pose);
+            pose_session = std::make_unique<OnnxSession>(config.pose_onnx, ModelRole::Pose);
             validatePoseSchema(
                 pose_session->outputShape(), pose_class_count,
                 static_cast<std::size_t>(keypoint_shape[0]),
@@ -93,6 +94,11 @@ struct NativeEnginePipeline::Impl {
     }
 
     void loadCuda() {
+        if (config.ppe_engine.empty()
+            && (config.analytics.mode == AnalyticsMode::PpeOnly || config.pose_engine.empty())) {
+            loadCudaOnnx();
+            return;
+        }
 #ifdef CUAJONE_WITH_TENSORRT
         summary.backend = ComputeBackend::Cuda;
         summary.provider = "TensorRT 11/CUDA";
@@ -157,6 +163,58 @@ struct NativeEnginePipeline::Impl {
 #else
         throw std::runtime_error("CUDA mode is unavailable in this CPU-only build");
 #endif
+    }
+
+    void loadCudaOnnx() {
+        summary.backend = ComputeBackend::Cuda;
+        summary.provider = "ONNX Runtime CUDAExecutionProvider";
+        if (!std::filesystem::is_regular_file(config.ppe_onnx)) {
+            throw std::runtime_error("PPE ONNX model does not exist: " + config.ppe_onnx.string());
+        }
+        if (config.analytics.mode == AnalyticsMode::PpeFall
+            && !std::filesystem::is_regular_file(config.pose_onnx)) {
+            throw std::runtime_error("Pose ONNX model does not exist: " + config.pose_onnx.string());
+        }
+        if (!config.ppe_labels) {
+            throw std::runtime_error("CUDA ONNX inference requires --ppe-labels for explicit class semantics");
+        }
+        const auto probe = probeHardware();
+        if (probe.status != HardwareProbeStatus::CudaReady) {
+            throw std::runtime_error("CUDA ONNX provider requires a ready NVIDIA CUDA device");
+        }
+        const int device = selectCompatibleCudaDevice(probe.cuda_devices, config.device);
+        const auto selected = std::find_if(probe.cuda_devices.begin(), probe.cuda_devices.end(), [&](const auto& value) {
+            return value.device_index == device;
+        });
+        summary.device_index = device;
+        summary.device_count = static_cast<int>(probe.cuda_devices.size());
+        summary.device_name = selected->name;
+        summary.compute_major = selected->compute_major;
+        summary.compute_minor = selected->compute_minor;
+        ppe_names = *config.ppe_labels;
+        validateContiguousNames(ppe_names, "PPE ONNX model");
+        ppe_classes = resolvePpeClasses(ppe_names);
+        ppe_session = std::make_unique<OnnxSession>(config.ppe_onnx, ModelRole::Ppe, OnnxSessionOptions{
+            OnnxExecutionProvider::Cuda, device,
+        });
+        validateDetectSchema(ppe_session->outputShape(), ppe_names.size());
+        ppe_preprocessor = std::make_unique<LetterboxPreprocessor>(
+            ppe_session->inputWidth(), ppe_session->inputHeight());
+        if (config.analytics.mode == AnalyticsMode::PpeFall) {
+            if (config.pose_class_count != 1 || config.pose_keypoint_shape[1] < 3) {
+                throw std::runtime_error("CUDA ONNX pose contract is unsupported");
+            }
+            pose_session = std::make_unique<OnnxSession>(config.pose_onnx, ModelRole::Pose, OnnxSessionOptions{
+                OnnxExecutionProvider::Cuda, device,
+            });
+            validatePoseSchema(
+                pose_session->outputShape(), config.pose_class_count,
+                static_cast<std::size_t>(config.pose_keypoint_shape[0]),
+                static_cast<std::size_t>(config.pose_keypoint_shape[1]));
+            pose_preprocessor = std::make_unique<LetterboxPreprocessor>(
+                pose_session->inputWidth(), pose_session->inputHeight());
+            summary.pose_loaded = true;
+        }
     }
 
     ProcessedFrame process(
@@ -240,6 +298,10 @@ bool tensorRtBackendCompiled() noexcept {
 #else
     return false;
 #endif
+}
+
+bool onnxCudaExecutionProviderCompiled() noexcept {
+    return true;
 }
 
 }  // namespace cuajone

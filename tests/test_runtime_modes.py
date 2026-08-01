@@ -131,23 +131,16 @@ def test_absolute_model_path_is_preserved(tmp_path: Path) -> None:
     assert app.resolve_runtime_path(absolute, base_dir=tmp_path / "ignored") == absolute
 
 
-def test_preflight_reports_engine_prerequisites_without_startup(
+def test_native_preflight_reports_fixed_onnx_without_startup(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    engine = tmp_path / "ppe.engine"
-    engine.write_bytes(b"synthetic-engine")
-    monkeypatch.setattr(app, "PPE_MODEL_PATH", str(engine))
-    monkeypatch.setattr(app, "YOLO_DEVICE", "cuda:0")
-    monkeypatch.setattr(app.torch.cuda, "is_available", lambda: True)
-    monkeypatch.setattr(
-        app,
-        "load_analytics_models",
-        lambda *_args, **_kwargs: (_ for _ in ()).throw(
-            AssertionError("preflight must not load models")
-        ),
-    )
+    onnx = tmp_path / "ppe.onnx"
+    onnx.write_bytes(b"fixed-onnx")
+    (tmp_path / "ppe.onnx.manifest.json").write_text("{}", encoding="utf-8")
+    monkeypatch.setattr(app, "PPE_ONNX_PATH", str(onnx))
+    monkeypatch.setattr(app, "NativeBackend", lambda *_args, **_kwargs: object())
     monkeypatch.setattr(
         app,
         "LatestFrameCapture",
@@ -155,95 +148,137 @@ def test_preflight_reports_engine_prerequisites_without_startup(
             AssertionError("preflight must not open RTSP")
         ),
     )
-    imported: list[str] = []
-
-    def importer(name: str) -> object:
-        imported.append(name)
-        return object()
-
-    monkeypatch.setattr(app.importlib, "import_module", importer)
-
     assert app.main(["--mode", "ppe-only", "--preflight"]) == 0
 
     output = capsys.readouterr()
     assert "Modo de analítica: ppe-only" in output.out
-    assert f"Modelo EPP: {engine}" in output.out
-    assert "Backend: TensorRT" in output.out
-    assert "Importación TensorRT: OK (requerida)" in output.out
+    assert f"Modelo EPP ONNX: {onnx}" in output.out
+    assert "Binding cuajone_native: OK" in output.out
     assert "Preflight: OK" in output.out
     assert output.err == ""
-    assert imported == ["tensorrt"]
 
 
-def test_preflight_fails_clearly_when_engine_dependencies_are_missing(
+def test_native_preflight_fails_clearly_when_binding_is_missing(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    engine = tmp_path / "ppe.engine"
-    engine.write_bytes(b"synthetic-engine")
-    monkeypatch.setattr(app, "PPE_MODEL_PATH", str(engine))
-    monkeypatch.setattr(app, "YOLO_DEVICE", "cuda:0")
-    monkeypatch.setattr(app.torch.cuda, "is_available", lambda: False)
+    onnx = tmp_path / "ppe.onnx"
+    onnx.write_bytes(b"fixed-onnx")
+    (tmp_path / "ppe.onnx.manifest.json").write_text("{}", encoding="utf-8")
+    monkeypatch.setattr(app, "PPE_ONNX_PATH", str(onnx))
 
-    def missing_tensorrt(_name: str) -> object:
+    def missing_binding(*_args: Any, **_kwargs: Any) -> object:
         raise ImportError("not installed")
 
-    monkeypatch.setattr(app.importlib, "import_module", missing_tensorrt)
+    monkeypatch.setattr(app, "NativeBackend", missing_binding)
 
     assert app.main(["--mode", "ppe-only", "--preflight"]) == 1
 
     output = capsys.readouterr()
-    assert "CUDA disponible: no" in output.out
-    assert "Importación TensorRT: FALTA (requerida)" in output.out
-    assert "TensorRT .engine requiere CUDA" in output.err
+    assert "Binding cuajone_native: FALTA" in output.out
+    assert "Binding cuajone_native no disponible" in output.err
     assert "Preflight: ERROR" in output.err
 
 
-def test_preflight_rejects_engine_when_device_is_explicitly_cpu(
+def test_native_preflight_rejects_missing_onnx_manifest(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    engine = tmp_path / "ppe.engine"
-    engine.write_bytes(b"synthetic-engine")
-    monkeypatch.setattr(app, "PPE_MODEL_PATH", str(engine))
-    monkeypatch.setattr(app, "YOLO_DEVICE", "cpu")
-    monkeypatch.setattr(app.torch.cuda, "is_available", lambda: True)
-    monkeypatch.setattr(app.importlib, "import_module", lambda _name: object())
+    onnx = tmp_path / "ppe.onnx"
+    onnx.write_bytes(b"fixed-onnx")
+    monkeypatch.setattr(app, "PPE_ONNX_PATH", str(onnx))
+    monkeypatch.setattr(app, "NativeBackend", lambda *_args, **_kwargs: object())
 
     assert app.main(["--mode", "ppe-only", "--preflight"]) == 1
 
     output = capsys.readouterr()
-    assert "CUDA disponible: sí" in output.out
-    assert "Dispositivo seleccionado: cpu" in output.out
-    assert "requiere YOLO_DEVICE" in output.err
+    assert "Manifest: FALTA" in output.out
+    assert "Falta el modelo ONNX o manifest EPP ONNX" in output.err
 
 
-def test_preflight_reports_missing_model_without_touching_pose_or_tensorrt(
+def test_native_preflight_requires_pose_onnx_only_for_ppe_fall(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    missing = tmp_path / "missing-ppe.pt"
-    monkeypatch.setattr(app, "PPE_MODEL_PATH", str(missing))
-    monkeypatch.setattr(app, "POSE_MODEL_PATH", str(tmp_path / "missing-pose.engine"))
-    monkeypatch.setattr(app.torch.cuda, "is_available", lambda: False)
-    monkeypatch.setattr(
-        app.importlib,
-        "import_module",
-        lambda _name: (_ for _ in ()).throw(
-            AssertionError("ppe-only .pt must not import TensorRT")
-        ),
+    ppe_onnx = tmp_path / "ppe.onnx"
+    ppe_onnx.write_bytes(b"fixed-onnx")
+    (tmp_path / "ppe.onnx.manifest.json").write_text("{}", encoding="utf-8")
+    monkeypatch.setattr(app, "PPE_ONNX_PATH", str(ppe_onnx))
+    monkeypatch.setattr(app, "POSE_ONNX_PATH", str(tmp_path / "missing-pose.onnx"))
+    monkeypatch.setattr(app, "NativeBackend", lambda *_args, **_kwargs: object())
+
+    assert app.main(["--mode", "ppe-only", "--preflight"]) == 0
+    assert app.main(["--mode", "ppe-fall", "--preflight"]) == 1
+
+    output = capsys.readouterr()
+    assert "Falta el modelo ONNX o manifest pose ONNX" in output.err
+
+
+def test_native_engine_config_uses_fixed_cpu_onnx_paths(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(app, "PPE_ONNX_PATH", "C:/models/ppe.onnx")
+    monkeypatch.setattr(app, "POSE_ONNX_PATH", "C:/models/pose.onnx")
+    monkeypatch.setattr(app, "PPE_LABELS", "0:Person,1:Hard_hat,2:Vest")
+
+    config = app.native_engine_config("ppe-fall")
+
+    assert config == {
+        "backend": "cpu",
+        "ppe_onnx": "C:/models/ppe.onnx",
+        "pose_onnx": "C:/models/pose.onnx",
+        "ppe_labels": {0: "Person", 1: "Hard_hat", 2: "Vest"},
+    }
+
+
+def test_native_frame_translates_canonical_events_for_existing_report() -> None:
+    calls: list[dict[str, Any]] = []
+
+    class FakeNativeBackend:
+        def process_frame(self, frame: np.ndarray, observations: dict[str, Any]) -> Any:
+            calls.append(observations)
+            return SimpleNamespace(
+                frame_result={"people": []},
+                events=(
+                    {
+                        "id": "evt-CAM_P01-1-3-0",
+                        "type": "com.cuajone.safety.ppe.violation.v1",
+                        "data": {
+                            "track_id": 3,
+                            "status": "Falta Chaleco",
+                            "confidence": 0.8,
+                        },
+                    },
+                ),
+            )
+
+    frame = np.zeros((20, 30, 3), dtype=np.uint8)
+    annotated, events = app.process_native_analytics_frame(
+        frame,
+        "ppe-only",
+        FakeNativeBackend(),
+        frame_id=7,
+        now_monotonic=12.5,
     )
 
-    assert app.main(["--mode", "ppe-only", "--preflight"]) == 1
-
-    output = capsys.readouterr()
-    assert f"Modelo EPP: {missing}" in output.out
-    assert "Modelo pose:" not in output.out
-    assert "Importación TensorRT: no requerida" in output.out
-    assert f"Falta el modelo EPP: {missing}" in output.err
+    assert annotated is frame
+    assert calls[0]["contract_version"] == "1.0.0"
+    assert calls[0]["frame_id"] == 7
+    assert calls[0]["monotonic_timestamp_ms"] == 12500
+    assert events == [
+        {
+            "event_id": "evt-CAM_P01-1-3-0",
+            "track_id": 3,
+            "type": "INCUMPLIMIENTO_EPP",
+            "epp_status": "Falta Chaleco",
+            "helmet": True,
+            "vest": False,
+            "confidence": 0.8,
+        }
+    ]
 
 
 @pytest.mark.parametrize(
@@ -560,11 +595,7 @@ def configure_runtime(
     camera.stop = lambda: setattr(camera, "stopped", True)
     logger = SimpleNamespace(exported=False, windows_destroyed=False)
     logger.export_excel = lambda: setattr(logger, "exported", True)
-    models = app.AnalyticsModels(
-        ppe=SimpleNamespace(names={0: "Person", 1: "Hard_hat", 2: "Vest"}),
-        pose=None,
-        person_class_ids=(0,),
-    )
+    backend = SimpleNamespace(reset=lambda: None)
 
     app.STOP_EVENT.clear()
     monkeypatch.setattr(app, "RTSP_URL", "rtsp://example.invalid/stream")
@@ -574,9 +605,8 @@ def configure_runtime(
     monkeypatch.setattr(app, "parse_args", lambda _argv: SimpleNamespace(mode="ppe-only"))
     monkeypatch.setattr(app, "EventLogger", lambda *_args: logger)
     monkeypatch.setattr(app, "diagnose_rtsp_endpoint", lambda _url: None)
-    monkeypatch.setattr(app, "validate_runtime_prerequisites", lambda _mode: None)
-    monkeypatch.setattr(app, "load_analytics_models", lambda _mode: models)
-    monkeypatch.setattr(app, "selected_device", lambda: "cpu")
+    monkeypatch.setattr(app, "validate_native_runtime_prerequisites", lambda _mode: None)
+    monkeypatch.setattr(app, "load_native_backend", lambda _mode: backend)
     monkeypatch.setattr(app, "install_signal_handlers", lambda: None)
     monkeypatch.setattr(app, "LatestFrameCapture", lambda _url: camera)
     monkeypatch.setattr(
@@ -591,7 +621,7 @@ def configure_runtime(
         app.request_stop()
         return kwargs["frame"], []
 
-    monkeypatch.setattr(app, "process_analytics_frame", run_analytics)
+    monkeypatch.setattr(app, "process_native_analytics_frame", run_analytics)
     return camera, logger
 
 
@@ -641,9 +671,9 @@ def test_runtime_prerequisite_error_is_reported_without_starting_camera(
     monkeypatch.setattr(app, "RTSP_URL", "rtsp://example.invalid/stream")
     monkeypatch.setattr(
         app,
-        "validate_runtime_prerequisites",
+        "validate_native_runtime_prerequisites",
         lambda _mode: (_ for _ in ()).throw(
-            app.RuntimePrerequisiteError("falta ppe.engine")
+            app.RuntimePrerequisiteError("falta ppe.onnx")
         ),
     )
     monkeypatch.setattr(
@@ -658,7 +688,7 @@ def test_runtime_prerequisite_error_is_reported_without_starting_camera(
 
     output = capsys.readouterr()
     assert output.out == ""
-    assert output.err.strip() == "ERROR: falta ppe.engine"
+    assert output.err.strip() == "ERROR: falta ppe.onnx"
 
 
 def test_unrelated_runtime_error_propagates_after_stopping_camera(

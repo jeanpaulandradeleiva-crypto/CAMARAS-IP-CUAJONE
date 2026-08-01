@@ -75,7 +75,9 @@ cmake --build .tools\native\build\coupling-pybind --config Release
 ```
 
 `AnalyticsPipeline` procesa observaciones CPU sintéticas. `EnginePipeline` aparece
-solo en builds con runtime y permite QA con engines externos. La entrada NumPy debe
+solo en builds con runtime y permite QA con engines TensorRT CUDA o modelos ONNX CPU.
+El backend debe declararse de forma resuelta como `cuda` o `cpu`; no acepta `auto`.
+La entrada NumPy debe
 ser `uint8`, BGR, `(alto, ancho, 3)` y C-contigua; no se realizan copias implícitas.
 El GIL se libera durante el trabajo C++ síncrono.
 

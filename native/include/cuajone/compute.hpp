@@ -50,15 +50,23 @@ struct HardwareProbeResult {
     std::string detail;
 };
 
-struct ComputeAvailability {
+enum class InferenceProvider {
+    OnnxRuntimeCpu,
+    OnnxRuntimeCuda,
+    TensorRt,
+};
+
+struct ComputeCapabilities {
     HardwareProbeStatus hardware_status{HardwareProbeStatus::ProbeError};
-    bool tensor_rt_compiled{};
-    bool gpu_models_available{};
-    bool cpu_models_available{};
+    bool tensor_rt_runtime_compiled{};
+    bool onnx_cuda_execution_provider_compiled{};
+    bool tensor_rt_models_available{};
+    bool onnx_models_available{};
 };
 
 struct ComputeSelection {
     ComputeBackend backend{ComputeBackend::Cpu};
+    InferenceProvider provider{InferenceProvider::OnnxRuntimeCpu};
     std::string reason;
 };
 
@@ -67,12 +75,14 @@ std::string_view computeBackendName(ComputeBackend backend) noexcept;
 std::string_view hardwareProbeStatusName(HardwareProbeStatus status) noexcept;
 HardwareProbeResult probeHardware();
 std::string hardwareProbeJson(const HardwareProbeResult& result);
+std::string cudaDriverApiVersionText(std::optional<int> version);
+std::string hardwareProbeSummary(const HardwareProbeResult& result);
 int hardwareProbeExitCode(HardwareProbeStatus status) noexcept;
 bool isTensorRtCompatibleComputeCapability(int major, int minor) noexcept;
 int selectCompatibleCudaDevice(
     std::span<const CudaDeviceInfo> devices,
     std::optional<int> requested_device);
-ComputeSelection selectComputeBackend(ComputeBackend requested, const ComputeAvailability& available);
+ComputeSelection selectComputeBackend(ComputeBackend requested, const ComputeCapabilities& capabilities);
 std::optional<ComputeBackend> installedComputeBackend();
 
 }  // namespace cuajone

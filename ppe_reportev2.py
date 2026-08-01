@@ -14,10 +14,11 @@ import sys
 import threading
 import time
 import uuid
+from copy import deepcopy
 from collections import deque
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
@@ -26,8 +27,12 @@ import cv2
 import numpy as np
 import pandas as pd
 import torch
-from dotenv import load_dotenv
 from ultralytics import YOLO
+
+from cuajone_qa.backends.native import NativeBackend
+from cuajone_qa.config import QaRuntimeConfig
+from cuajone_qa.contracts import CONTRACT_VERSION, runtime_defaults, validate_instance
+from cuajone_qa.runtime import RuntimeSettings, RuntimeState, resolve_runtime_path as _resolve_runtime_path
 
 
 class RuntimePrerequisiteError(RuntimeError):
@@ -40,10 +45,7 @@ def resolve_runtime_path(
     base_dir: Path | None = None,
 ) -> Path:
     """Resolve relative external files without depending on the working directory."""
-    path = Path(configured_path).expanduser()
-    if not path.is_absolute():
-        path = (base_dir or RUNTIME_DIR) / path
-    return path.resolve(strict=False)
+    return _resolve_runtime_path(configured_path, base_dir=base_dir or RUNTIME_DIR)
 
 
 # ============================================================
@@ -51,60 +53,63 @@ def resolve_runtime_path(
 # ============================================================
 SCRIPT_DIR = Path(__file__).resolve().parent
 RUNTIME_DIR = SCRIPT_DIR
-ENV_PATH = RUNTIME_DIR / ".env"
-if os.getenv("CUAJONE_SKIP_DOTENV") != "1":
-    load_dotenv(dotenv_path=ENV_PATH, override=False)
+RUNTIME_SETTINGS = RuntimeSettings.load(runtime_dir=RUNTIME_DIR)
+ENV_PATH = RUNTIME_SETTINGS.env_path
 
-CAMERA_ID = os.getenv("CAMERA_ID", "CAM_P01_ADM")
-RTSP_URL = os.getenv("RTSP_URL")
-PPE_MODEL_PATH = str(resolve_runtime_path(os.getenv("PPE_MODEL_PATH", "best_ppe.pt")))
-POSE_MODEL_PATH = str(resolve_runtime_path(os.getenv("POSE_MODEL_PATH", "yolo26s-pose.pt")))
-YOLO_DEVICE = os.getenv("YOLO_DEVICE")  # Vacío: selecciona CUDA si existe.
-TARGET_INFERENCE_FPS = float(os.getenv("TARGET_INFERENCE_FPS", "0"))
+# These aliases preserve the entrypoint's established monkeypatch surface.
+CAMERA_ID = RUNTIME_SETTINGS.camera_id
+RTSP_URL = RUNTIME_SETTINGS.rtsp_url
+PPE_MODEL_PATH = RUNTIME_SETTINGS.ppe_model_path
+POSE_MODEL_PATH = RUNTIME_SETTINGS.pose_model_path
+PPE_ONNX_PATH = RUNTIME_SETTINGS.ppe_onnx_path
+POSE_ONNX_PATH = RUNTIME_SETTINGS.pose_onnx_path
+PPE_LABELS = RUNTIME_SETTINGS.ppe_labels
+YOLO_DEVICE = RUNTIME_SETTINGS.yolo_device
+TARGET_INFERENCE_FPS = RUNTIME_SETTINGS.target_inference_fps
 
 DEFAULT_ANALYTICS_MODE = "ppe-fall"
 VALID_ANALYTICS_MODES = (DEFAULT_ANALYTICS_MODE, "ppe-only")
 
-BASE_DIR = resolve_runtime_path(os.getenv("OUTPUT_DIR", str(RUNTIME_DIR)))
-EVIDENCE_DIR = BASE_DIR / "Evidencias"
-CSV_PATH = BASE_DIR / "Reporte_Eventos_Seguridad.csv"
-EXCEL_PATH = BASE_DIR / "Reporte_Eventos_Seguridad.xlsx"
+BASE_DIR = RUNTIME_SETTINGS.base_dir
+EVIDENCE_DIR = RUNTIME_SETTINGS.evidence_dir
+CSV_PATH = RUNTIME_SETTINGS.csv_path
+EXCEL_PATH = RUNTIME_SETTINGS.excel_path
 
-SHOW_WINDOW = os.getenv("SHOW_WINDOW", "1") == "1"
-SHOW_TEMPORARY_TRACK_ID = os.getenv("SHOW_TEMPORARY_TRACK_ID", "0") == "1"
+SHOW_WINDOW = RUNTIME_SETTINGS.show_window
+SHOW_TEMPORARY_TRACK_ID = RUNTIME_SETTINGS.show_temporary_track_id
 WINDOW_NAME = "Monitoreo EPP y caidas"
-TRACKER = os.getenv("YOLO_TRACKER", "bytetrack.yaml")
+TRACKER = RUNTIME_SETTINGS.tracker
 
-POSE_IMGSZ = int(os.getenv("POSE_IMGSZ", "640"))
-PPE_IMGSZ = int(os.getenv("PPE_IMGSZ", "640"))
-USE_FP16 = os.getenv("USE_FP16", "1") == "1"
+POSE_IMGSZ = RUNTIME_SETTINGS.pose_imgsz
+PPE_IMGSZ = RUNTIME_SETTINGS.ppe_imgsz
+USE_FP16 = RUNTIME_SETTINGS.use_fp16
 
-POSE_CONF = float(os.getenv("POSE_CONF", "0.35"))
-PPE_CONF = float(os.getenv("PPE_CONF", "0.30"))
-IOU_THRESHOLD = float(os.getenv("IOU_THRESHOLD", "0.45"))
+POSE_CONF = RUNTIME_SETTINGS.pose_conf
+PPE_CONF = RUNTIME_SETTINGS.ppe_conf
+IOU_THRESHOLD = RUNTIME_SETTINGS.iou_threshold
 
 # Votación temporal para evitar decidir por un solo frame.
-EPP_WINDOW = int(os.getenv("EPP_WINDOW", "20"))
-EPP_MIN_SAMPLES = int(os.getenv("EPP_MIN_SAMPLES", "12"))
-EPP_PRESENT_RATIO = float(os.getenv("EPP_PRESENT_RATIO", "0.35"))
-EPP_ALERT_COOLDOWN_S = float(os.getenv("EPP_ALERT_COOLDOWN_S", "60"))
+EPP_WINDOW = RUNTIME_SETTINGS.epp_window
+EPP_MIN_SAMPLES = RUNTIME_SETTINGS.epp_min_samples
+EPP_PRESENT_RATIO = RUNTIME_SETTINGS.epp_present_ratio
+EPP_ALERT_COOLDOWN_S = RUNTIME_SETTINGS.epp_alert_cooldown_s
 
 # Heurística inicial de caída. Debe calibrarse con videos reales de la cámara.
-FALL_CONFIRM_FRAMES = int(os.getenv("FALL_CONFIRM_FRAMES", "12"))
-FALL_RESET_FRAMES = int(os.getenv("FALL_RESET_FRAMES", "20"))
-FALL_ALERT_COOLDOWN_S = float(os.getenv("FALL_ALERT_COOLDOWN_S", "120"))
-FALL_ASPECT_RATIO = float(os.getenv("FALL_ASPECT_RATIO", "1.05"))
-FALL_TORSO_ANGLE_DEG = float(os.getenv("FALL_TORSO_ANGLE_DEG", "55"))
-FALL_DESCENT_RATIO = float(os.getenv("FALL_DESCENT_RATIO", "0.12"))
-FALL_NEAR_FLOOR_RATIO = float(os.getenv("FALL_NEAR_FLOOR_RATIO", "0.65"))
+FALL_CONFIRM_FRAMES = RUNTIME_SETTINGS.fall_confirm_frames
+FALL_RESET_FRAMES = RUNTIME_SETTINGS.fall_reset_frames
+FALL_ALERT_COOLDOWN_S = RUNTIME_SETTINGS.fall_alert_cooldown_s
+FALL_ASPECT_RATIO = RUNTIME_SETTINGS.fall_aspect_ratio
+FALL_TORSO_ANGLE_DEG = RUNTIME_SETTINGS.fall_torso_angle_deg
+FALL_DESCENT_RATIO = RUNTIME_SETTINGS.fall_descent_ratio
+FALL_NEAR_FLOOR_RATIO = RUNTIME_SETTINGS.fall_near_floor_ratio
 
-TRACK_TTL_S = float(os.getenv("TRACK_TTL_S", "5"))
-RECONNECT_DELAY_S = float(os.getenv("RECONNECT_DELAY_S", "5"))
-RTSP_OPEN_TIMEOUT_MS = int(os.getenv("RTSP_OPEN_TIMEOUT_MS", "20000"))
-RTSP_READ_TIMEOUT_MS = int(os.getenv("RTSP_READ_TIMEOUT_MS", "10000"))
-RTSP_TRANSPORT = os.getenv("RTSP_TRANSPORT", "tcp").strip().lower()
-RTSP_SOCKET_TIMEOUT_S = float(os.getenv("RTSP_SOCKET_TIMEOUT_S", "3"))
-EXCEL_EXPORT_EVERY_EVENTS = int(os.getenv("EXCEL_EXPORT_EVERY_EVENTS", "10"))
+TRACK_TTL_S = RUNTIME_SETTINGS.track_ttl_s
+RECONNECT_DELAY_S = RUNTIME_SETTINGS.reconnect_delay_s
+RTSP_OPEN_TIMEOUT_MS = RUNTIME_SETTINGS.rtsp_open_timeout_ms
+RTSP_READ_TIMEOUT_MS = RUNTIME_SETTINGS.rtsp_read_timeout_ms
+RTSP_TRANSPORT = RUNTIME_SETTINGS.rtsp_transport
+RTSP_SOCKET_TIMEOUT_S = RUNTIME_SETTINGS.rtsp_socket_timeout_s
+EXCEL_EXPORT_EVERY_EVENTS = RUNTIME_SETTINGS.excel_export_every_events
 
 # Ajusta estos alias a los nombres exactos de las clases de best_ppe.pt.
 HELMET_LABELS = {
@@ -145,7 +150,8 @@ EVENT_FIELDS = [
 
 # El tracker NO identifica personas. Este evento permite correlacionar evidencia,
 # cámara y hora; la identidad real debe ser completada por una persona autorizada.
-STOP_EVENT = threading.Event()
+RUNTIME_STATE = RuntimeState()
+STOP_EVENT = RUNTIME_STATE.stop_event
 
 
 def resolve_analytics_mode(
@@ -160,6 +166,133 @@ def resolve_analytics_mode(
         valid = ", ".join(VALID_ANALYTICS_MODES)
         raise ValueError(f"Modo de analítica inválido '{mode}'. Valores válidos: {valid}.")
     return normalized
+
+
+def parse_ppe_labels(value: str) -> dict[int, str]:
+    """Parse fixed ONNX labels without relying on an Ultralytics model."""
+    labels: dict[int, str] = {}
+    for index, raw_label in enumerate(value.split(",")):
+        raw_label = raw_label.strip()
+        if not raw_label:
+            raise RuntimePrerequisiteError("PPE_LABELS no puede contener etiquetas vacías.")
+        class_id_text, separator, label = raw_label.partition(":")
+        if separator:
+            try:
+                class_id = int(class_id_text.strip())
+            except ValueError as exc:
+                raise RuntimePrerequisiteError(
+                    f"PPE_LABELS tiene un ID de clase inválido: {class_id_text!r}."
+                ) from exc
+            label = label.strip()
+        else:
+            class_id = index
+            label = raw_label
+        if class_id < 0 or not label or class_id in labels:
+            raise RuntimePrerequisiteError("PPE_LABELS debe definir IDs únicos y etiquetas no vacías.")
+        labels[class_id] = label
+    if list(labels) != list(range(len(labels))):
+        raise RuntimePrerequisiteError("PPE_LABELS debe usar IDs consecutivos desde cero.")
+    if not recognized_person_class_ids(labels):
+        raise RuntimePrerequisiteError("PPE_LABELS no contiene una clase Person reconocida.")
+    return labels
+
+
+def native_runtime_config(mode: str) -> QaRuntimeConfig:
+    """Keep configuration thresholds aligned with the shared C++ pipeline."""
+    values = deepcopy(runtime_defaults())
+    values["analytics"].update(mode=mode, backend="native")
+    values["thresholds"].update(
+        ppe_confidence=PPE_CONF,
+        pose_confidence=POSE_CONF,
+        nms_iou=IOU_THRESHOLD,
+    )
+    values["ppe"].update(
+        window=EPP_WINDOW,
+        minimum_samples=EPP_MIN_SAMPLES,
+        present_ratio=EPP_PRESENT_RATIO,
+        alert_cooldown_ms=round(EPP_ALERT_COOLDOWN_S * 1000),
+        track_ttl_ms=round(TRACK_TTL_S * 1000),
+    )
+    values["fall"].update(
+        confirm_frames=FALL_CONFIRM_FRAMES,
+        reset_frames=FALL_RESET_FRAMES,
+        alert_cooldown_ms=round(FALL_ALERT_COOLDOWN_S * 1000),
+        track_ttl_ms=round(TRACK_TTL_S * 1000),
+        aspect_ratio=FALL_ASPECT_RATIO,
+        torso_angle_degrees=FALL_TORSO_ANGLE_DEG,
+        descent_ratio=FALL_DESCENT_RATIO,
+        near_floor_ratio=FALL_NEAR_FLOOR_RATIO,
+    )
+    return QaRuntimeConfig(validate_instance("runtime-config", values))
+
+
+def native_engine_config(mode: str) -> dict[str, Any]:
+    config: dict[str, Any] = {
+        "backend": "cpu",
+        "ppe_onnx": PPE_ONNX_PATH,
+        "ppe_labels": parse_ppe_labels(PPE_LABELS),
+    }
+    if mode == DEFAULT_ANALYTICS_MODE:
+        config["pose_onnx"] = POSE_ONNX_PATH
+    return config
+
+
+def validate_native_runtime_prerequisites(mode: str) -> None:
+    config = native_engine_config(mode)
+    paths = [("EPP ONNX", config["ppe_onnx"])]
+    if mode == DEFAULT_ANALYTICS_MODE:
+        paths.append(("pose ONNX", config["pose_onnx"]))
+    missing = [
+        f"{name}: {path}"
+        for name, path in paths
+        if not Path(path).is_file() or not Path(f"{path}.manifest.json").is_file()
+    ]
+    if missing:
+        raise RuntimePrerequisiteError(
+            "Faltan modelos ONNX fijos o sus manifests requeridos: " + "; ".join(missing)
+        )
+
+
+def load_native_backend(mode: str) -> NativeBackend:
+    try:
+        return NativeBackend(native_runtime_config(mode), engine_config=native_engine_config(mode))
+    except (ImportError, OSError, RuntimeError, ValueError) as exc:
+        raise RuntimePrerequisiteError(
+            "No se pudo iniciar cuajone_native con los modelos ONNX configurados: "
+            f"{exc}"
+        ) from exc
+
+
+def run_native_preflight(mode: str) -> int:
+    """Validate static ONNX inputs and the compiled binding without opening RTSP."""
+    errors: list[str] = []
+    print("Modo de ejecución: cuajone_native (.pyd)")
+    print(f"Modo de analítica: {mode}")
+    for name, path in (("EPP ONNX", PPE_ONNX_PATH), ("pose ONNX", POSE_ONNX_PATH)):
+        if name == "pose ONNX" and mode != DEFAULT_ANALYTICS_MODE:
+            continue
+        onnx_exists = Path(path).is_file()
+        manifest_exists = Path(f"{path}.manifest.json").is_file()
+        print(
+            f"Modelo {name}: {path} | Archivo: {'OK' if onnx_exists else 'FALTA'} | "
+            f"Manifest: {'OK' if manifest_exists else 'FALTA'}"
+        )
+        if not onnx_exists or not manifest_exists:
+            errors.append(f"Falta el modelo ONNX o manifest {name}: {path}")
+    try:
+        parse_ppe_labels(PPE_LABELS)
+        NativeBackend(native_runtime_config(mode))
+        print("Binding cuajone_native: OK")
+    except (ImportError, OSError, RuntimeError, ValueError) as exc:
+        errors.append(f"Binding cuajone_native no disponible: {exc}")
+        print("Binding cuajone_native: FALTA")
+    if errors:
+        for error in errors:
+            print(f"ERROR: {error}", file=sys.stderr)
+        print("Preflight: ERROR", file=sys.stderr)
+        return 1
+    print("Preflight: OK")
+    return 0
 
 
 def parse_args(
@@ -1419,6 +1552,75 @@ def infer_people_and_ppe(
     return people, ppe_detections
 
 
+def native_event_details(event: dict[str, Any]) -> dict[str, Any]:
+    data = event["data"]
+    status = data["status"]
+    helmet, vest = {
+        "EPP Completo": (True, True),
+        "Falta Chaleco": (True, False),
+        "Falta Casco": (False, True),
+        "Sin Casco y Chaleco": (False, False),
+    }.get(status, (None, None))
+    return {
+        "event_id": event["id"],
+        "track_id": int(data["track_id"]),
+        "type": (
+            "INCUMPLIMIENTO_EPP"
+            if event["type"] == "com.cuajone.safety.ppe.violation.v1"
+            else "POSIBLE_CAIDA"
+        ),
+        "epp_status": "En evaluación" if status == "Evaluating PPE" else status,
+        "helmet": helmet,
+        "vest": vest,
+        "confidence": float(data["confidence"]),
+    }
+
+
+def process_native_analytics_frame(
+    frame: np.ndarray,
+    mode: str,
+    backend: NativeBackend,
+    frame_id: int,
+    now_monotonic: float,
+) -> tuple[np.ndarray, list[dict[str, Any]]]:
+    result = backend.process_frame(
+        frame,
+        {
+            "contract_version": CONTRACT_VERSION,
+            "source_id": CAMERA_ID,
+            "frame_id": frame_id,
+            "monotonic_timestamp_ms": round(now_monotonic * 1000),
+            "observed_at": datetime.now(UTC).isoformat().replace("+00:00", "Z"),
+        },
+    )
+    for person in result.frame_result["people"]:
+        x1, y1, x2, y2 = map(int, person["box"])
+        status = person["ppe_status"]
+        display_status = {
+            "Evaluating PPE": "Evaluando EPP",
+            "PPE not evaluable": "EPP no evaluable: persona parcial",
+        }.get(status, status)
+        track_text = f"T{person['track_id']} | " if SHOW_TEMPORARY_TRACK_ID else ""
+        fall_text = " | POSIBLE CAIDA" if person["fall_active"] else ""
+        if mode == DEFAULT_ANALYTICS_MODE and person["keypoints"]:
+            draw_valid_pose(
+                frame,
+                {"keypoints": np.asarray(person["keypoints"], dtype=float)},
+            )
+        cv2.rectangle(frame, (x1, y1), (x2, y2), (255, 255, 255), 2)
+        cv2.putText(
+            frame,
+            f"{track_text}{display_status}{fall_text}",
+            (x1, max(25, y1 - 10)),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.55,
+            (255, 255, 255),
+            2,
+            cv2.LINE_AA,
+        )
+    return frame, [native_event_details(event) for event in result.events]
+
+
 def process_analytics_frame(
     frame: np.ndarray,
     mode: str,
@@ -1561,14 +1763,14 @@ def _run_monitoring(argv: Sequence[str] | None = None) -> int:
     args = parse_args(argv)
     mode = args.mode
     if getattr(args, "preflight", False):
-        return run_preflight(mode)
+        return run_native_preflight(mode)
     throttle = InferenceThrottle(TARGET_INFERENCE_FPS)
     if not RTSP_URL:
         raise RuntimePrerequisiteError(
             f"Falta RTSP_URL. Configúrala en el archivo {ENV_PATH}. "
             "Puedes copiar .env.example como .env y completar la URL."
         )
-    validate_runtime_prerequisites(mode)
+    validate_native_runtime_prerequisites(mode)
 
     EVIDENCE_DIR.mkdir(parents=True, exist_ok=True)
     logger = EventLogger(CSV_PATH, EXCEL_PATH)
@@ -1576,51 +1778,24 @@ def _run_monitoring(argv: Sequence[str] | None = None) -> int:
     print(f"Configuración cargada desde: {ENV_PATH}")
     print(f"RTSP: {masked_rtsp_url(RTSP_URL)}")
     diagnose_rtsp_endpoint(RTSP_URL)
-    models = load_analytics_models(mode)
-
-    if models.ppe_names is not None:
-        print("Clases del modelo EPP:")
-        print(models.ppe_names)
-    else:
-        print("Clases del modelo EPP: pendientes de la primera inferencia.")
-    device = selected_device()
-    # Son constantes durante toda la ejecución y no deben reconstruirse por frame.
-    ppe_inference_kwargs, pose_inference_kwargs = inference_kwargs_for_mode(mode)
-    backend = model_backend(PPE_MODEL_PATH)
-    precision = (
-        "desconocida (compilada en el engine)"
-        if backend == "TensorRT"
-        else "FP16" if ppe_inference_kwargs.get("quantize") in {16, "fp16"} else "FP32"
-    )
-    loaded_models = "PPE" if models.pose is None else "PPE, pose"
-
+    backend: NativeBackend | None = None
+    backend = load_native_backend(mode)
+    loaded_models = "PPE ONNX" if mode == "ppe-only" else "PPE ONNX, pose ONNX"
     print(f"Modo efectivo: {mode} | Modelos cargados: {loaded_models}")
     print(
-        f"Dispositivo: {device} | Backend EPP: {backend} | "
-        f"Precisión: {precision} | "
+        "Backend: cuajone_native + ONNX Runtime CPU | "
         f"FPS objetivo: {TARGET_INFERENCE_FPS or 'sin límite'}"
     )
-    print(f"Tracker temporal: {TRACKER}")
-
-    if models.ppe_names is not None:
-        model_names = (
-            models.ppe_names.values()
-            if isinstance(models.ppe_names, dict)
-            else models.ppe_names
-        )
-        normalized_model_names = {normalize_label(str(name)) for name in model_names}
-        if not normalized_model_names.intersection(HELMET_LABELS):
-            print("ADVERTENCIA: no se reconoció ninguna clase de casco. Ajusta HELMET_LABELS.")
-        if not normalized_model_names.intersection(VEST_LABELS):
-            print("ADVERTENCIA: no se reconoció ninguna clase de chaleco. Ajusta VEST_LABELS.")
-
-    states: dict[int, TrackState] = {}
+    print(f"EPP ONNX fijo: {PPE_ONNX_PATH}")
+    if mode == DEFAULT_ANALYTICS_MODE:
+        print(f"Pose ONNX fijo: {POSE_ONNX_PATH}")
     install_signal_handlers()
 
     if SHOW_WINDOW:
         cv2.namedWindow(WINDOW_NAME, cv2.WINDOW_NORMAL)
 
     camera: LatestFrameCapture | None = None
+    native_frame_id = 0
     try:
         while not STOP_EVENT.is_set():
             if SHOW_WINDOW and window_was_closed():
@@ -1672,13 +1847,12 @@ def _run_monitoring(argv: Sequence[str] | None = None) -> int:
                     # y la captura sigue reemplazando su único slot.
                     continue
 
-                annotated, pending_events = process_analytics_frame(
+                native_frame_id += 1
+                annotated, pending_events = process_native_analytics_frame(
                     frame=frame,
                     mode=mode,
-                    models=models,
-                    states=states,
-                    ppe_kwargs=ppe_inference_kwargs,
-                    pose_kwargs=pose_inference_kwargs,
+                    backend=backend,
+                    frame_id=native_frame_id,
                     now_monotonic=now_monotonic,
                 )
 
@@ -1687,7 +1861,7 @@ def _run_monitoring(argv: Sequence[str] | None = None) -> int:
                 # completo del instante, no una persona parcialmente procesada.
                 for pending in pending_events:
                     try:
-                        event_id = new_event_id()
+                        event_id = pending["event_id"]
                         photo_path = save_evidence(
                             annotated,
                             event_id=event_id,
@@ -1710,15 +1884,6 @@ def _run_monitoring(argv: Sequence[str] | None = None) -> int:
                     except Exception as exc:
                         print(f"Error guardando evento: {exc}")
 
-                # Elimina estados de IDs que ya desaparecieron para evitar crecimiento infinito.
-                stale_ids = [
-                    track_id
-                    for track_id, state in states.items()
-                    if now_monotonic - state.last_seen > TRACK_TTL_S
-                ]
-                for track_id in stale_ids:
-                    del states[track_id]
-
                 if SHOW_WINDOW:
                     # Segunda comprobación justo antes de dibujar para impedir que
                     # OpenCV vuelva a crear una ventana que el usuario cerró.
@@ -1738,6 +1903,8 @@ def _run_monitoring(argv: Sequence[str] | None = None) -> int:
     finally:
         if camera is not None:
             camera.stop()
+        if backend is not None:
+            backend.reset()
         try:
             logger.export_excel()
         finally:

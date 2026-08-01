@@ -278,17 +278,19 @@ int main(int argc, char** argv) {
             const HardwareProbeResult probe = probeHardware();
             hardware_status = probe.status;
             std::cout << "Hardware probe: " << hardwareProbeStatusName(probe.status)
+                      << " | " << hardwareProbeSummary(probe)
                       << " | " << probe.detail << '\n';
         }
-        const bool gpu_models = modelSetAvailable(
+        const bool tensor_rt_models = modelSetAvailable(
             config.ppe_engine, config.pose_engine, config.analytics_mode);
-        const bool cpu_models = modelSetAvailable(
+        const bool onnx_models = modelSetAvailable(
             config.ppe_onnx, config.pose_onnx, config.analytics_mode);
         const ComputeSelection selection = selectComputeBackend(config.compute_backend, {
             hardware_status,
             tensorRtBackendCompiled(),
-            gpu_models,
-            cpu_models,
+            onnxCudaExecutionProviderCompiled(),
+            tensor_rt_models,
+            onnx_models,
         });
         std::cout << "Compute: " << computeBackendName(selection.backend)
                   << " | " << selection.reason << '\n';
@@ -299,7 +301,7 @@ int main(int argc, char** argv) {
         } catch (const std::exception& cuda_error) {
             if (config.compute_backend != ComputeBackend::Auto
                 || effective_backend != ComputeBackend::Cuda
-                || !cpu_models) {
+                || !onnx_models) {
                 throw;
             }
             std::cerr << "Auto CUDA validation failed; selecting CPU: " << cuda_error.what() << '\n';

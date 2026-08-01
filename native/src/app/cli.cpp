@@ -165,13 +165,15 @@ void validate(RuntimeConfig& config) {
         throw std::invalid_argument(
             "--source and --output are required");
     }
-    const bool gpu_models = !config.ppe_engine.empty()
-        && (config.analytics_mode == AnalyticsMode::PpeOnly || !config.pose_engine.empty());
+    const bool gpu_models = (!config.ppe_engine.empty()
+            && (config.analytics_mode == AnalyticsMode::PpeOnly || !config.pose_engine.empty()))
+        || (!config.ppe_onnx.empty()
+            && (config.analytics_mode == AnalyticsMode::PpeOnly || !config.pose_onnx.empty()));
     const bool cpu_models = !config.ppe_onnx.empty()
         && (config.analytics_mode == AnalyticsMode::PpeOnly || !config.pose_onnx.empty());
     if (config.compute_backend == ComputeBackend::Cuda && !gpu_models) {
         throw std::invalid_argument(
-            "CUDA mode requires --ppe-engine and --pose-engine in ppe-fall mode");
+            "CUDA mode requires PPE/pose TensorRT engines or ONNX models in ppe-fall mode");
     }
     if (config.compute_backend == ComputeBackend::Cpu && !cpu_models) {
         throw std::invalid_argument(
@@ -295,8 +297,8 @@ void printHelp(std::ostream& output) {
         "  --compute <mode>             auto, cuda, or cpu (default: installed setting/auto)\n"
         "  --ppe-engine <file.engine>   PPE TensorRT engine for CUDA\n"
         "  --pose-engine <file.engine>  Pose TensorRT engine for CUDA ppe-fall\n"
-        "  --ppe-onnx <file.onnx>       PPE ONNX model for CPU\n"
-        "  --pose-onnx <file.onnx>      Pose ONNX model for CPU ppe-fall\n\n"
+        "  --ppe-onnx <file.onnx>       PPE ONNX model for CPU or CUDA\n"
+        "  --pose-onnx <file.onnx>      Pose ONNX model for CPU or CUDA ppe-fall\n\n"
         "Diagnostics and identity:\n"
         "  --help                       Show this help without runtime startup\n"
         "  --hardware-probe-json        Print stable NVIDIA/CUDA probe JSON and exit\n"

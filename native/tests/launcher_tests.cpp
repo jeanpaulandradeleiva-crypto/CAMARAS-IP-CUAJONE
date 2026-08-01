@@ -70,12 +70,12 @@ LauncherSettings baseSettings(const TemporaryTree& tree) {
     return settings;
 }
 
-void addCudaModels(LauncherSettings& settings, const TemporaryTree& tree) {
+void addTensorRtModels(LauncherSettings& settings, const TemporaryTree& tree) {
     settings.ppe_engine = tree.makeFile(L"ppe.engine");
     settings.pose_engine = tree.makeFile(L"pose.engine");
 }
 
-void addCpuModels(LauncherSettings& settings, const TemporaryTree& tree) {
+void addOnnxModels(LauncherSettings& settings, const TemporaryTree& tree) {
     settings.ppe_onnx = tree.makeFile(L"ppe.onnx");
     tree.makeFile(L"ppe.onnx.manifest.json");
     settings.pose_onnx = tree.makeFile(L"pose.onnx");
@@ -85,7 +85,7 @@ void addCpuModels(LauncherSettings& settings, const TemporaryTree& tree) {
 void testRtspCameraSourceIsRequired() {
     TemporaryTree tree;
     auto settings = baseSettings(tree);
-    addCudaModels(settings, tree);
+    addTensorRtModels(settings, tree);
     settings.source = tree.makeFile(L"source with space.mp4").wstring();
     requireThrows([&] { buildLaunchPlan(settings, false); },
         "Launcher accepted a local media file as the camera source");
@@ -113,7 +113,7 @@ void testModelMatrixAndArguments() {
     requireThrows([&] { buildLaunchPlan(settings, false); },
         "Auto accepted CUDA files with unsupported extensions");
 
-    addCudaModels(settings, tree);
+    addTensorRtModels(settings, tree);
     const auto cuda_auto = buildLaunchPlan(settings, true);
     require(cuda_auto.has_cuda_candidate && !cuda_auto.has_cpu_candidate,
         "Auto did not recognize the CUDA candidate");
@@ -137,12 +137,21 @@ void testModelMatrixAndArguments() {
     settings.compute_mode = ComputeMode::Cpu;
     requireThrows([&] { buildLaunchPlan(settings, false); },
         "CPU accepted missing ONNX models");
-    addCpuModels(settings, tree);
+    addOnnxModels(settings, tree);
     const auto cpu = buildLaunchPlan(settings, false);
     require(cpu.has_cpu_candidate && contains(cpu.arguments, L"--ppe-onnx")
             && contains(cpu.arguments, L"--pose-onnx")
             && !contains(cpu.arguments, L"--ppe-engine"),
         "CPU plan emitted the wrong model family");
+
+    settings.ppe_engine.clear();
+    settings.pose_engine.clear();
+    settings.compute_mode = ComputeMode::Cuda;
+    const auto cuda_onnx = buildLaunchPlan(settings, false);
+    require(cuda_onnx.has_cuda_candidate && contains(cuda_onnx.arguments, L"--ppe-onnx")
+            && contains(cuda_onnx.arguments, L"--pose-onnx")
+            && !contains(cuda_onnx.arguments, L"--ppe-engine"),
+        "CUDA plan rejected the validated ONNX model family");
 
     settings.ppe_onnx = tree.makeFile(L"ppe.pb");
     tree.makeFile(L"ppe.pb.manifest.json");
@@ -150,6 +159,7 @@ void testModelMatrixAndArguments() {
         "CPU accepted a model with a non-ONNX extension");
     settings.ppe_onnx = tree.root() / L"ppe.onnx";
 
+    addTensorRtModels(settings, tree);
     settings.compute_mode = ComputeMode::Auto;
     const auto both = buildLaunchPlan(settings, false);
     require(both.has_cuda_candidate && both.has_cpu_candidate

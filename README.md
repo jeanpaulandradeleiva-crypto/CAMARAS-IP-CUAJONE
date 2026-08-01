@@ -136,7 +136,7 @@ uv run python -c "import torch; print('CUDA disponible:', torch.cuda.is_availabl
 
 El resultado correcto muestra `True`, una versión CUDA no nula y el nombre de la
 GPU. Si falla, usa `YOLO_DEVICE=cpu` y `USE_FP16=0`. Consulta la explicación y la
-resolución de problemas en [`DOCUMENTACION_ENV.md`](DOCUMENTACION_ENV.md). Tras un
+resolución de problemas en [`docs/development/environment.md`](docs/development/environment.md). Tras un
 `uv sync --locked` o una reinstalación desde los requisitos exportados, vuelve a
 aplicar y verificar la rueda CUDA: el bloqueo actual usa resolución genérica de
 PyPI y no detecta automáticamente la GPU.
@@ -144,7 +144,7 @@ PyPI y no detecta automáticamente la GPU.
 ## Configuración de la aplicación
 
 `.env.example` es la plantilla correspondiente a la implementación actual.
-Consulta `DOCUMENTACION_ENV.md` para obtener la referencia completa de variables.
+Consulta [`docs/development/environment.md`](docs/development/environment.md) para obtener la referencia completa de variables.
 
 Configuración mínima:
 

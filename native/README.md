@@ -1,9 +1,10 @@
 # Runtime nativo C++ para EPP y caídas
 
 Este directorio contiene el runtime Windows x64. Ejecuta modelos ONNX con CPU o
-engines TensorRT con CUDA, sin Python, PyTorch ni Ultralytics durante la ejecución.
-`Auto` prefiere CUDA solo cuando hardware, driver y engines están listos; si no,
-usa ONNX CPU. `ppe_reportev2.py` continúa siendo la referencia de comportamiento.
+CUDA mediante ONNX Runtime, y engines TensorRT opcionales con CUDA, sin Python,
+PyTorch ni Ultralytics durante la ejecución. `Auto` prefiere CUDA solo cuando
+hardware, driver y artefactos están listos; si no, usa ONNX CPU.
+`ppe_reportev2.py` continúa siendo la referencia de comportamiento.
 El target WIN32 separado `cuajone_launcher.exe` ofrece la interfaz gráfica y no
 enlaza `cuajone_runtime`, OpenCV, ONNX Runtime, CUDA ni TensorRT.
 
@@ -30,7 +31,7 @@ deserializa ambos engines de forma secuencial y valida sus tensores.
 | `engine_reader` | Acepta planes raw y engines Ultralytics con prefijo reconocible; valida JSON estricto, Unicode y IDs de clase. |
 | `compute` | Política Auto/CUDA/CPU, Driver API mínimo, selección multidispositivo y probe DXGI con carga dinámica de `nvcuda.dll`. |
 | `model_manifest` | Verifica tipo, rol, tamaño, SHA-256, procedencia, I/O y protobuf ONNX antes de crear una sesión. |
-| `onnx_session` | Sesión ONNX Runtime CPU-only creada desde los bytes ya verificados, con un input/output FP32 y shapes fijos. |
+| `onnx_session` | Sesión ONNX Runtime CPU o CUDA creada desde los bytes ya verificados, con un input/output FP32 y shapes fijos. |
 | `tensorrt_runtime` | Backend opcional: RAII para runtime, contexto, stream y buffers CUDA. |
 | `preprocess` | Letterbox OpenCV, BGR a RGB, normalización y empaquetado NCHW FP32; conserva escala y padding exactos. |
 | `yolo_decode` | Rechaza valores no finitos, limita candidatos, aplica NMS por clase en coordenadas del modelo y recién después restaura/recorta. |
@@ -39,7 +40,7 @@ deserializa ambos engines de forma secuencial y valida sus tensores.
 | `fall_analytics` | Validación de keypoints, geometría, descenso, confirmación, recuperación y cooldown. |
 | `contracts` | Versiones, CloudEvents y serialización JSON canónica sin secretos. |
 | `analytics_pipeline` | Composición reutilizable, timestamps/frame IDs inyectables, orden estricto y reset. |
-| `engine_pipeline` | Pre/postproceso y analítica compartidos por ONNX CPU y TensorRT CUDA. |
+| `engine_pipeline` | Pre/postproceso y analítica compartidos por ONNX CPU/CUDA y TensorRT CUDA. |
 | `capture` | Un único slot reemplazable, reinicio sin frame obsoleto, fallback de apertura y reconexión RTSP con transporte configurable. |
 | `evidence` | JPEG anotado y CSV append-only; no genera Excel. |
 | `launcher_support` | Matriz estructural de modelos, plan de argumentos, quoting Windows y redacción RTSP comprobables sin el runtime. |
@@ -111,6 +112,37 @@ ctest --test-dir ..\.tools\native\build\presets\windows-msvc --output-on-failure
 El preset CPU compila el ejecutable y el probe con `CUAJONE_ENABLE_TENSORRT=OFF`:
 no busca ni enlaza CUDA/TensorRT. El preset completo habilita ambos backends.
 
+### Integración ONNX CUDA real
+
+La prueba `gpu-onnx-integration` permanece desactivada por defecto. Usa un modelo
+ONNX `Add` sintético y válido, crea una `OnnxSession` del proyecto con CUDA y exige
+que el perfil de ONNX Runtime registre la ejecución del nodo por
+`CUDAExecutionProvider`. No descarga modelos ni usa RTSP ni TensorRT.
+
+La prueba consume el cierre de DLL ya preparado para la aplicación final en
+`.tools\native\installer\stage\bin`: `onnxruntime_providers_cuda.dll`,
+`onnxruntime_providers_shared.dll`, CUDA, cuDNN, cuBLAS y cuFFT. Ese directorio es
+generado y verificado por `installer\native\build-installer.ps1`; reutiliza un stage
+local existente para esta prueba, sin reconstruir ni instalar un MSI. Si el stage
+está en otro lugar, reemplaza `CUAJONE_ONNX_CUDA_RUNTIME_DIR` al configurar.
+
+```powershell
+. .\activate-native.ps1
+
+cmake --preset gpu-onnx-integration
+cmake --build --preset gpu-onnx-integration-release
+ctest --preset gpu-onnx-integration-release
+```
+
+El binario incluye el core `onnxruntime.dll` 1.25.0, el provider CUDA y su DLL
+compartida junto al ejecutable, como el layout final; agrega el resto del stage al
+search path de DLL de Windows sin anteponerlo a `PATH`. Así el core no puede ser
+reemplazado por una copia del stage o del sistema. Un host sin GPU NVIDIA/driver
+compatible termina
+como `Skipped` (código 77); una GPU compatible con provider, modelo o DLLs
+incorrectos termina como fallo. El resultado exitoso informa el nombre real de la
+GPU y `CUDAExecutionProvider`.
+
 Las rutas activadas son TensorRT `11.1.0.106`, CUDA runtime `12.9.79`, OpenCV
 `4.12.0` (`vc16`, ABI compatible con VS2022), CMake `3.31.8`, Ninja `1.13.1` y
 Visual Studio Build Tools 2022 `17.14`. No versiones DLL ni SDK en Git: la activación
@@ -127,13 +159,15 @@ expone la URL RTSP de la cámara, carpeta de salida, modo `PPE only`/`PPE + fall
 cómputo `Auto`/`CUDA`/`CPU`, los cuatro artefactos de modelo, labels EPP y `Show`.
 `Load .env...` importa la configuración compatible del runtime nativo y conserva el
 archivo local fuera de Git; las opciones exclusivas de Python se ignoran y se
-informan en el estado.
+informan en el estado. El selector `Language` permite cambiar inmediatamente las
+etiquetas, botones y modos de análisis entre English y Español sin alterar la
+configuración o los argumentos del runtime.
 `Validate` ejecuta el mismo plan con `--preflight`; `Start` inicia el procesamiento.
 
 Las rutas iniciales se derivan de `FOLDERID_ProgramData`:
 
 ```text
-%ProgramData%\Cuajone PPE Monitor\runtime\
+%ProgramData%\NexoAI Vision\runtime\
   models\ppe.engine
   models\pose.engine
   models\ppe.onnx
@@ -171,7 +205,9 @@ usable, `12` error de probe y `13` Driver API anterior a CUDA 12.9. El JSON usa
 cada dispositivo. `driver_was_loaded` debe ser `false`: demuestra que
 el ejecutable llegó al probe sin cargar `nvcuda.dll` de forma anticipada.
 `--compute cpu` nunca ejecuta este probe. El CLI
-explícito tiene prioridad sobre `HKLM\SOFTWARE\Cuajone PPE Monitor\ComputeMode`.
+explícito tiene prioridad sobre `HKLM\SOFTWARE\NexoAI Vision\ComputeMode`. Si esa
+clave no existe, el runtime conserva compatibilidad de lectura con
+`HKLM\SOFTWARE\Cuajone PPE Monitor\ComputeMode`.
 TensorRT 11 exige al menos SM 7.5; una GPU anterior no se declara lista aunque la
 API del driver CUDA inicialice. Sin `--device`, el runtime elige el primer índice
 compatible; un índice explícito inexistente o inferior a SM 7.5 falla cerrado.
@@ -328,6 +364,11 @@ memoria, manifest/hash/rol/I/O, extensión, límites, external data y dominios c
 `cuajone_launcher_tests` cubre la matriz Auto/CUDA/CPU para ambos modos, manifests
 y labels CPU, omisión pose en `PPE only`, quoting de `CreateProcessW` y redacción
 de credenciales RTSP.
+
+`cuajone_onnx_cuda_integration_tests` es el contrato GPU opt-in: la sesión del
+proyecto debe ejecutar un `Add` ONNX validado mediante `CUDAExecutionProvider` en
+una GPU compatible. Su perfil de ONNX Runtime es la evidencia de asignación del
+nodo, no un preflight ni una selección declarativa.
 
 Baseline de esta corrección: CTest `3/3` tanto en CPU-only como en el build completo;
 la suite Python ejecutada con `python -m pytest` informa `93 passed, 1 skipped` sin

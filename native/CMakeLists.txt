@@ -10,6 +10,7 @@ option(CUAJONE_BUILD_LAUNCHER "Build the Windows GUI launcher" ON)
 option(CUAJONE_BUILD_PYTHON_BINDINGS "Build the development/QA pybind11 module" OFF)
 option(CUAJONE_ENABLE_TENSORRT "Enable the optional TensorRT/CUDA backend" ON)
 option(CUAJONE_ENABLE_TRT_INTEGRATION_TESTS "Build opt-in TensorRT integration tests" OFF)
+option(CUAJONE_ENABLE_ONNX_CUDA_INTEGRATION_TESTS "Build opt-in real ONNX Runtime CUDA integration tests" OFF)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -17,24 +18,36 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 
 if(CUAJONE_BUILD_LAUNCHER)
     add_library(cuajone_launcher_support
-        src/launcher_support.cpp
+        src/launcher/launcher_support.cpp
     )
     target_include_directories(cuajone_launcher_support PUBLIC include)
     target_compile_features(cuajone_launcher_support PUBLIC cxx_std_20)
     if(MSVC)
-        target_compile_options(cuajone_launcher_support PRIVATE /W4 /permissive- /EHsc)
+        target_compile_options(cuajone_launcher_support PRIVATE /W4 /permissive- /EHsc /utf-8)
     else()
         target_compile_options(cuajone_launcher_support PRIVATE -Wall -Wextra -Wpedantic)
     endif()
 
     if(WIN32)
-        add_executable(cuajone_launcher WIN32 src/launcher.cpp)
+        set(CUAJONE_LAUNCHER_ICON "${CMAKE_CURRENT_BINARY_DIR}/CuajonePPEMonitor.ico")
+        set(CUAJONE_LAUNCHER_RESOURCE "${CMAKE_CURRENT_BINARY_DIR}/launcher.rc")
+        add_custom_command(
+            OUTPUT "${CUAJONE_LAUNCHER_ICON}"
+            COMMAND powershell -NoProfile -ExecutionPolicy Bypass -File
+                "${CMAKE_CURRENT_SOURCE_DIR}/../installer/native/generate-icon.ps1"
+                -OutputPath "${CUAJONE_LAUNCHER_ICON}"
+            DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/../installer/native/generate-icon.ps1"
+            VERBATIM)
+        configure_file(resources/launcher.rc.in "${CUAJONE_LAUNCHER_RESOURCE}" @ONLY)
+        add_executable(cuajone_launcher WIN32 src/launcher/launcher.cpp "${CUAJONE_LAUNCHER_RESOURCE}")
+        add_custom_target(cuajone_launcher_icon DEPENDS "${CUAJONE_LAUNCHER_ICON}")
+        add_dependencies(cuajone_launcher cuajone_launcher_icon)
         target_link_libraries(cuajone_launcher PRIVATE
             cuajone_launcher_support comctl32 ole32 shell32)
         target_compile_definitions(cuajone_launcher PRIVATE
             UNICODE _UNICODE NOMINMAX WIN32_LEAN_AND_MEAN)
         if(MSVC)
-            target_compile_options(cuajone_launcher PRIVATE /W4 /permissive- /EHsc)
+            target_compile_options(cuajone_launcher PRIVATE /W4 /permissive- /EHsc /utf-8)
         endif()
     endif()
 endif()
@@ -50,7 +63,7 @@ endif()
 find_package(OpenCV 4.8 REQUIRED COMPONENTS core imgproc)
 
 add_library(cuajone_compute
-    src/compute.cpp
+    src/foundation/compute.cpp
 )
 target_include_directories(cuajone_compute PUBLIC include)
 target_compile_features(cuajone_compute PUBLIC cxx_std_20)
@@ -59,34 +72,34 @@ if(WIN32)
 endif()
 
 add_library(cuajone_contracts
-    src/contracts.cpp
+    src/foundation/contracts.cpp
 )
 target_include_directories(cuajone_contracts PUBLIC include)
 target_compile_features(cuajone_contracts PUBLIC cxx_std_20)
 
 add_library(cuajone_analytics
-    src/analytics_pipeline.cpp
-    src/fall_analytics.cpp
-    src/iou_tracker.cpp
-    src/letterbox.cpp
-    src/ppe_analytics.cpp
-    src/types.cpp
+    src/analytics/analytics_pipeline.cpp
+    src/analytics/fall_analytics.cpp
+    src/analytics/iou_tracker.cpp
+    src/analytics/letterbox.cpp
+    src/analytics/ppe_analytics.cpp
+    src/foundation/types.cpp
 )
 target_include_directories(cuajone_analytics PUBLIC include)
 target_link_libraries(cuajone_analytics PUBLIC cuajone_contracts)
 target_compile_features(cuajone_analytics PUBLIC cxx_std_20)
 
 add_library(cuajone_inference
-    src/engine_reader.cpp
-    src/preprocess.cpp
-    src/yolo_decode.cpp
+    src/inference/engine_reader.cpp
+    src/inference/preprocess.cpp
+    src/inference/yolo_decode.cpp
 )
 target_include_directories(cuajone_inference PUBLIC include)
 target_link_libraries(cuajone_inference PUBLIC cuajone_analytics opencv_core opencv_imgproc)
 target_compile_features(cuajone_inference PUBLIC cxx_std_20)
 
 add_library(cuajone_core
-    src/cli.cpp
+    src/app/cli.cpp
 )
 target_include_directories(cuajone_core PUBLIC include)
 target_link_libraries(cuajone_core PUBLIC cuajone_contracts cuajone_analytics cuajone_inference cuajone_compute)
@@ -103,24 +116,18 @@ endif()
 
 if(CUAJONE_BUILD_PYTHON_BINDINGS)
     set(CUAJONE_PYBIND11_ROOT "" CACHE PATH
-        "Pinned pybind11 3.0.4 CMake package root from a D:-hosted Python environment")
+        "Pinned pybind11 3.0.4 CMake package root from a local Python environment")
     set(CUAJONE_PYTHON_OUTPUT_DIR "${CMAKE_BINARY_DIR}/python" CACHE PATH
         "Output directory for the development/QA Python extension")
     if(NOT CUAJONE_PYBIND11_ROOT)
         message(FATAL_ERROR
-            "CUAJONE_PYBIND11_ROOT is required for bindings; use the pybind11 3.0.4 package under a D:-hosted Python 3.12 environment")
-    endif()
-    if(WIN32)
-        file(TO_CMAKE_PATH "${CUAJONE_PYBIND11_ROOT}" _cuajone_pybind11_root)
-        if(NOT _cuajone_pybind11_root MATCHES "^[Dd]:/")
-            message(FATAL_ERROR "CUAJONE_PYBIND11_ROOT must remain on D: for this Windows build")
-        endif()
+            "CUAJONE_PYBIND11_ROOT is required for bindings; use the pinned pybind11 3.0.4 package for Python 3.12")
     endif()
     find_package(Python 3.12 EXACT COMPONENTS Interpreter Development.Module REQUIRED)
     set(PYBIND11_FINDPYTHON ON)
     find_package(pybind11 3.0.4 EXACT CONFIG REQUIRED
         PATHS "${CUAJONE_PYBIND11_ROOT}" NO_DEFAULT_PATH)
-    pybind11_add_module(cuajone_python MODULE src/python_bindings.cpp)
+    pybind11_add_module(cuajone_python MODULE src/bindings/python_bindings.cpp)
     target_link_libraries(cuajone_python PRIVATE cuajone_analytics)
     target_compile_features(cuajone_python PRIVATE cxx_std_20)
     set_target_properties(cuajone_python PROPERTIES
@@ -227,11 +234,11 @@ if(CUAJONE_BUILD_RUNTIME)
     find_package(OpenCV 4.8 REQUIRED COMPONENTS core imgproc imgcodecs videoio highgui)
 
     add_library(cuajone_runtime
-        src/capture.cpp
-        src/engine_pipeline.cpp
-        src/evidence.cpp
-        src/model_manifest.cpp
-        src/onnx_session.cpp
+        src/runtime/capture.cpp
+        src/runtime/engine_pipeline.cpp
+        src/runtime/evidence.cpp
+        src/runtime/model_manifest.cpp
+        src/runtime/onnx_session.cpp
     )
     target_include_directories(cuajone_runtime PUBLIC include)
     target_link_libraries(cuajone_runtime
@@ -240,7 +247,7 @@ if(CUAJONE_BUILD_RUNTIME)
             bcrypt
             opencv_imgcodecs opencv_videoio opencv_highgui)
     if(CUAJONE_ENABLE_TENSORRT)
-        target_sources(cuajone_runtime PRIVATE src/tensorrt_runtime.cpp)
+        target_sources(cuajone_runtime PRIVATE src/runtime/tensorrt_runtime.cpp)
         target_include_directories(cuajone_runtime PRIVATE "${TENSORRT_INCLUDE_DIR}")
         target_link_libraries(cuajone_runtime PUBLIC ${CUAJONE_CUDART_TARGET})
         target_link_libraries(cuajone_runtime PRIVATE "${TENSORRT_NVINFER_LIBRARY}")
@@ -263,7 +270,7 @@ if(CUAJONE_BUILD_RUNTIME)
         endif()
     endif()
 
-    add_executable(cuajone_native src/main.cpp)
+    add_executable(cuajone_native src/app/main.cpp)
     target_link_libraries(cuajone_native PRIVATE cuajone_runtime)
     add_custom_command(TARGET cuajone_native POST_BUILD
         COMMAND ${CMAKE_COMMAND} -E copy_if_different
@@ -277,8 +284,8 @@ if(CUAJONE_BUILD_RUNTIME)
     endif()
 
     add_library(cuajone_installer_ca SHARED
-        src/compute.cpp
-        src/installer_custom_action.cpp
+        src/foundation/compute.cpp
+        src/installer/installer_custom_action.cpp
     )
     target_include_directories(cuajone_installer_ca PRIVATE include)
     target_link_libraries(cuajone_installer_ca PRIVATE dxgi advapi32 msi)
@@ -309,5 +316,29 @@ if(CUAJONE_BUILD_RUNTIME)
         add_executable(cuajone_trt_smoke tests/trt_smoke.cpp)
         target_link_libraries(cuajone_trt_smoke PRIVATE cuajone_runtime)
         add_test(NAME cuajone_trt_smoke COMMAND cuajone_trt_smoke "${CUAJONE_TEST_ENGINE}")
+    endif()
+
+    if(CUAJONE_ENABLE_ONNX_CUDA_INTEGRATION_TESTS)
+        set(CUAJONE_ONNX_CUDA_RUNTIME_DIR "" CACHE PATH
+            "Directory containing the staged ONNX Runtime CUDA provider DLL closure")
+        add_executable(cuajone_onnx_cuda_integration_tests tests/onnx_cuda_integration_tests.cpp)
+        target_link_libraries(cuajone_onnx_cuda_integration_tests PRIVATE cuajone_runtime cuajone_onnxruntime)
+        target_compile_options(cuajone_onnx_cuda_integration_tests PRIVATE /W4 /permissive- /EHsc)
+        add_custom_command(TARGET cuajone_onnx_cuda_integration_tests POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                $<TARGET_FILE:cuajone_onnxruntime>
+                $<TARGET_FILE_DIR:cuajone_onnx_cuda_integration_tests>
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                "${CUAJONE_ONNX_CUDA_RUNTIME_DIR}/onnxruntime_providers_cuda.dll"
+                $<TARGET_FILE_DIR:cuajone_onnx_cuda_integration_tests>
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                "${CUAJONE_ONNX_CUDA_RUNTIME_DIR}/onnxruntime_providers_shared.dll"
+                $<TARGET_FILE_DIR:cuajone_onnx_cuda_integration_tests>)
+        add_test(NAME cuajone_onnx_cuda_integration_tests COMMAND cuajone_onnx_cuda_integration_tests)
+        set_tests_properties(cuajone_onnx_cuda_integration_tests PROPERTIES
+            SKIP_RETURN_CODE 77
+            ENVIRONMENT "CUAJONE_ONNX_CUDA_RUNTIME_DIR=${CUAJONE_ONNX_CUDA_RUNTIME_DIR}"
+            ENVIRONMENT_MODIFICATION
+                "PATH=path_list_prepend:$<TARGET_FILE_DIR:opencv_core>;PATH=path_list_prepend:${ONNXRUNTIME_ROOT}/lib")
     endif()
 endif()

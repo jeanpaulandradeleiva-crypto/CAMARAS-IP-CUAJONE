@@ -223,6 +223,7 @@ std::string hardwareProbeJson(const HardwareProbeResult& result) {
            << ",\"driver_version\":";
     if (result.driver_version) output << *result.driver_version;
     else output << "null";
+    output << ",\"cuda_driver_api\":\"" << cudaDriverApiVersionText(result.driver_version) << "\"";
     output << ",\"adapters\":[";
     for (std::size_t index = 0; index < result.adapters.size(); ++index) {
         if (index > 0) output << ',';
@@ -241,6 +242,30 @@ std::string hardwareProbeJson(const HardwareProbeResult& result) {
                << ",\"compute_minor\":" << device.compute_minor << '}';
     }
     output << "],\"detail\":\"" << jsonEscape(result.detail) << "\"}";
+    return output.str();
+}
+
+std::string cudaDriverApiVersionText(std::optional<int> version) {
+    if (!version || *version <= 0) return "unavailable";
+    const int major = *version / 1000;
+    const int minor = (*version % 1000) / 10;
+    const int patch = *version % 10;
+    std::ostringstream output;
+    output << major << '.' << minor;
+    if (patch != 0) output << '.' << patch;
+    return output.str();
+}
+
+std::string hardwareProbeSummary(const HardwareProbeResult& result) {
+    std::ostringstream output;
+    output << "CUDA Driver API " << cudaDriverApiVersionText(result.driver_version);
+    if (!result.cuda_devices.empty()) {
+        const auto& device = result.cuda_devices.front();
+        output << " | GPU " << device.device_index << ": " << device.name
+               << " (SM " << device.compute_major << '.' << device.compute_minor << ')';
+    } else if (!result.adapters.empty()) {
+        output << " | NVIDIA GPU: " << result.adapters.front().name;
+    }
     return output.str();
 }
 
@@ -283,56 +308,75 @@ int selectCompatibleCudaDevice(
     return selected->device_index;
 }
 
-ComputeSelection selectComputeBackend(ComputeBackend requested, const ComputeAvailability& available) {
+ComputeSelection selectComputeBackend(ComputeBackend requested, const ComputeCapabilities& capabilities) {
+    const auto cuda_provider = [&]() -> std::optional<InferenceProvider> {
+        if (capabilities.tensor_rt_runtime_compiled && capabilities.tensor_rt_models_available) {
+            return InferenceProvider::TensorRt;
+        }
+        if (capabilities.onnx_cuda_execution_provider_compiled && capabilities.onnx_models_available) {
+            return InferenceProvider::OnnxRuntimeCuda;
+        }
+        return std::nullopt;
+    };
+    const bool cuda_runtime_compiled = capabilities.tensor_rt_runtime_compiled
+        || capabilities.onnx_cuda_execution_provider_compiled;
+
     if (requested == ComputeBackend::Cpu) {
-        if (!available.cpu_models_available) {
+        if (!capabilities.onnx_models_available) {
             throw std::runtime_error("CPU mode requires compatible PPE and pose ONNX models");
         }
-        return {ComputeBackend::Cpu, "CPU was explicitly requested"};
+        return {ComputeBackend::Cpu, InferenceProvider::OnnxRuntimeCpu, "CPU was explicitly requested"};
     }
     if (requested == ComputeBackend::Cuda) {
-        if (!available.tensor_rt_compiled) {
+        if (!cuda_runtime_compiled) {
             throw std::runtime_error("CUDA mode is unavailable in this CPU-only build");
         }
-        if (available.hardware_status != HardwareProbeStatus::CudaReady) {
+        if (capabilities.hardware_status != HardwareProbeStatus::CudaReady) {
             throw std::runtime_error(
                 "CUDA mode was requested but the NVIDIA adapter/driver probe is not ready: "
-                + std::string(hardwareProbeStatusName(available.hardware_status)));
+                + std::string(hardwareProbeStatusName(capabilities.hardware_status)));
         }
-        if (!available.gpu_models_available) {
-            throw std::runtime_error("CUDA mode requires compatible PPE and pose TensorRT engines");
+        if (const auto provider = cuda_provider()) {
+            return {ComputeBackend::Cuda, *provider,
+                "CUDA was explicitly requested and passed readiness checks"};
         }
-        return {ComputeBackend::Cuda, "CUDA was explicitly requested and passed readiness checks"};
+        throw std::runtime_error(
+            "CUDA mode requires compatible PPE and pose TensorRT engines or ONNX models");
     }
-    if (available.tensor_rt_compiled
-        && available.hardware_status == HardwareProbeStatus::CudaReady
-        && available.gpu_models_available) {
-        return {ComputeBackend::Cuda, "Auto selected CUDA after hardware and model readiness checks"};
+    if (capabilities.hardware_status == HardwareProbeStatus::CudaReady) {
+        if (const auto provider = cuda_provider()) {
+            return {ComputeBackend::Cuda, *provider,
+                "Auto selected CUDA after hardware and model readiness checks"};
+        }
     }
-    if (available.cpu_models_available) {
-        return {ComputeBackend::Cpu, "Auto selected CPU because CUDA prerequisites were incomplete"};
+    if (capabilities.onnx_models_available) {
+        return {ComputeBackend::Cpu, InferenceProvider::OnnxRuntimeCpu,
+            "Auto selected CPU because CUDA prerequisites were incomplete"};
     }
     throw std::runtime_error("Auto mode found neither a ready TensorRT path nor compatible ONNX models");
 }
 
 std::optional<ComputeBackend> installedComputeBackend() {
 #ifdef _WIN32
-    wchar_t value[16]{};
-    DWORD bytes = sizeof(value);
-    const LSTATUS status = RegGetValueW(
-        HKEY_LOCAL_MACHINE,
-        L"SOFTWARE\\Cuajone PPE Monitor",
-        L"ComputeMode",
-        RRF_RT_REG_SZ | RRF_SUBKEY_WOW6464KEY,
-        nullptr,
-        value,
-        &bytes);
-    if (status == ERROR_FILE_NOT_FOUND || status == ERROR_PATH_NOT_FOUND) return std::nullopt;
-    if (status != ERROR_SUCCESS) {
-        throw std::runtime_error("Could not read installed compute mode from HKLM");
-    }
-    std::string converted = utf8(value);
-    return parseComputeBackend(converted);
+    const auto read = [](const wchar_t* key) -> std::optional<ComputeBackend> {
+        wchar_t value[16]{};
+        DWORD bytes = sizeof(value);
+        const LSTATUS status = RegGetValueW(
+            HKEY_LOCAL_MACHINE,
+            key,
+            L"ComputeMode",
+            RRF_RT_REG_SZ | RRF_SUBKEY_WOW6464KEY,
+            nullptr,
+            value,
+            &bytes);
+        if (status == ERROR_FILE_NOT_FOUND || status == ERROR_PATH_NOT_FOUND) return std::nullopt;
+        if (status != ERROR_SUCCESS) {
+            throw std::runtime_error("Could not read installed compute mode from HKLM");
+        }
+        return parseComputeBackend(utf8(value));
+    };
+    if (const auto current = read(L"SOFTWARE\\NexoAI Vision")) return current;
+    return read(L"SOFTWARE\\Cuajone PPE Monitor");
 #else
     return std::nullopt;
 #endif

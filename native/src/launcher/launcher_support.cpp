@@ -107,7 +107,7 @@ LaunchPlan buildLaunchPlan(const LauncherSettings& settings, bool preflight) {
     }
 
     const bool needs_pose = settings.analytics_mode == AnalyticsMode::PpeFall;
-    const bool cuda_candidate = regularFileWithExtension(settings.ppe_engine, L".engine")
+    const bool tensor_rt_candidate = regularFileWithExtension(settings.ppe_engine, L".engine")
         && (!needs_pose || regularFileWithExtension(settings.pose_engine, L".engine"));
     const bool cpu_candidate = regularFileWithExtension(settings.ppe_onnx, L".onnx")
         && regularFile(adjacentOnnxManifest(settings.ppe_onnx))
@@ -115,11 +115,12 @@ LaunchPlan buildLaunchPlan(const LauncherSettings& settings, bool preflight) {
         && (!needs_pose || (regularFileWithExtension(settings.pose_onnx, L".onnx")
             && regularFile(adjacentOnnxManifest(settings.pose_onnx))));
 
+    const bool cuda_candidate = tensor_rt_candidate || cpu_candidate;
     if (settings.compute_mode == ComputeMode::Cuda && !cuda_candidate) {
         std::wstring message = needs_pose
-            ? L"CUDA requires PPE and pose TensorRT .engine files. This MSI includes ONNX models for CPU, not TensorRT engines; browse to valid .engine files under "
-            : L"CUDA requires a PPE TensorRT .engine file. This MSI includes ONNX models for CPU, not TensorRT engines; browse to a valid .engine file under ";
-        message += settings.ppe_engine.parent_path().wstring();
+            ? L"CUDA requires PPE and pose ONNX models with adjacent manifests, or TensorRT .engine files. Browse to valid models under "
+            : L"CUDA requires a PPE ONNX model with its adjacent manifest, or a TensorRT .engine file. Browse to a valid model under ";
+        message += settings.ppe_onnx.parent_path().wstring();
         throw std::invalid_argument(
             utf8FromWide(message));
     }
@@ -158,13 +159,13 @@ LaunchPlan buildLaunchPlan(const LauncherSettings& settings, bool preflight) {
         case ComputeMode::Cpu: result.arguments.emplace_back(L"cpu"); break;
     }
 
-    const bool include_cuda = cuda_candidate && settings.compute_mode != ComputeMode::Cpu;
-    const bool include_cpu = cpu_candidate && settings.compute_mode != ComputeMode::Cuda;
-    if (include_cuda) {
+    const bool include_tensor_rt = tensor_rt_candidate && settings.compute_mode != ComputeMode::Cpu;
+    const bool include_onnx = cpu_candidate;
+    if (include_tensor_rt) {
         appendOption(result.arguments, L"--ppe-engine", settings.ppe_engine);
         if (needs_pose) appendOption(result.arguments, L"--pose-engine", settings.pose_engine);
     }
-    if (include_cpu) {
+    if (include_onnx) {
         appendOption(result.arguments, L"--ppe-onnx", settings.ppe_onnx);
         if (needs_pose) appendOption(result.arguments, L"--pose-onnx", settings.pose_onnx);
     }

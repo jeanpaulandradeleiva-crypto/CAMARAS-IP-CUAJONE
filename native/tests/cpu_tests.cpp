@@ -320,6 +320,18 @@ void testComputeSelectionAndProbeContract() {
             && parseComputeBackend("cuda") == ComputeBackend::Cuda
             && parseComputeBackend("cpu") == ComputeBackend::Cpu,
         "Compute backend parser changed");
+    require(selectComputeBackend(ComputeBackend::Auto, {
+                HardwareProbeStatus::NoNvidiaAdapter, false, false, false, true,
+            }).provider == InferenceProvider::OnnxRuntimeCpu,
+        "Auto did not route ONNX models to the CPU provider without CUDA readiness");
+    require(selectComputeBackend(ComputeBackend::Auto, {
+                HardwareProbeStatus::CudaReady, false, true, false, true,
+            }).provider == InferenceProvider::OnnxRuntimeCuda,
+        "Auto did not route supported ONNX models to the CUDA execution provider");
+    require(selectComputeBackend(ComputeBackend::Auto, {
+                HardwareProbeStatus::CudaReady, true, true, true, true,
+            }).provider == InferenceProvider::TensorRt,
+        "Auto did not preserve TensorRT routing precedence over ONNX CUDA");
     const std::array statuses{
         HardwareProbeStatus::NoNvidiaAdapter,
         HardwareProbeStatus::DriverUnavailable,
@@ -330,32 +342,49 @@ void testComputeSelectionAndProbeContract() {
     for (const ComputeBackend requested : {
              ComputeBackend::Auto, ComputeBackend::Cuda, ComputeBackend::Cpu}) {
         for (const HardwareProbeStatus status : statuses) {
-            for (const bool compiled : {false, true}) {
-                for (const bool gpu_models : {false, true}) {
-                    for (const bool cpu_models : {false, true}) {
-                        std::optional<ComputeBackend> expected;
-                        if (requested == ComputeBackend::Cpu) {
-                            if (cpu_models) expected = ComputeBackend::Cpu;
-                        } else if (requested == ComputeBackend::Cuda) {
-                            if (compiled && status == HardwareProbeStatus::CudaReady && gpu_models) {
-                                expected = ComputeBackend::Cuda;
+            for (const bool tensor_rt_runtime_compiled : {false, true}) {
+                for (const bool onnx_cuda_compiled : {false, true}) {
+                    for (const bool tensor_rt_models : {false, true}) {
+                        for (const bool onnx_models : {false, true}) {
+                            std::optional<ComputeBackend> expected;
+                            std::optional<InferenceProvider> expected_provider;
+                            if (status == HardwareProbeStatus::CudaReady) {
+                                if (tensor_rt_runtime_compiled && tensor_rt_models) {
+                                    expected_provider = InferenceProvider::TensorRt;
+                                } else if (onnx_cuda_compiled && onnx_models) {
+                                    expected_provider = InferenceProvider::OnnxRuntimeCuda;
+                                }
                             }
-                        } else if (compiled && status == HardwareProbeStatus::CudaReady && gpu_models) {
-                            expected = ComputeBackend::Cuda;
-                        } else if (cpu_models) {
-                            expected = ComputeBackend::Cpu;
+                            if (requested == ComputeBackend::Cpu) {
+                                if (onnx_models) {
+                                    expected = ComputeBackend::Cpu;
+                                    expected_provider = InferenceProvider::OnnxRuntimeCpu;
+                                }
+                            } else if (requested == ComputeBackend::Cuda) {
+                                if (expected_provider) {
+                                    expected = ComputeBackend::Cuda;
+                                }
+                            } else if (expected_provider) {
+                                expected = ComputeBackend::Cuda;
+                            } else if (onnx_models) {
+                                expected = ComputeBackend::Cpu;
+                                expected_provider = InferenceProvider::OnnxRuntimeCpu;
+                            }
+                            std::optional<ComputeSelection> actual;
+                            try {
+                                actual = selectComputeBackend(requested, {
+                                status, tensor_rt_runtime_compiled, onnx_cuda_compiled,
+                                    tensor_rt_models, onnx_models,
+                                });
+                            } catch (const std::exception&) {
+                            }
+                            require(actual.has_value() == expected.has_value(),
+                                "Compute matrix availability result changed");
+                            if (expected) require(actual->backend == *expected,
+                                "Compute matrix selected the wrong available backend");
+                            if (expected && expected_provider) require(actual->provider == *expected_provider,
+                                "Compute matrix selected the wrong inference provider");
                         }
-                        std::optional<ComputeSelection> actual;
-                        try {
-                            actual = selectComputeBackend(requested, {
-                                status, compiled, gpu_models, cpu_models,
-                            });
-                        } catch (const std::exception&) {
-                        }
-                        require(actual.has_value() == expected.has_value(),
-                            "Compute matrix availability result changed");
-                        if (expected) require(actual->backend == *expected,
-                            "Compute matrix selected the wrong available backend");
                     }
                 }
             }
@@ -391,9 +420,13 @@ void testComputeSelectionAndProbeContract() {
             && json.find("\"status\":\"cuda_ready\"") != std::string::npos
             && json.find("\"cuda_ready\":true") != std::string::npos
             && json.find("\"minimum_driver_version\":12090") != std::string::npos
+            && json.find("\"cuda_driver_api\":\"12.9\"") != std::string::npos
             && json.find("\"device_index\":0") != std::string::npos
             && json.find("\"driver_was_loaded\":false") != std::string::npos,
         "Hardware probe JSON contract changed");
+    require(hardwareProbeSummary(synthetic).find("CUDA Driver API 12.9") != std::string::npos
+            && hardwareProbeSummary(synthetic).find("Synthetic CUDA") != std::string::npos,
+        "Hardware probe summary no longer reports CUDA version and GPU name");
     require(hardwareProbeExitCode(HardwareProbeStatus::CudaReady) == 0
             && hardwareProbeExitCode(HardwareProbeStatus::NoNvidiaAdapter) == 10
             && hardwareProbeExitCode(HardwareProbeStatus::DriverUnavailable) == 11

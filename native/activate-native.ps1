@@ -10,7 +10,17 @@ $ErrorActionPreference = "Stop"
 $projectRoot = Split-Path -Parent $PSScriptRoot
 $toolRoot = Join-Path $projectRoot ".tools\native"
 $vsRoot = "$toolRoot\vs"
-$cmakeBin = "$toolRoot\cmake\cmake-3.31.8-windows-x86_64\bin"
+$cmakeBin = if (-not [string]::IsNullOrWhiteSpace($env:CUAJONE_CMAKE_BIN)) {
+    $env:CUAJONE_CMAKE_BIN
+} elseif (Test-Path -LiteralPath "D:\Installations\CMake\bin\cmake.exe" -PathType Leaf) {
+    "D:\Installations\CMake\bin"
+} else {
+    $command = Get-Command cmake -ErrorAction SilentlyContinue
+    if ($null -eq $command) {
+        throw "CMake was not found. Install it or set CUAJONE_CMAKE_BIN to its bin directory."
+    }
+    Split-Path -Parent $command.Source
+}
 $ninjaBin = "$toolRoot\ninja"
 $cudaRoot = "$toolRoot\cuda-runtime\nvidia\cuda_runtime"
 $cudaCompilerHeadersRoot = "$toolRoot\cuda-nvcc\nvidia\cuda_nvcc"

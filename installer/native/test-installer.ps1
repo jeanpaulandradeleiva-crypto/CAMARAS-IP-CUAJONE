@@ -149,6 +149,8 @@ $expectedActiveNames = @(
     (Split-Path -Leaf $sidecarPath)
 )
 $activeCandidates = @(Get-ChildItem -LiteralPath (Split-Path -Parent $installer) -File | Where-Object {
+    $_.Name -like 'NexoAIVision-*-x64*.msi' -or
+    $_.Name -like 'NexoAIVision-*-x64*.msi.sha256' -or
     $_.Name -like 'CuajonePPEMonitor-*-x64*.msi' -or
     $_.Name -like 'CuajonePPEMonitor-*-x64*.msi.sha256'
 })
@@ -341,7 +343,7 @@ $runRoot = Join-Path $AcceptanceRoot $runName
 $tempDir = Join-Path $runRoot "temp"
 $validateDir = Join-Path $runRoot "validate"
 $imageRoot = Join-Path $runRoot "administrative-image"
-$extractApp = Join-Path $imageRoot "PFiles64\Cuajone PPE Monitor"
+$extractApp = Join-Path $imageRoot "PFiles64\NexoAI Vision"
 New-Item -ItemType Directory -Path $runRoot | Out-Null
 New-Item -ItemType Directory -Path $tempDir | Out-Null
 New-Item -ItemType Directory -Path $validateDir | Out-Null
@@ -387,8 +389,8 @@ try {
                 throw "Required MSI property is missing: $requiredProperty"
             }
         }
-        if ($properties.ProductName -cne "Cuajone PPE Monitor" -or
-            $properties.Manufacturer -cne "Cuajone PPE Monitor Project" -or
+        if ($properties.ProductName -cne "NexoAI Vision" -or
+            $properties.Manufacturer -cne "NexoAI Vision Project" -or
             $properties.UpgradeCode -cne "{$upgradeCode}" -and $properties.UpgradeCode -cne $upgradeCode) {
             throw "MSI product identity does not match the approved package identity"
         }
@@ -419,17 +421,32 @@ try {
         }
         if (-not $directoryMap.ContainsKey("INSTALLFOLDER") -or
             $directoryMap.INSTALLFOLDER.Parent -cne "ProgramFiles64Folder" -or
-            $directoryMap.INSTALLFOLDER.DefaultDir -notmatch '(^|\|)Cuajone PPE Monitor$') {
-            throw "INSTALLFOLDER does not default to ProgramFiles64Folder\Cuajone PPE Monitor"
+            $directoryMap.INSTALLFOLDER.DefaultDir -notmatch '(^|\|)NexoAI Vision$') {
+            throw "INSTALLFOLDER does not default to ProgramFiles64Folder\NexoAI Vision"
         }
         if (-not $directoryMap.ContainsKey("APPLICATIONDATAFOLDER") -or
-            $directoryMap.APPLICATIONDATAFOLDER.Parent -cne "CommonAppDataFolder") {
-            throw "Mutable application data is not rooted under CommonAppDataFolder"
+            $directoryMap.APPLICATIONDATAFOLDER.Parent -cne "CommonAppDataFolder" -or
+            $directoryMap.APPLICATIONDATAFOLDER.DefaultDir -notmatch '(^|\|)NexoAI Vision$') {
+            throw "Mutable application data is not rooted under CommonAppDataFolder\NexoAI Vision"
         }
         foreach ($directoryId in @("MODELSFOLDER", "CONFIGFOLDER", "OUTPUTFOLDER", "LOGSFOLDER")) {
             if (-not $directoryMap.ContainsKey($directoryId) -or
                 $directoryMap[$directoryId].Parent -cne "RUNTIMEFOLDER") {
                 throw "Mutable runtime directory is missing from ProgramData: $directoryId"
+            }
+        }
+        $appSearchRows = Get-MsiRows $database 'SELECT `Property`, `Signature_` FROM `AppSearch`' 2
+        $registrySearchRows = Get-MsiRows $database 'SELECT `Signature_`, `Root`, `Key`, `Name` FROM `RegLocator`' 4
+        foreach ($expectedSearch in @(
+                [pscustomobject]@{ Property = "PREVIOUS_COMPUTE_MODE"; Key = "SOFTWARE\NexoAI Vision" },
+                [pscustomobject]@{ Property = "LEGACY_COMPUTE_MODE"; Key = "SOFTWARE\Cuajone PPE Monitor" }
+            )) {
+            $appSearch = @($appSearchRows | Where-Object { $_.Columns[0] -ceq $expectedSearch.Property })
+            if ($appSearch.Count -ne 1 -or @($registrySearchRows | Where-Object {
+                    $_.Columns[0] -ceq $appSearch[0].Columns[1] -and $_.Columns[1] -eq "2" -and
+                    $_.Columns[2] -ceq $expectedSearch.Key -and $_.Columns[3] -ceq "ComputeMode"
+                }).Count -ne 1) {
+                throw "Compute-mode migration search is missing: $($expectedSearch.Key)"
             }
         }
         $secureObjectRows = Get-MsiRows $database 'SELECT `Domain`, `User`, `Component_` FROM `Wix4SecureObject`' 3
@@ -483,9 +500,11 @@ try {
             throw "Interactive compute detection is missing from InstallUISequence"
         }
 
-        $dialogRows = Get-MsiRows $database 'SELECT `Dialog` FROM `Dialog`' 1
-        if (@($dialogRows | Where-Object { $_.Columns[0] -ceq "ComputeDlg" }).Count -ne 1) {
-            throw "Compute selection dialog is missing"
+        $dialogRows = Get-MsiRows $database 'SELECT `Dialog`, `Title` FROM `Dialog`' 2
+        if (@($dialogRows | Where-Object {
+                $_.Columns[0] -ceq "ComputeDlg" -and $_.Columns[1] -ceq "NexoAI Vision - Compute"
+            }).Count -ne 1) {
+            throw "Compute selection dialog is missing or has the wrong product title"
         }
         $controlRows = Get-MsiRows $database 'SELECT `Dialog_`, `Control`, `Type`, `Property`, `Text` FROM `Control`' 5
         foreach ($control in @("ComputeModeSelection", "ProbeStatus")) {
@@ -521,7 +540,7 @@ try {
         }
         $launcherShortcut = @($shortcutRows | Where-Object {
             $_.Columns[0] -ceq "LauncherShortcut" -and
-            ($_.Columns[2] -split '\|')[-1] -ceq "Cuajone PPE Monitor" -and
+            ($_.Columns[2] -split '\|')[-1] -ceq "NexoAI Vision" -and
             [string]::IsNullOrEmpty($_.Columns[5])
         })
         if ($launcherShortcut.Count -ne 1) {
@@ -535,7 +554,7 @@ try {
         }
         $readmeShortcut = @($shortcutRows | Where-Object {
             $_.Columns[0] -ceq "ReadmeShortcut" -and
-            ($_.Columns[2] -split '\|')[-1] -ceq "Cuajone PPE Monitor - README"
+            ($_.Columns[2] -split '\|')[-1] -ceq "NexoAI Vision - README"
         })
         if ($readmeShortcut.Count -ne 1) {
             throw "README shortcut is missing"
@@ -574,6 +593,12 @@ try {
             throw "A package component is missing its stable GUID"
         }
 
+        $featureRows = Get-MsiRows $database 'SELECT `Feature`, `Title` FROM `Feature`' 2
+        if (@($featureRows | Where-Object {
+                $_.Columns[0] -ceq "MainFeature" -and $_.Columns[1] -ceq "NexoAI Vision"
+            }).Count -ne 1) {
+            throw "Main feature does not use the NexoAI Vision title"
+        }
         $featureComponentRows = Get-MsiRows $database 'SELECT `Feature_`, `Component_` FROM `FeatureComponents`' 2
         if ($featureComponentRows.Count -ne $componentRows.Count) {
             throw "Not every component belongs to the main repairable feature"
@@ -595,7 +620,8 @@ try {
         $approvedCustomActions = @(
             "Wix4SchedSecureObjects_X64", "Wix4SchedSecureObjectsRollback_X64",
             "Wix4ExecSecureObjects_X64", "Wix4ExecSecureObjectsRollback_X64",
-            "DetectComputeHardware", "BlockUnavailableCuda"
+            "DetectComputeHardware", "BlockUnavailableCuda",
+            "RestoreLegacyComputeMode", "RestoreNexoAIComputeMode"
         )
         if ($customActionRows.Count -ne $approvedCustomActions.Count -or
             @($customActionRows | Where-Object {
@@ -615,7 +641,7 @@ try {
 
         $registryRows = Get-MsiRows $database 'SELECT `Registry`, `Root`, `Key`, `Name`, `Value`, `Component_` FROM `Registry`' 6
         if (@($registryRows | Where-Object {
-            $_.Columns[1] -eq "2" -and $_.Columns[2] -ceq "SOFTWARE\Cuajone PPE Monitor" -and
+            $_.Columns[1] -eq "2" -and $_.Columns[2] -ceq "SOFTWARE\NexoAI Vision" -and
             $_.Columns[3] -ceq "ComputeMode" -and $_.Columns[4] -ceq "[COMPUTE_MODE]" -and
             $_.Columns[5] -ceq "RuntimeComputeMode"
         }).Count -ne 1) {
@@ -629,6 +655,9 @@ try {
 
         $summary = $database.SummaryInformation(0)
         try {
+            if ($summary.Property(3) -cne "NexoAI Vision $($stageMetadata.appVersion) x64") {
+                throw "MSI summary description does not use the NexoAI Vision product name"
+            }
             $template = $summary.Property(7)
             if ($template -notmatch '^x64;') {
                 throw "MSI summary template is not x64: $template"
@@ -774,8 +803,8 @@ $result = [ordered]@{
     wixMsiValidation = "passed"
     productIdentity = "passed"
     installFolderProperty = "public-secure-configurable"
-    installFolderDefault = "ProgramFiles64Folder\Cuajone PPE Monitor"
-    dataFolder = "CommonAppDataFolder\Cuajone PPE Monitor\runtime"
+    installFolderDefault = "ProgramFiles64Folder\NexoAI Vision"
+    dataFolder = "CommonAppDataFolder\NexoAI Vision\runtime"
     packageScope = "per-machine-x64"
     majorUpgradeAndDowngradeBlock = "passed"
     repairAndUninstallTables = "passed"

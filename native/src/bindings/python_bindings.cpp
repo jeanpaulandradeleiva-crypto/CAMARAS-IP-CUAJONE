@@ -121,6 +121,12 @@ PYBIND11_MODULE(cuajone_native, module) {
         .value("PPE_ONLY", AnalyticsMode::PpeOnly)
         .value("PPE_FALL", AnalyticsMode::PpeFall);
 
+#ifdef CUAJONE_PYTHON_WITH_ENGINE_RUNTIME
+    py::enum_<ComputeBackend>(module, "ComputeBackend")
+        .value("CUDA", ComputeBackend::Cuda)
+        .value("CPU", ComputeBackend::Cpu);
+#endif
+
     py::class_<Box>(module, "Box")
         .def(py::init<>())
         .def_readwrite("x1", &Box::x1)
@@ -215,12 +221,19 @@ PYBIND11_MODULE(cuajone_native, module) {
 #ifdef CUAJONE_PYTHON_WITH_ENGINE_RUNTIME
     py::class_<EnginePipelineConfig>(module, "EngineConfig")
         .def(py::init<>())
+        .def_readwrite("backend", &EnginePipelineConfig::backend)
         .def_property("ppe_engine",
             [](const EnginePipelineConfig& value) { return value.ppe_engine.string(); },
             [](EnginePipelineConfig& value, const std::string& input) { value.ppe_engine = input; })
         .def_property("pose_engine",
             [](const EnginePipelineConfig& value) { return value.pose_engine.string(); },
             [](EnginePipelineConfig& value, const std::string& input) { value.pose_engine = input; })
+        .def_property("ppe_onnx",
+            [](const EnginePipelineConfig& value) { return value.ppe_onnx.string(); },
+            [](EnginePipelineConfig& value, const std::string& input) { value.ppe_onnx = input; })
+        .def_property("pose_onnx",
+            [](const EnginePipelineConfig& value) { return value.pose_onnx.string(); },
+            [](EnginePipelineConfig& value, const std::string& input) { value.pose_onnx = input; })
         .def_readwrite("ppe_labels", &EnginePipelineConfig::ppe_labels)
         .def_readwrite("pose_class_count", &EnginePipelineConfig::pose_class_count)
         .def_readwrite("pose_keypoint_shape", &EnginePipelineConfig::pose_keypoint_shape)

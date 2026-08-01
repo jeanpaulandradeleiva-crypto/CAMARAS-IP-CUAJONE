@@ -114,7 +114,7 @@ if ($null -eq $signature.TimeStamperCertificate) {
 }
 
 if ([string]::IsNullOrWhiteSpace($LogPath)) {
-    $logDirectory = Join-Path $env:ProgramData "Cuajone PPE Monitor\installer-logs"
+    $logDirectory = Join-Path $env:ProgramData "NexoAI Vision\installer-logs"
     if (-not (Test-Path -LiteralPath $logDirectory)) {
         $logParent = Split-Path -Parent $logDirectory
         if (-not (Test-Path -LiteralPath $logParent -PathType Container)) {
@@ -161,7 +161,7 @@ if ($process.ExitCode -notin @(0, 1641, 3010)) {
     SignerThumbprintVerified = $true
     TrustEnrollmentAuthorized = $true
     InstallFolder = if ([string]::IsNullOrWhiteSpace($InstallFolder)) {
-        "C:\Program Files\Cuajone PPE Monitor"
+        "C:\Program Files\NexoAI Vision"
     } else {
         $resolvedInstallFolder
     }

@@ -55,6 +55,17 @@
         "CUDA_CCCL_HEADERS_ROOT": "$env{CUDA_CCCL_HEADERS_ROOT}",
         "OpenCV_DIR": "$env{OpenCV_DIR}"
       }
+    },
+    {
+      "name": "gpu-onnx-integration",
+      "displayName": "Real ONNX Runtime CUDA integration test",
+      "inherits": "windows-msvc",
+      "binaryDir": "${sourceDir}/../.tools/native/build/presets/gpu-onnx-integration",
+      "cacheVariables": {
+        "CUAJONE_BUILD_TESTS": "ON",
+        "CUAJONE_ENABLE_ONNX_CUDA_INTEGRATION_TESTS": "ON",
+        "CUAJONE_ONNX_CUDA_RUNTIME_DIR": "${sourceDir}/../.tools/native/installer/stage/bin"
+      }
     }
   ],
   "buildPresets": [
@@ -69,6 +80,11 @@
     {
       "name": "python-bindings-release",
       "configurePreset": "python-bindings"
+    },
+    {
+      "name": "gpu-onnx-integration-release",
+      "configurePreset": "gpu-onnx-integration",
+      "targets": ["cuajone_onnx_cuda_integration_tests"]
     }
   ],
   "testPresets": [
@@ -80,6 +96,16 @@
     {
       "name": "python-bindings-release",
       "configurePreset": "python-bindings",
+      "output": { "outputOnFailure": true }
+    },
+    {
+      "name": "gpu-onnx-integration-release",
+      "configurePreset": "gpu-onnx-integration",
+      "filter": {
+        "include": {
+          "name": "^cuajone_onnx_cuda_integration_tests$"
+        }
+      },
       "output": { "outputOnFailure": true }
     }
   ]

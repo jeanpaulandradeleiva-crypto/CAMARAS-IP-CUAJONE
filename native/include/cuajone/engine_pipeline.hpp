@@ -71,5 +71,6 @@ private:
 };
 
 bool tensorRtBackendCompiled() noexcept;
+bool onnxCudaExecutionProviderCompiled() noexcept;
 
 }  // namespace cuajone

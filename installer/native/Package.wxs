@@ -3,38 +3,55 @@
      xmlns:ui="http://wixtoolset.org/schemas/v4/wxs/ui"
      xmlns:util="http://wixtoolset.org/schemas/v4/wxs/util">
   <Package Id="CuajonePpeMonitor"
-           Name="Cuajone PPE Monitor"
-           Manufacturer="Cuajone PPE Monitor Project"
+           Name="NexoAI Vision"
+           Manufacturer="NexoAI Vision Project"
            Language="1033"
            Version="$(var.MsiVersion)"
            UpgradeCode="88A886C2-8F6D-4669-B6FB-7DFC1E7B0397"
            Scope="perMachine"
            InstallerVersion="500"
            Compressed="yes">
-    <SummaryInformation Description="Cuajone PPE Monitor $(var.AppVersion) x64"
-                        Manufacturer="Cuajone PPE Monitor Project" />
+    <SummaryInformation Description="NexoAI Vision $(var.AppVersion) x64"
+                        Manufacturer="NexoAI Vision Project" />
 
-    <MajorUpgrade DowngradeErrorMessage="A newer version of Cuajone PPE Monitor is already installed. Uninstall it before installing this older package."
+    <MajorUpgrade DowngradeErrorMessage="A newer version of NexoAI Vision is already installed. Uninstall it before installing this older package."
                   Schedule="afterInstallInitialize" />
     <MediaTemplate EmbedCab="yes" CompressionLevel="high" />
 
     <Property Id="INSTALLFOLDER" Secure="yes" />
-    <Property Id="COMPUTE_MODE" Value="auto" Secure="yes">
-      <RegistrySearch Id="PreviousComputeMode"
+    <Property Id="PREVIOUS_COMPUTE_MODE">
+      <RegistrySearch Id="PreviousNexoAIComputeMode"
+                      Root="HKLM"
+                      Key="SOFTWARE\NexoAI Vision"
+                      Name="ComputeMode"
+                      Type="raw"
+                      Bitness="always64" />
+    </Property>
+    <Property Id="LEGACY_COMPUTE_MODE">
+      <RegistrySearch Id="PreviousCuajoneComputeMode"
                       Root="HKLM"
                       Key="SOFTWARE\Cuajone PPE Monitor"
                       Name="ComputeMode"
                       Type="raw"
                       Bitness="always64" />
     </Property>
+    <Property Id="COMPUTE_MODE" Value="auto" Secure="yes" />
+    <SetProperty Id="COMPUTE_MODE" Action="RestoreLegacyComputeMode" Value="[LEGACY_COMPUTE_MODE]"
+                 After="AppSearch" Sequence="both"
+                 Condition="NOT PREVIOUS_COMPUTE_MODE AND LEGACY_COMPUTE_MODE AND COMPUTE_MODE=&quot;auto&quot;" />
+    <SetProperty Id="COMPUTE_MODE" Action="RestoreNexoAIComputeMode" Value="[PREVIOUS_COMPUTE_MODE]"
+                 After="RestoreLegacyComputeMode" Sequence="both"
+                 Condition="PREVIOUS_COMPUTE_MODE AND COMPUTE_MODE=&quot;auto&quot;" />
     <Property Id="CUDA_READY" Value="0" Secure="yes" />
     <Property Id="NVIDIA_STATUS" Value="not_probed" Secure="yes" />
+    <Property Id="CUDA_DETAILS" Value="CUDA not probed" Secure="yes" />
     <Property Id="ARPCOMMENTS" Value="$(var.ArpComments)" />
     <Property Id="ARPHELPLINK" Value="https://github.com/jeanpaulandradeleiva-crypto/CAMARAS-IP-CUAJONE/issues" />
     <Property Id="ARPURLINFOABOUT" Value="https://github.com/jeanpaulandradeleiva-crypto/CAMARAS-IP-CUAJONE" />
     <Property Id="ARPURLUPDATEINFO" Value="https://github.com/jeanpaulandradeleiva-crypto/CAMARAS-IP-CUAJONE/releases" />
     <Property Id="ARPPRODUCTICON" Value="ProductIcon" />
-    <Icon Id="ProductIcon" SourceFile="$(var.StageDir)\CuajonePPEMonitor.ico" />
+    <Icon Id="ProductIcon" SourceFile="$(var.StageDir)\NexoAIVision.ico" />
+    <Icon Id="LauncherIcon.exe" SourceFile="$(var.StageDir)\bin\cuajone_launcher.exe" />
 
     <Launch Condition="Installed OR COMPUTE_MODE=&quot;auto&quot; OR COMPUTE_MODE=&quot;cuda&quot; OR COMPUTE_MODE=&quot;cpu&quot;"
             Message="COMPUTE_MODE must be auto, cuda, or cpu." />
@@ -50,7 +67,7 @@
 
     <InstallUISequence>
       <Custom Action="DetectComputeHardware"
-              After="CostFinalize"
+              Before="CostFinalize"
               Condition="NOT Installed" />
     </InstallUISequence>
     <InstallExecuteSequence>
@@ -66,7 +83,7 @@
     <WixVariable Id="WixUILicenseRtf" Value="$(var.LicenseRtf)" />
 
     <UI Id="CuajoneComputeUI">
-      <Dialog Id="ComputeDlg" Width="370" Height="270" Title="Cuajone PPE Monitor - Compute">
+      <Dialog Id="ComputeDlg" Width="370" Height="270" Title="NexoAI Vision - Compute">
         <Control Id="Next" Type="PushButton" X="236" Y="243" Width="56" Height="17" Default="yes" Text="Next">
           <?if $(var.HasModels)=1 ?>
           <Publish Event="NewDialog" Value="CustomizeDlg" />
@@ -87,9 +104,9 @@
         <Control Id="BannerBitmap" Type="Bitmap" X="0" Y="0" Width="370" Height="44" TabSkip="no" Text="WixUI_Bmp_Banner" />
         <Control Id="BannerLine" Type="Line" X="0" Y="44" Width="373" Height="0" />
         <Control Id="BottomLine" Type="Line" X="0" Y="234" Width="373" Height="0" />
-        <Control Id="ProbeStatus" Type="Text" X="25" Y="58" Width="320" Height="18" NoPrefix="yes"
-                 Text="NVIDIA/CUDA status: [NVIDIA_STATUS]" />
-        <Control Id="ComputeModeSelection" Type="RadioButtonGroup" X="25" Y="84" Width="320" Height="66"
+        <Control Id="ProbeStatus" Type="Text" X="25" Y="58" Width="320" Height="34" NoPrefix="yes"
+                 Text="NVIDIA/CUDA status: [NVIDIA_STATUS] | [CUDA_DETAILS]" />
+        <Control Id="ComputeModeSelection" Type="RadioButtonGroup" X="25" Y="98" Width="320" Height="66"
                  Property="COMPUTE_MODE">
           <RadioButtonGroup Property="COMPUTE_MODE">
             <RadioButton Value="auto" X="0" Y="0" Width="320" Height="17" Text="Auto (recommended)" />
@@ -97,7 +114,7 @@
             <RadioButton Value="cpu" X="0" Y="44" Width="320" Height="17" Text="CPU" />
           </RadioButtonGroup>
         </Control>
-        <Control Id="UnavailableWarning" Type="Text" X="25" Y="158" Width="320" Height="38" NoPrefix="yes"
+        <Control Id="UnavailableWarning" Type="Text" X="25" Y="172" Width="320" Height="38" NoPrefix="yes"
                  ShowCondition="CUDA_READY&lt;&gt;&quot;1&quot;"
                  HideCondition="CUDA_READY=&quot;1&quot;"
                   Text="GPU requires NVIDIA SM 7.5+ and CUDA Driver API 12.9+. Choose Auto or CPU when GPU is unavailable; this installer never changes drivers." />
@@ -115,10 +132,15 @@
       <?endif?>
     </UI>
 
-    <Feature Id="MainFeature" Title="Cuajone PPE Monitor" Level="1">
+    <Feature Id="MainFeature" Title="NexoAI Vision" Level="1">
       <ComponentGroupRef Id="PayloadComponents" />
       <ComponentGroupRef Id="RuntimeDataDirectories" />
     </Feature>
+    <?if $(var.HasCudaPayload)=1 ?>
+    <Feature Id="CudaRuntimeFeature" Title="NVIDIA CUDA acceleration" Description="ONNX Runtime CUDA provider, installed only after a compatible NVIDIA CUDA probe succeeds." Level="1">
+      <ComponentGroupRef Id="CudaPayloadComponents" />
+    </Feature>
+    <?endif?>
     <?if $(var.HasModels)=1 ?>
     <Feature Id="ModelsFeature" Title="AI Models (ONNX)" Description="Bundled ONNX models for PPE and pose detection. Uncheck to skip; the launcher can browse to external files." Level="1">
       <ComponentGroupRef Id="ModelComponents" />
@@ -128,11 +150,11 @@
 
   <Fragment>
     <StandardDirectory Id="ProgramFiles64Folder">
-      <Directory Id="INSTALLFOLDER" Name="Cuajone PPE Monitor" />
+      <Directory Id="INSTALLFOLDER" Name="NexoAI Vision" />
     </StandardDirectory>
 
     <StandardDirectory Id="CommonAppDataFolder">
-      <Directory Id="APPLICATIONDATAFOLDER" Name="Cuajone PPE Monitor">
+      <Directory Id="APPLICATIONDATAFOLDER" Name="NexoAI Vision">
         <Directory Id="RUNTIMEFOLDER" Name="runtime">
           <Directory Id="MODELSFOLDER" Name="models" />
           <Directory Id="CONFIGFOLDER" Name="config" />
@@ -143,7 +165,7 @@
     </StandardDirectory>
 
     <StandardDirectory Id="ProgramMenuFolder">
-      <Directory Id="ProgramMenuAppFolder" Name="Cuajone PPE Monitor" />
+      <Directory Id="ProgramMenuAppFolder" Name="NexoAI Vision" />
     </StandardDirectory>
   </Fragment>
 
@@ -179,7 +201,7 @@
       </Component>
       <Component Id="RuntimeComputeMode" Directory="INSTALLFOLDER" Guid="599B1C29-1D13-46EF-B458-1F778E61A813">
         <RegistryValue Root="HKLM"
-                       Key="SOFTWARE\Cuajone PPE Monitor"
+                      Key="SOFTWARE\NexoAI Vision"
                        Name="ComputeMode"
                        Type="string"
                        Value="[COMPUTE_MODE]"

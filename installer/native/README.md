@@ -29,7 +29,7 @@ modelos/engines, JSONL o recibos de paridad. El binding y `cuajone_qa` son solo 
 desarrollo/QA.
 
 El instalador no fija el producto a una cámara. La configuración ocurre después y
-los datos mutables permanecen bajo `C:\ProgramData\Cuajone PPE Monitor`, separados
+los datos mutables permanecen bajo `C:\ProgramData\NexoAI Vision`, separados
 de los binarios instalados. El piloto actual tiene alcance limitado; no se afirma
 soporte runtime para varias cámaras.
 
@@ -69,7 +69,7 @@ Installer.
 
 ```powershell
 .\installer\native\Install-Pilot.ps1 `
-  -MsiPath "D:\Paquete\CuajonePPEMonitor-0.1.0-internal.3-x64-Internal.msi" `
+  -MsiPath "D:\Paquete\NexoAIVision-0.1.0-internal.3-x64-Internal.msi" `
   -RootCertificatePath "D:\Paquete\Cuajone-PPE-Monitor-Internal-Pilot-Root-CA-2026.cer" `
   -LeafCertificatePath "D:\Paquete\Cuajone-PPE-Monitor-Internal-Pilot-Code-Signing-2026.cer" `
   -ExpectedMsiSha256 "<SHA256_MSI>" `
@@ -77,7 +77,7 @@ Installer.
   -ExpectedLeafCertificateSha256 "<SHA256_CER_HOJA>" `
   -ExpectedRootThumbprint "<HUELLA_SHA1_RAIZ>" `
   -ExpectedLeafThumbprint "<HUELLA_SHA1_HOJA>" `
-  -InstallFolder "D:\Apps\Cuajone PPE Monitor" `
+  -InstallFolder "D:\Apps\NexoAI Vision" `
   -ComputeMode auto `
   -LogPath "D:\Logs\cuajone-install.log" `
   -AuthorizeTrustEnrollment
@@ -95,23 +95,29 @@ Después de que TI verifique y prepare el equipo, abre el MSI. La interfaz inclu
 **Browse** para elegir el destino. El valor predeterminado es:
 
 ```text
-C:\Program Files\Cuajone PPE Monitor
+C:\Program Files\NexoAI Vision
 ```
 
 `INSTALLFOLDER` controla los binarios y archivos inmutables. Los datos operativos
 se mantienen en estas carpetas, aunque se elija otro destino:
 
 ```text
-C:\ProgramData\Cuajone PPE Monitor\runtime\models
-C:\ProgramData\Cuajone PPE Monitor\runtime\config
-C:\ProgramData\Cuajone PPE Monitor\runtime\output
-C:\ProgramData\Cuajone PPE Monitor\runtime\logs
+C:\ProgramData\NexoAI Vision\runtime\models
+C:\ProgramData\NexoAI Vision\runtime\config
+C:\ProgramData\NexoAI Vision\runtime\output
+C:\ProgramData\NexoAI Vision\runtime\logs
 ```
 
 Los usuarios estándar reciben permisos de modificación solo en esas cuatro
 carpetas. Los binarios conservan los permisos endurecidos heredados de
-`Program Files`. La instalación crea el acceso principal **Cuajone PPE Monitor**
+`Program Files`. La instalación crea el acceso principal **NexoAI Vision**
 para el iniciador y conserva **Command Help** y **README** en el menú Inicio.
+
+Al actualizar desde Cuajone PPE Monitor, el MSI no mueve ni elimina
+`C:\ProgramData\Cuajone PPE Monitor`. NexoAI Vision escribe los datos nuevos en su
+propia carpeta y el iniciador conserva lectura de modelos desde la ruta heredada.
+El valor `ComputeMode` se busca primero en `HKLM\SOFTWARE\NexoAI Vision` y después
+en la clave heredada; una instalación nueva escribe solo la clave NexoAI Vision.
 
 La pantalla de cómputo ofrece Auto, GPU (CUDA) y CPU. GPU se marca como no disponible si DXGI y
 la API del driver CUDA 12.9 (`12090`) no están listos o ningún dispositivo alcanza
@@ -129,11 +135,11 @@ Cuando la confianza ya fue preparada y el MSI fue verificado mediante el proceso
 aprobado, `INSTALLFOLDER` puede dirigirse a otra ruta:
 
 ```powershell
-$msi = "D:\Paquetes\CuajonePPEMonitor-0.1.0-internal.3-x64-Internal.msi"
+$msi = "D:\Paquetes\NexoAIVision-0.1.0-internal.3-x64-Internal.msi"
 $log = "D:\Logs\cuajone-install.log"
 
 msiexec.exe /i $msi /qn /norestart `
-  INSTALLFOLDER="D:\Apps\Cuajone PPE Monitor" `
+  INSTALLFOLDER="D:\Apps\NexoAI Vision" `
   COMPUTE_MODE=auto `
   /L*V $log
 ```
@@ -143,9 +149,9 @@ falla, entrega el archivo indicado por `/L*V` al equipo responsable.
 
 ## 5. Comprobar sin cámara
 
-Desde el menú Inicio, abre **Cuajone PPE Monitor**. La prueba operativa es correcta
+Desde el menú Inicio, abre **NexoAI Vision**. La prueba operativa es correcta
 si aparece el formulario; ciérralo sin completar una fuente ni seleccionar
-modelos. El acceso **Cuajone PPE Monitor - Command Help** se conserva para soporte
+modelos. El acceso **NexoAI Vision - Command Help** se conserva para soporte
 avanzado y ejecuta únicamente `--help`.
 
 No uses `--preflight` como comprobación básica, porque selecciona CUDA y puede
@@ -158,7 +164,7 @@ deserializar engines.
 Usa el mismo MSI aprobado y conserva un registro:
 
 ```powershell
-msiexec.exe /fa "D:\Paquetes\CuajonePPEMonitor.msi" /qn /L*V "D:\Logs\repair.log"
+msiexec.exe /fa "D:\Paquetes\NexoAIVision.msi" /qn /L*V "D:\Logs\repair.log"
 ```
 
 ### Actualizar
@@ -172,7 +178,7 @@ verificación y registro. Un downgrade directo se bloquea.
 Puede usarse Aplicaciones instaladas o este comando:
 
 ```powershell
-msiexec.exe /x "D:\Paquetes\CuajonePPEMonitor.msi" /qn /L*V "D:\Logs\uninstall.log"
+msiexec.exe /x "D:\Paquetes\NexoAIVision.msi" /qn /L*V "D:\Logs\uninstall.log"
 ```
 
 ### Volver a una versión anterior

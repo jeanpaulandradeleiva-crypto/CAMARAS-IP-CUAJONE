@@ -13,6 +13,7 @@ param(
 
     [switch]$AllowUnsignedPreview,
     [switch]$SkipModelBundle,
+    [switch]$RefreshModelExport,
 
     [string]$ToolRoot,
     [string]$WixToolRoot,
@@ -35,6 +36,7 @@ param(
     [string]$PoseModelPath = $env:CUAJONE_POSE_MODEL_PATH,
     [string]$PpeEnginePath = $env:CUAJONE_PPE_ENGINE_PATH,
     [string]$PoseEnginePath = $env:CUAJONE_POSE_ENGINE_PATH,
+    [string]$OnnxRuntimeGpuRoot = $env:CUAJONE_ONNXRUNTIME_GPU_ROOT,
     [string]$ParityReceiptPath = $env:CUAJONE_PARITY_RECEIPT,
     [string]$SignToolPath = $env:CUAJONE_SIGNTOOL_PATH,
     [string]$SignCommand = $env:CUAJONE_SIGN_COMMAND
@@ -230,6 +232,93 @@ print(json.dumps(manifest, separators=(",", ":")))
     }
 }
 
+function Get-StringSha256([string]$Value) {
+    $bytes = [System.Text.Encoding]::UTF8.GetBytes($Value)
+    $sha256 = [System.Security.Cryptography.SHA256]::Create()
+    try {
+        return ([System.BitConverter]::ToString($sha256.ComputeHash($bytes))).Replace("-", "").ToLowerInvariant()
+    } finally {
+        $sha256.Dispose()
+    }
+}
+
+function Get-UltralyticsVersion([string]$PythonPath) {
+    Assert-File $PythonPath "Python executable for ONNX export"
+    $output = @(& $PythonPath -c "import ultralytics; print(ultralytics.__version__)" 2>&1)
+    if ($LASTEXITCODE -ne 0 -or $output.Count -ne 1 -or [string]::IsNullOrWhiteSpace($output[0])) {
+        throw "Could not determine the Ultralytics version for ONNX export`n$($output -join [Environment]::NewLine)"
+    }
+    return $output[0].Trim()
+}
+
+function Get-OrExportOnnxModel(
+    [string]$PythonPath,
+    [string]$SourceModel,
+    [string]$CacheRoot,
+    [ValidateSet("ppe", "pose")]
+    [string]$Role,
+    [string]$Task,
+    [switch]$Refresh
+) {
+    Assert-File $SourceModel "Source model"
+    Ensure-Directory $CacheRoot
+    $sourceSha256 = (Get-FileHash -Algorithm SHA256 -LiteralPath $SourceModel).Hash.ToLowerInvariant()
+    $exporterVersion = Get-UltralyticsVersion $PythonPath
+    $recipe = "role=$Role;task=$Task;imgsz=640;source_sha256=$sourceSha256;ultralytics=$exporterVersion"
+    $cacheDirectory = Join-Path $CacheRoot (Get-StringSha256 $recipe)
+    $onnxPath = Join-Path $cacheDirectory "$Role.onnx"
+    $manifestPath = "$onnxPath.manifest.json"
+    $receiptPath = Join-Path $cacheDirectory "export-receipt.json"
+    $cacheHit = $false
+
+    if (-not $Refresh -and (Test-Path -LiteralPath $onnxPath -PathType Leaf) -and (Test-Path -LiteralPath $manifestPath -PathType Leaf) -and (Test-Path -LiteralPath $receiptPath -PathType Leaf)) {
+        try {
+            $receipt = Get-Content -LiteralPath $receiptPath -Raw | ConvertFrom-Json
+            $onnxSha256 = (Get-FileHash -Algorithm SHA256 -LiteralPath $onnxPath).Hash.ToLowerInvariant()
+            $manifestSha256 = (Get-FileHash -Algorithm SHA256 -LiteralPath $manifestPath).Hash.ToLowerInvariant()
+            $cacheHit = $receipt.recipe -ceq $recipe `
+                -and $receipt.source_sha256 -ceq $sourceSha256 `
+                -and $receipt.onnx_sha256 -ceq $onnxSha256 `
+                -and $receipt.manifest_sha256 -ceq $manifestSha256
+        } catch {
+            $cacheHit = $false
+        }
+    }
+
+    if (-not $cacheHit) {
+        Reset-Directory $cacheDirectory
+        $exported = Export-OnnxModel $PythonPath $SourceModel $onnxPath $Task
+        $manifest = Write-OnnxManifest $PythonPath $exported.onnx $Role $SourceModel
+        $receipt = [ordered]@{
+            recipe = $recipe
+            source_sha256 = $exported.sourceSha256
+            onnx_sha256 = $exported.onnxSha256
+            manifest_sha256 = $manifest.sha256
+        }
+        $temporaryReceipt = "$receiptPath.tmp"
+        $receipt | ConvertTo-Json -Compress | Set-Content -LiteralPath $temporaryReceipt -Encoding utf8 -NoNewline
+        Move-Item -LiteralPath $temporaryReceipt -Destination $receiptPath -Force
+    } else {
+        $exported = [pscustomobject]@{
+            source = (Resolve-Path -LiteralPath $SourceModel).Path
+            sourceSha256 = $sourceSha256
+            task = $Task
+            onnx = $onnxPath
+            onnxSha256 = (Get-FileHash -Algorithm SHA256 -LiteralPath $onnxPath).Hash.ToLowerInvariant()
+        }
+        $manifest = [pscustomobject]@{
+            path = $manifestPath
+            sha256 = (Get-FileHash -Algorithm SHA256 -LiteralPath $manifestPath).Hash.ToLowerInvariant()
+        }
+    }
+
+    return [pscustomobject]@{
+        exported = $exported
+        manifest = $manifest
+        cacheHit = $cacheHit
+    }
+}
+
 function Ensure-Directory([string]$Path) {
     Assert-ToolRootPath $Path "Generated directory"
     if (Test-Path -LiteralPath $Path) {
@@ -245,6 +334,44 @@ function Reset-Directory([string]$Path) {
         Remove-Item -LiteralPath $Path -Recurse -Force
     }
     New-Item -ItemType Directory -Path $Path -Force | Out-Null
+}
+
+function Ensure-OnnxRuntimeCudaPackage([string]$TargetRoot) {
+    $provider = Join-Path $TargetRoot "lib\onnxruntime_providers_cuda.dll"
+    if (Test-Path -LiteralPath $provider -PathType Leaf) {
+        return
+    }
+    $archive = Join-Path $ToolRoot "downloads\onnxruntime-win-x64-gpu-1.25.0.zip"
+    Ensure-Directory (Split-Path -Parent $archive)
+    if (-not (Test-Path -LiteralPath $archive -PathType Leaf)) {
+        Invoke-WebRequest -Uri "https://github.com/microsoft/onnxruntime/releases/download/v1.25.0/onnxruntime-win-x64-gpu-1.25.0.zip" -OutFile $archive
+    }
+    $hash = (Get-FileHash -Algorithm SHA256 -LiteralPath $archive).Hash.ToLowerInvariant()
+    if ($hash -cne "125c9fe408f41b9ae1ad7138dac5ebb19a85e65438d1e368d21b50e6abb32f4e") {
+        throw "ONNX Runtime CUDA archive hash does not match the approved 1.25.0 asset"
+    }
+    $parent = Split-Path -Parent $TargetRoot
+    Expand-Archive -LiteralPath $archive -DestinationPath $parent -Force
+    Assert-File $provider "Extracted ONNX Runtime CUDA provider"
+}
+
+function Expand-VerifiedNvidiaWheel(
+    [string]$Archive,
+    [string]$ExpectedSha256,
+    [string]$TargetRoot,
+    [string]$RequiredDll,
+    [string]$Description) {
+    Assert-File $Archive $Description
+    $actualSha256 = (Get-FileHash -Algorithm SHA256 -LiteralPath $Archive).Hash.ToLowerInvariant()
+    if ($actualSha256 -cne $ExpectedSha256) {
+        throw "$Description hash does not match the approved package"
+    }
+    $marker = Join-Path $TargetRoot $RequiredDll
+    if (-not (Test-Path -LiteralPath $marker -PathType Leaf)) {
+        Reset-Directory $TargetRoot
+        Expand-Archive -LiteralPath $Archive -DestinationPath $TargetRoot -Force
+    }
+    Assert-File $marker "$Description required DLL"
 }
 
 function Get-PeDependencies([string]$Path, [string]$Dumpbin) {
@@ -301,7 +428,10 @@ function Write-PayloadSource {
         [string]$OutputPath,
         [string]$ComponentGroupName = "PayloadComponents",
         [string]$IncludePrefix = $null,
-        [string]$ExcludePrefix = $null
+        [string]$ExcludePrefix = $null,
+        [string[]]$IncludeRelativePaths = @(),
+        [string[]]$ExcludeRelativePaths = @(),
+        [string]$ComponentCondition = $null
     )
     $lines = [System.Collections.Generic.List[string]]::new()
     $lines.Add('<!-- Generated by build-installer.ps1. Do not commit. -->')
@@ -317,13 +447,19 @@ function Write-PayloadSource {
         if ($ExcludePrefix -and $relative.StartsWith($ExcludePrefix, [StringComparison]::OrdinalIgnoreCase)) {
             continue
         }
+        if ($IncludeRelativePaths.Count -gt 0 -and $relative -notin $IncludeRelativePaths) {
+            continue
+        }
+        if ($relative -in $ExcludeRelativePaths) {
+            continue
+        }
         $hex = Get-StableHex $relative
         $componentId = "Component_$($hex.Substring(0, 24))"
         $fileId = switch -CaseSensitive ($relative) {
             'bin\cuajone_launcher.exe' { 'LauncherExecutable'; break }
             'bin\cuajone_native.exe' { 'RuntimeExecutable'; break }
             'docs\README.md' { 'DeploymentReadme'; break }
-            'CuajonePPEMonitor.ico' { 'InstalledProductIcon'; break }
+            'NexoAIVision.ico' { 'InstalledProductIcon'; break }
             default { "File_$($hex.Substring(0, 24))" }
         }
         $subdirectory = Split-Path -Parent $relative
@@ -334,19 +470,24 @@ function Write-PayloadSource {
         }
         $source = ConvertTo-XmlValue $file.FullName
         $guid = Get-DeterministicComponentGuid $relative
-        $lines.Add("      <Component Id=`"$componentId`" Guid=`"$guid`"$subdirectoryAttribute>")
+        $conditionAttribute = if ([string]::IsNullOrWhiteSpace($ComponentCondition)) {
+            ""
+        } else {
+            " Condition=`"$(ConvertTo-XmlValue $ComponentCondition)`""
+        }
+        $lines.Add("      <Component Id=`"$componentId`" Guid=`"$guid`"$subdirectoryAttribute$conditionAttribute>")
         if ($fileId -ceq 'LauncherExecutable') {
             $lines.Add("        <File Id=`"$fileId`" Source=`"$source`" KeyPath=`"yes`">")
-            $lines.Add('          <Shortcut Id="LauncherShortcut" Directory="ProgramMenuAppFolder" Name="Cuajone PPE Monitor" Description="Configure and start Cuajone PPE Monitor" WorkingDirectory="INSTALLFOLDER" Advertise="yes" />')
+            $lines.Add('          <Shortcut Id="LauncherShortcut" Directory="ProgramMenuAppFolder" Name="NexoAI Vision" Description="Configure and start NexoAI Vision" WorkingDirectory="INSTALLFOLDER" Advertise="yes" Icon="LauncherIcon.exe" IconIndex="0" />')
             $lines.Add('        </File>')
             $lines.Add('        <RemoveFolder Id="RemoveProgramMenuAppFolder" Directory="ProgramMenuAppFolder" On="uninstall" />')
         } elseif ($fileId -ceq 'RuntimeExecutable') {
             $lines.Add("        <File Id=`"$fileId`" Source=`"$source`" KeyPath=`"yes`">")
-            $lines.Add('          <Shortcut Id="CommandHelpShortcut" Directory="ProgramMenuAppFolder" Name="Cuajone PPE Monitor - Command Help" Description="Open command-line help" Arguments="--help" WorkingDirectory="INSTALLFOLDER" Advertise="yes" />')
+            $lines.Add('          <Shortcut Id="CommandHelpShortcut" Directory="ProgramMenuAppFolder" Name="NexoAI Vision - Command Help" Description="Open command-line help" Arguments="--help" WorkingDirectory="INSTALLFOLDER" Advertise="yes" />')
             $lines.Add('        </File>')
         } elseif ($fileId -ceq 'DeploymentReadme') {
             $lines.Add("        <File Id=`"$fileId`" Source=`"$source`" KeyPath=`"yes`">")
-            $lines.Add('          <Shortcut Id="ReadmeShortcut" Directory="ProgramMenuAppFolder" Name="Cuajone PPE Monitor - README" Description="Open deployment and license documentation" WorkingDirectory="INSTALLFOLDER" Advertise="yes" />')
+            $lines.Add('          <Shortcut Id="ReadmeShortcut" Directory="ProgramMenuAppFolder" Name="NexoAI Vision - README" Description="Open deployment and license documentation" WorkingDirectory="INSTALLFOLDER" Advertise="yes" />')
             $lines.Add('        </File>')
         } else {
             $lines.Add("        <File Id=`"$fileId`" Source=`"$source`" KeyPath=`"yes`" />")
@@ -444,17 +585,47 @@ $dumpbin = Join-Path $ToolRoot "vs\VC\Tools\MSVC\14.44.35207\bin\Hostx64\x64\dum
 $wix = Join-Path $WixToolRoot "wix.exe"
 $openCvBin = Join-Path $ToolRoot "opencv\opencv\build\x64\vc16\bin"
 $cudaBin = Join-Path $ToolRoot "cuda-runtime\nvidia\cuda_runtime\bin"
+$cublasWheel = Join-Path $ToolRoot "downloads\nvidia_cublas_cu12-12.9.2.10-py3-none-win_amd64.whl"
+$cudnnWheel = Join-Path $ToolRoot "downloads\nvidia_cudnn_cu12-9.24.0.43-py3-none-win_amd64.whl"
+$cufftWheel = Join-Path $ToolRoot "downloads\nvidia_cufft_cu12-11.4.1.4-py3-none-win_amd64.whl"
+$cublasRoot = Join-Path $ToolRoot "nvidia-libraries\cublas"
+$cudnnRoot = Join-Path $ToolRoot "nvidia-libraries\cudnn"
+$cufftRoot = Join-Path $ToolRoot "nvidia-libraries\cufft"
+$cublasBin = Join-Path $cublasRoot "nvidia\cublas\bin"
+$cudnnBin = Join-Path $cudnnRoot "nvidia\cudnn\bin"
+$cufftBin = Join-Path $cufftRoot "nvidia\cufft\bin"
 $tensorRtRoot = Join-Path $ToolRoot "tensorrt\TensorRT-11.1.0.106"
 $tensorRtBin = Join-Path $tensorRtRoot "bin"
 $onnxRuntimeRoot = Join-Path $ToolRoot "onnxruntime-win-x64-1.25.0"
+$onnxRuntimeGpuDefaultRoot = Join-Path $ToolRoot "onnxruntime-win-x64-gpu-1.25.0"
+if ([string]::IsNullOrWhiteSpace($OnnxRuntimeGpuRoot)) { $OnnxRuntimeGpuRoot = $onnxRuntimeGpuDefaultRoot }
 $onnxRuntimeBin = Join-Path $onnxRuntimeRoot "lib"
 $msvcCrt = Join-Path $ToolRoot "vs\VC\Redist\MSVC\14.44.35112\x64\Microsoft.VC143.CRT"
-$searchDirectories = @($openCvBin, $cudaBin, $tensorRtBin, $onnxRuntimeBin, $msvcCrt)
+$searchDirectories = @($openCvBin, $cudaBin, $cublasBin, $cudnnBin, $cufftBin, $tensorRtBin, $onnxRuntimeBin, $msvcCrt)
 
 Assert-File $dumpbin "MSVC dumpbin"
 Assert-File $wix "WiX CLI"
+Ensure-OnnxRuntimeCudaPackage $OnnxRuntimeGpuRoot
+Expand-VerifiedNvidiaWheel $cublasWheel "623f43027d40d44ceadf0043f002bd25cf353e8f13ce90b9a87057019f560661" $cublasRoot "nvidia\cublas\bin\cublasLt64_12.dll" "NVIDIA cuBLAS Windows wheel"
+Expand-VerifiedNvidiaWheel $cudnnWheel "cbd41a0ab084422c936dc9fb2fc89be5ea9a85bc421c6f23d0243bdfc945fbef" $cudnnRoot "nvidia\cudnn\bin\cudnn64_9.dll" "NVIDIA cuDNN Windows wheel"
+Expand-VerifiedNvidiaWheel $cufftWheel "8e5bfaac795e93f80611f807d42844e8e27e340e0cde270dcb6c65386d795b80" $cufftRoot "nvidia\cufft\bin\cufft64_11.dll" "NVIDIA cuFFT Windows wheel"
+Assert-File (Join-Path $OnnxRuntimeGpuRoot "lib\onnxruntime_providers_cuda.dll") "ONNX Runtime CUDA provider"
 foreach ($directory in $searchDirectories) {
     Assert-Directory $directory "Runtime dependency directory"
+}
+$cudaProvider = Join-Path $OnnxRuntimeGpuRoot "lib\onnxruntime_providers_cuda.dll"
+$cudaProviderMissingDependencies = foreach ($dependency in Get-PeDependencies $cudaProvider $dumpbin) {
+    if (Find-Dependency $dependency $searchDirectories) {
+        continue
+    }
+    $systemPath = Join-Path ([Environment]::SystemDirectory) $dependency
+    if ($dependency -match '^(api-ms-|ext-ms-)' -or (Test-Path -LiteralPath $systemPath -PathType Leaf)) {
+        continue
+    }
+    $dependency
+}
+if ($cudaProviderMissingDependencies) {
+    throw "ONNX Runtime CUDA provider has unresolved dependencies: $($cudaProviderMissingDependencies -join ', ')"
 }
 
 $tempRoot = Join-Path $ToolRoot "temp\wix"
@@ -488,7 +659,7 @@ foreach ($extension in @("WixToolset.UI.wixext $WixVersion", "WixToolset.Util.wi
 
 $nativeRoot = Join-Path $projectRoot "native"
 $cmakeLists = Join-Path $nativeRoot "CMakeLists.txt"
-$allCpp = @(Get-ChildItem -LiteralPath (Join-Path $nativeRoot "src") -File -Filter "*.cpp").FullName
+$allCpp = @(Get-ChildItem -LiteralPath (Join-Path $nativeRoot "src") -Recurse -File -Filter "*.cpp").FullName
 $allHeaders = @(Get-ChildItem -LiteralPath (Join-Path $nativeRoot "include") -Recurse -File -Include "*.hpp", "*.h").FullName
 $launcherNames = @("launcher.cpp", "launcher_support.cpp", "launcher_support.hpp")
 $probeNames = @("compute.cpp", "installer_custom_action.cpp", "compute.hpp")
@@ -701,6 +872,26 @@ while ($queue.Count -gt 0) {
     }
 }
 
+$cudaPayloadRelativePaths = [System.Collections.Generic.List[string]]::new()
+$onnxRuntimeGpuBin = Join-Path $OnnxRuntimeGpuRoot "lib"
+foreach ($cudaLibrary in @(
+        [pscustomobject]@{ directory = $onnxRuntimeGpuBin; source = "ONNX Runtime CUDA provider dependency" },
+        [pscustomobject]@{ directory = $cublasBin; source = "NVIDIA cuBLAS runtime dependency" },
+        [pscustomobject]@{ directory = $cudnnBin; source = "NVIDIA cuDNN runtime dependency" },
+        [pscustomobject]@{ directory = $cufftBin; source = "NVIDIA cuFFT runtime dependency" }
+    )) {
+    foreach ($file in Get-ChildItem -LiteralPath $cudaLibrary.directory -File | Sort-Object Name) {
+        if ($file.Extension -ine ".dll" -or $file.Name -in @(
+                "onnxruntime.dll", "onnxruntime_providers_tensorrt.dll"
+            ) -or $resolved.Contains($file.Name) -or $cudaPayloadRelativePaths.Contains("bin\" + $file.Name)) {
+            continue
+        }
+        Copy-StagedInput $file.FullName (Join-Path $stageBin.FullName $file.Name) "tool" $cudaLibrary.source
+        $cudaPayloadRelativePaths.Add(("bin\" + $file.Name))
+    }
+}
+$hasCudaPayload = $cudaPayloadRelativePaths.Count -gt 0
+
 $unexpectedTensorRt = @($resolved.Keys | Where-Object {
     $_ -match '^(nvonnxparser|nvinfer_plugin|nvinfer_builder|nvinfer_vc_plugin)'
 })
@@ -725,6 +916,15 @@ Copy-StagedTree $openCvNoticeDir (Join-Path $stageLicenses.FullName "OpenCV-thir
 $cudaLicense = Join-Path $ToolRoot "cuda-runtime\nvidia_cuda_runtime_cu12-12.9.79.dist-info\licenses\License.txt"
 Assert-File $cudaLicense "CUDA runtime license"
 Copy-StagedInput $cudaLicense (Join-Path $stageLicenses.FullName "NVIDIA-CUDA-License.txt") "tool" "CUDA runtime license"
+$cublasLicense = Join-Path $cublasRoot "nvidia_cublas_cu12-12.9.2.10.dist-info\licenses\License.txt"
+$cudnnLicense = Join-Path $cudnnRoot "nvidia_cudnn_cu12-9.24.0.43.dist-info\licenses\License.txt"
+$cufftLicense = Join-Path $cufftRoot "nvidia_cufft_cu12-11.4.1.4.dist-info\licenses\License.txt"
+Assert-File $cublasLicense "NVIDIA cuBLAS license"
+Assert-File $cudnnLicense "NVIDIA cuDNN license"
+Assert-File $cufftLicense "NVIDIA cuFFT license"
+Copy-StagedInput $cublasLicense (Join-Path $stageLicenses.FullName "NVIDIA-cuBLAS-License.txt") "tool" "NVIDIA cuBLAS license"
+Copy-StagedInput $cudnnLicense (Join-Path $stageLicenses.FullName "NVIDIA-cuDNN-License.txt") "tool" "NVIDIA cuDNN license"
+Copy-StagedInput $cufftLicense (Join-Path $stageLicenses.FullName "NVIDIA-cuFFT-License.txt") "tool" "NVIDIA cuFFT license"
 Copy-StagedInput (Join-Path $tensorRtRoot "doc\README.txt") (Join-Path $stageLicenses.FullName "NVIDIA-TensorRT-README.txt") "tool" "TensorRT redistribution and license reference"
 Copy-StagedInput (Join-Path $onnxRuntimeRoot "LICENSE") (Join-Path $stageLicenses.FullName "ONNX-Runtime-LICENSE.txt") "tool" "ONNX Runtime MIT license"
 Copy-StagedInput (Join-Path $onnxRuntimeRoot "ThirdPartyNotices.txt") (Join-Path $stageLicenses.FullName "ONNX-Runtime-ThirdPartyNotices.txt") "tool" "ONNX Runtime third-party notices"
@@ -757,7 +957,7 @@ if ($PpeEnginePath -or $PoseEnginePath) {
     $hasModels = $true
     $modelBundleSource = "pre-built"
     @"
-Cuajone PPE Monitor model bundle
+NexoAI Vision model bundle
 
 Build mode: $BuildMode
 Bundle source: Pre-built external engines
@@ -781,15 +981,15 @@ Pose engine SHA-256: $poseEngineSha256
         "yolo26s-pose.pt",
         "yolo26n-pose.pt"
     ) "Bundled pose source model"
-    $exportRoot = Join-Path $ToolRoot "installer\model-export\$Version"
-    Reset-Directory $exportRoot
-
-    Write-Host "Step 1/2: Exporting PPE .pt -> .onnx..."
-    $ppeOnnxResult = Export-OnnxModel $pythonExecutable $ppeModelSource (Join-Path $exportRoot "ppe\ppe.onnx") "detect"
-    $ppeManifest = Write-OnnxManifest $pythonExecutable $ppeOnnxResult.onnx "ppe" $ppeModelSource
-    Write-Host "Step 2/2: Exporting pose .pt -> .onnx..."
-    $poseOnnxResult = Export-OnnxModel $pythonExecutable $poseModelSource (Join-Path $exportRoot "pose\pose.onnx") "pose"
-    $poseManifest = Write-OnnxManifest $pythonExecutable $poseOnnxResult.onnx "pose" $poseModelSource
+    $exportRoot = Join-Path $ToolRoot "installer\model-export\cache"
+    $ppeExport = Get-OrExportOnnxModel $pythonExecutable $ppeModelSource $exportRoot "ppe" "detect" -Refresh:$RefreshModelExport
+    $ppeOnnxResult = $ppeExport.exported
+    $ppeManifest = $ppeExport.manifest
+    $poseExport = Get-OrExportOnnxModel $pythonExecutable $poseModelSource $exportRoot "pose" "pose" -Refresh:$RefreshModelExport
+    $poseOnnxResult = $poseExport.exported
+    $poseManifest = $poseExport.manifest
+    Write-Host "PPE ONNX: $(if ($ppeExport.cacheHit) { 'verified cache hit' } else { 'exported' })"
+    Write-Host "Pose ONNX: $(if ($poseExport.cacheHit) { 'verified cache hit' } else { 'exported' })"
 
     $null = New-Item -ItemType Directory -Path (Join-Path $StageDir "bin\models") -Force
     Copy-StagedInput $ppeOnnxResult.onnx (Join-Path $StageDir "bin\models\ppe.onnx") "tool" "Auto-exported PPE ONNX model"
@@ -797,13 +997,13 @@ Pose engine SHA-256: $poseEngineSha256
     Copy-StagedInput $poseOnnxResult.onnx (Join-Path $StageDir "bin\models\pose.onnx") "tool" "Auto-exported pose ONNX model"
     Copy-StagedInput $poseManifest.path (Join-Path $StageDir "bin\models\pose.onnx.manifest.json") "tool" "Pose ONNX model manifest"
     $hasModels = $true
-    $modelBundleSource = "auto-exported-onnx"
+    $modelBundleSource = "content-addressed-onnx"
 
     @"
-Cuajone PPE Monitor model bundle
+NexoAI Vision model bundle
 
 Build mode: $BuildMode
-Bundle source: Auto-exported from .pt via Ultralytics ONNX export
+Bundle source: Content-addressed ONNX export cache (re-exported only when source or recipe changes)
 Bundle included: yes
 
 PPE source model: $($ppeOnnxResult.source)
@@ -820,7 +1020,7 @@ Pose ONNX manifest SHA-256: $($poseManifest.sha256)
 "@ | Set-Content -LiteralPath (Join-Path $stageDocs.FullName "MODEL-BUNDLE.txt") -Encoding UTF8
 } else {
     @"
-Cuajone PPE Monitor model bundle
+NexoAI Vision model bundle
 
 Build mode: $BuildMode
 Bundle included: no
@@ -832,7 +1032,7 @@ supplied model files before starting the runtime.
 }
 
 @"
-Cuajone PPE Monitor source offer and release correspondence
+NexoAI Vision source offer and release correspondence
 
 Application version: $Version
 Numeric file version: $FileVersion
@@ -894,7 +1094,7 @@ $sbom = [ordered]@{
     spdxVersion = "SPDX-2.3"
     dataLicense = "CC0-1.0"
     SPDXID = "SPDXRef-DOCUMENT"
-    name = "Cuajone-PPE-Monitor-$Version-x64"
+    name = "NexoAI-Vision-$Version-x64"
     documentNamespace = "https://github.com/jeanpaulandradeleiva-crypto/CAMARAS-IP-CUAJONE/sbom/$Version/$([Guid]::NewGuid())"
     creationInfo = [ordered]@{
         created = [DateTime]::UtcNow.ToString("yyyy-MM-ddTHH:mm:ssZ")
@@ -904,7 +1104,7 @@ $sbom = [ordered]@{
 }
 $sbom | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath (Join-Path $stageDocs.FullName "sbom.spdx.json") -Encoding UTF8
 
-$iconPath = Join-Path $StageDir "CuajonePPEMonitor.ico"
+$iconPath = Join-Path $StageDir "NexoAIVision.ico"
 & $iconGenerator -OutputPath $iconPath
 if ($LASTEXITCODE -ne 0) {
     throw "Icon generation failed"
@@ -912,7 +1112,7 @@ if ($LASTEXITCODE -ne 0) {
 Assert-File $iconPath "Generated application icon"
 
 $metadata = [ordered]@{
-    product = "Cuajone PPE Monitor"
+    product = "NexoAI Vision"
     appVersion = $Version
     fileVersion = $FileVersion
     msiVersion = $msiVersion
@@ -949,8 +1149,8 @@ $metadata = [ordered]@{
     dumpbin = $dumpbin
     wixToolset = $wixReportedVersion
     upgradeCode = $upgradeCode
-    installFolderDefault = "C:\Program Files\Cuajone PPE Monitor"
-    dataFolder = "C:\ProgramData\Cuajone PPE Monitor\runtime"
+    installFolderDefault = "C:\Program Files\NexoAI Vision"
+    dataFolder = "C:\ProgramData\NexoAI Vision\runtime"
     licenseStatus = "Original project source is AGPL-3.0-only; third-party artifacts, models, and datasets retain separate upstream terms"
     releaseStatus = if ($BuildMode -eq "Release") {
         "Open-source release with exact source archives and trusted Authenticode required"
@@ -1044,7 +1244,7 @@ $metadata = [ordered]@{
     sourceRoots = $sourceRoots
     sourceProvenance = @($stagedSources)
     generatedStagePaths = @(
-        "CuajonePPEMonitor.ico"
+        "NexoAIVision.ico"
         "build-metadata.json"
         "docs/SOURCE-OFFER.txt"
         "docs/MODEL-BUNDLE.txt"
@@ -1085,24 +1285,31 @@ $licenseRtf = Join-Path $WixBuildDir "AGPL-3.0.rtf"
     Set-Content -LiteralPath $licenseRtf -Encoding ASCII
 
 $payloadSource = Join-Path $WixBuildDir "Payload.wxs"
-Write-PayloadSource $StageDir $payloadSource -ComponentGroupName "PayloadComponents" -ExcludePrefix "bin\models\"
+Write-PayloadSource $StageDir $payloadSource -ComponentGroupName "PayloadComponents" -ExcludePrefix "bin\models\" -ExcludeRelativePaths $cudaPayloadRelativePaths
 Assert-File $payloadSource "Generated WiX payload source"
 if ($hasModels) {
     $modelsPayloadSource = Join-Path $WixBuildDir "Models.wxs"
     Write-PayloadSource $StageDir $modelsPayloadSource -ComponentGroupName "ModelComponents" -IncludePrefix "bin\models\"
     Assert-File $modelsPayloadSource "Generated WiX model source"
 }
+$cudaPayloadSource = $null
+if ($hasCudaPayload) {
+    $cudaPayloadSource = Join-Path $WixBuildDir "CudaPayload.wxs"
+    Write-PayloadSource $StageDir $cudaPayloadSource -ComponentGroupName "CudaPayloadComponents" -IncludeRelativePaths $cudaPayloadRelativePaths -ComponentCondition 'CUDA_READY="1"'
+}
 
 $outputBaseFilename = if ($BuildMode -eq "Preview") {
-    "CuajonePPEMonitor-$Version-x64-Internal"
+    "NexoAIVision-$Version-x64-Internal"
 } else {
-    "CuajonePPEMonitor-$Version-x64"
+    "NexoAIVision-$Version-x64"
 }
 $installerPath = Join-Path $OutputDir "$outputBaseFilename.msi"
 $wixPdb = Join-Path $WixBuildDir "$outputBaseFilename.wixpdb"
 $wixIntermediate = Join-Path $WixBuildDir "obj"
 Ensure-Directory $wixIntermediate
 $existingCandidates = @(Get-ChildItem -LiteralPath $OutputDir -File | Where-Object {
+    $_.Name -like 'NexoAIVision-*-x64*.msi' -or
+    $_.Name -like 'NexoAIVision-*-x64*.msi.sha256' -or
     $_.Name -like 'CuajonePPEMonitor-*-x64*.msi' -or
     $_.Name -like 'CuajonePPEMonitor-*-x64*.msi.sha256'
 })
@@ -1122,10 +1329,12 @@ $arpComments = if ($BuildMode -eq "Preview") {
 }
 $wixSourceFiles = @($packageSource, $payloadSource)
 if ($hasModels) { $wixSourceFiles += $modelsPayloadSource }
+if ($hasCudaPayload) { $wixSourceFiles += $cudaPayloadSource }
 $wixArguments = @("build") + $wixSourceFiles + @(
     "-arch", "x64",
     "-d", "StageDir=$StageDir",
     "-d", "HasModels=$(if ($hasModels) { '1' } else { '0' })",
+    "-d", "HasCudaPayload=$(if ($hasCudaPayload) { '1' } else { '0' })",
     "-d", "AppVersion=$Version",
     "-d", "MsiVersion=$msiVersion",
     "-d", "ArpComments=$arpComments",
@@ -1163,6 +1372,8 @@ $installerHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $installerPath).Ha
 $sidecarPath = "$installerPath.sha256"
 "$installerHash  $(Split-Path -Leaf $installerPath)" | Set-Content -LiteralPath $sidecarPath -Encoding ASCII
 $activeCandidates = @(Get-ChildItem -LiteralPath $OutputDir -File | Where-Object {
+    $_.Name -like 'NexoAIVision-*-x64*.msi' -or
+    $_.Name -like 'NexoAIVision-*-x64*.msi.sha256' -or
     $_.Name -like 'CuajonePPEMonitor-*-x64*.msi' -or
     $_.Name -like 'CuajonePPEMonitor-*-x64*.msi.sha256'
 })

@@ -43,13 +43,33 @@ class NativeBackend:
             if not self._module.ENGINE_RUNTIME_AVAILABLE:
                 raise RuntimeError("This cuajone_native build does not include the external engine runtime")
             native_engine = self._module.EngineConfig()
-            native_engine.ppe_engine = str(engine_config["ppe_engine"])
-            native_engine.pose_engine = str(engine_config.get("pose_engine", ""))
+            backend = str(engine_config.get("backend", "cuda")).lower()
+            if backend == "cpu":
+                if not engine_config.get("ppe_onnx"):
+                    raise ValueError("Native CPU engine config requires ppe_onnx")
+                if config.mode == "ppe-fall" and not engine_config.get("pose_onnx"):
+                    raise ValueError("Native CPU ppe-fall config requires pose_onnx")
+                if not engine_config.get("ppe_labels"):
+                    raise ValueError("Native CPU engine config requires ppe_labels")
+                native_engine.backend = self._module.ComputeBackend.CPU
+                native_engine.ppe_onnx = str(engine_config["ppe_onnx"])
+                native_engine.pose_onnx = str(engine_config.get("pose_onnx", ""))
+                native_engine.device = None
+            elif backend == "cuda":
+                if not engine_config.get("ppe_engine"):
+                    raise ValueError("Native CUDA engine config requires ppe_engine")
+                if config.mode == "ppe-fall" and not engine_config.get("pose_engine"):
+                    raise ValueError("Native CUDA ppe-fall config requires pose_engine")
+                native_engine.backend = self._module.ComputeBackend.CUDA
+                native_engine.ppe_engine = str(engine_config["ppe_engine"])
+                native_engine.pose_engine = str(engine_config.get("pose_engine", ""))
+                native_engine.device = int(engine_config.get("device", 0))
+            else:
+                raise ValueError("Native engine backend must be cpu or cuda")
             native_engine.ppe_labels = engine_config.get("ppe_labels")
             native_engine.pose_class_count = int(engine_config.get("pose_class_count", 1))
             native_engine.pose_keypoint_shape = engine_config.get("pose_keypoint_shape", [17, 3])
             native_engine.allow_nonperson_pose_class = bool(engine_config.get("allow_nonperson_pose_class", False))
-            native_engine.device = int(engine_config.get("device", 0))
             native_engine.ppe_confidence = config.values["thresholds"]["ppe_confidence"]
             native_engine.pose_confidence = config.values["thresholds"]["pose_confidence"]
             native_engine.nms_iou = config.values["thresholds"]["nms_iou"]
