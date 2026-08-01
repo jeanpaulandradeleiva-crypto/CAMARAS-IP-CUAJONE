@@ -214,6 +214,16 @@ void testDetectSchemaDecodeAndNms() {
 }
 
 void testPoseSchemaAndDecode() {
+    const OnnxPoseContract contract = validateOnnxPoseContract(1, {17, 3});
+    require(contract.class_count == 1 && contract.keypoint_shape == std::array{17, 3},
+        "ONNX pose contract did not preserve configured decode dimensions");
+    requireThrows([] { validateOnnxPoseContract(2, {17, 3}); },
+        "ONNX pose contract accepted multiple classes");
+    requireThrows([] { validateOnnxPoseContract(1, {17, 2}); },
+        "ONNX pose contract accepted incomplete keypoints");
+    requireThrows([] { validateOnnxPoseContract(1, {0, 3}); },
+        "ONNX pose contract accepted zero keypoints");
+
     const LetterboxTransform transform{640, 640, 640, 640, 1.0F, 1.0F, 0, 0};
     // [1, predictions=1, channels=11]: xywh + one class + 2*(x,y,confidence).
     const std::vector<float> values{

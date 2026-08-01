@@ -301,6 +301,14 @@ if(CUAJONE_BUILD_RUNTIME)
         MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
 
     if(CUAJONE_BUILD_TESTS)
+        add_executable(cuajone_evidence_tests tests/evidence_tests.cpp)
+        target_link_libraries(cuajone_evidence_tests PRIVATE cuajone_runtime)
+        target_compile_options(cuajone_evidence_tests PRIVATE /W4 /permissive- /EHsc)
+        add_test(NAME cuajone_evidence_tests COMMAND cuajone_evidence_tests)
+        set_tests_properties(cuajone_evidence_tests PROPERTIES
+            ENVIRONMENT_MODIFICATION
+                "PATH=path_list_prepend:$<TARGET_FILE_DIR:opencv_core>;PATH=path_list_prepend:${ONNXRUNTIME_ROOT}/lib")
+
         add_executable(cuajone_onnx_tests tests/onnx_tests.cpp)
         target_link_libraries(cuajone_onnx_tests PRIVATE cuajone_runtime)
         target_compile_options(cuajone_onnx_tests PRIVATE /W4 /permissive- /EHsc)
@@ -327,6 +335,22 @@ if(CUAJONE_BUILD_RUNTIME)
     if(CUAJONE_ENABLE_ONNX_CUDA_INTEGRATION_TESTS)
         set(CUAJONE_ONNX_CUDA_RUNTIME_DIR "" CACHE PATH
             "Directory containing the staged ONNX Runtime CUDA provider DLL closure")
+        set(CUAJONE_ONNX_CUDA_PPE_MODEL "" CACHE FILEPATH
+            "Verified PPE ONNX model used by the opt-in CUDA pipeline integration test")
+        set(CUAJONE_ONNX_CUDA_POSE_MODEL "" CACHE FILEPATH
+            "Verified pose ONNX model used by the opt-in CUDA pipeline integration test")
+        foreach(required_file
+                "${CUAJONE_ONNX_CUDA_RUNTIME_DIR}/onnxruntime_providers_cuda.dll"
+                "${CUAJONE_ONNX_CUDA_RUNTIME_DIR}/onnxruntime_providers_shared.dll"
+                "${CUAJONE_ONNX_CUDA_PPE_MODEL}"
+                "${CUAJONE_ONNX_CUDA_PPE_MODEL}.manifest.json"
+                "${CUAJONE_ONNX_CUDA_POSE_MODEL}"
+                "${CUAJONE_ONNX_CUDA_POSE_MODEL}.manifest.json")
+            if(NOT EXISTS "${required_file}")
+                message(FATAL_ERROR
+                    "ONNX CUDA integration prerequisite is missing: ${required_file}")
+            endif()
+        endforeach()
         add_executable(cuajone_onnx_cuda_integration_tests tests/onnx_cuda_integration_tests.cpp)
         target_link_libraries(cuajone_onnx_cuda_integration_tests PRIVATE cuajone_runtime cuajone_onnxruntime)
         target_compile_options(cuajone_onnx_cuda_integration_tests PRIVATE /W4 /permissive- /EHsc)
@@ -340,11 +364,33 @@ if(CUAJONE_BUILD_RUNTIME)
             COMMAND ${CMAKE_COMMAND} -E copy_if_different
                 "${CUAJONE_ONNX_CUDA_RUNTIME_DIR}/onnxruntime_providers_shared.dll"
                 $<TARGET_FILE_DIR:cuajone_onnx_cuda_integration_tests>)
-        add_test(NAME cuajone_onnx_cuda_integration_tests COMMAND cuajone_onnx_cuda_integration_tests)
-        set_tests_properties(cuajone_onnx_cuda_integration_tests PROPERTIES
-            SKIP_RETURN_CODE 77
+        add_test(NAME cuajone_onnx_pose_cpu_standalone_tests
+            COMMAND cuajone_onnx_cuda_integration_tests
+                standalone-pose-cpu "${CUAJONE_ONNX_CUDA_POSE_MODEL}")
+        add_test(NAME cuajone_onnx_cuda_ppe_only_tests
+            COMMAND cuajone_onnx_cuda_integration_tests
+                ppe-only "${CUAJONE_ONNX_CUDA_PPE_MODEL}")
+        add_test(NAME cuajone_onnx_cuda_hybrid_pipeline_tests
+            COMMAND cuajone_onnx_cuda_integration_tests pipeline
+                "${CUAJONE_ONNX_CUDA_PPE_MODEL}" "${CUAJONE_ONNX_CUDA_POSE_MODEL}")
+        set_tests_properties(
+            cuajone_onnx_pose_cpu_standalone_tests
+            cuajone_onnx_cuda_ppe_only_tests
+            cuajone_onnx_cuda_hybrid_pipeline_tests
+            PROPERTIES
             ENVIRONMENT "CUAJONE_ONNX_CUDA_RUNTIME_DIR=${CUAJONE_ONNX_CUDA_RUNTIME_DIR}"
             ENVIRONMENT_MODIFICATION
                 "PATH=path_list_prepend:$<TARGET_FILE_DIR:opencv_core>;PATH=path_list_prepend:${ONNXRUNTIME_ROOT}/lib")
+        set_tests_properties(cuajone_onnx_pose_cpu_standalone_tests PROPERTIES
+            LABELS "onnx;acceptance;pose-cpu;hybrid-rationale-ort-cuda-1.25-gtx1650ti")
+        set_tests_properties(
+            cuajone_onnx_cuda_ppe_only_tests
+            cuajone_onnx_cuda_hybrid_pipeline_tests
+            PROPERTIES
+            SKIP_RETURN_CODE 77)
+        set_tests_properties(cuajone_onnx_cuda_ppe_only_tests PROPERTIES
+            LABELS "gpu;onnx;acceptance;ppe-cuda")
+        set_tests_properties(cuajone_onnx_cuda_hybrid_pipeline_tests PROPERTIES
+            LABELS "gpu;onnx;acceptance;hybrid;ppe-cuda;pose-cpu;known-pose-cuda-access-violation")
     endif()
 endif()

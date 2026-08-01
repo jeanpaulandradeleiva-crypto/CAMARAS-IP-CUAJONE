@@ -21,6 +21,7 @@
 #include <chrono>
 #include <csignal>
 #include <ctime>
+#include <cwchar>
 #include <filesystem>
 #include <iomanip>
 #include <iostream>
@@ -40,6 +41,70 @@ using Clock = std::chrono::steady_clock;
 
 std::atomic_bool stop_requested{};
 constexpr char kLiveAnalyticsWindowTitle[] = "NexoAI Vision — Live Analytics";
+
+#ifdef _WIN32
+constexpr wchar_t kCudaWarmupChildEnvironment[] = L"CUAJONE_INTERNAL_CUDA_WARMUP_CHILD";
+
+class UniqueHandle {
+public:
+    explicit UniqueHandle(HANDLE value = nullptr) noexcept : value_(value) {}
+    ~UniqueHandle() { if (value_ != nullptr) CloseHandle(value_); }
+    UniqueHandle(const UniqueHandle&) = delete;
+    UniqueHandle& operator=(const UniqueHandle&) = delete;
+    [[nodiscard]] HANDLE get() const noexcept { return value_; }
+
+private:
+    HANDLE value_;
+};
+
+bool isCudaWarmupChild() {
+    return GetEnvironmentVariableW(kCudaWarmupChildEnvironment, nullptr, 0) != 0;
+}
+
+void runIsolatedCudaWarmup() {
+    std::vector<wchar_t> executable(32768);
+    const DWORD executable_size = GetModuleFileNameW(
+        nullptr, executable.data(), static_cast<DWORD>(executable.size()));
+    if (executable_size == 0 || executable_size >= executable.size()) {
+        throw std::runtime_error("Could not resolve the runtime executable for CUDA warmup");
+    }
+    executable.resize(executable_size + 1);
+    std::vector<wchar_t> command_line(
+        GetCommandLineW(), GetCommandLineW() + std::wcslen(GetCommandLineW()) + 1);
+
+    if (!SetEnvironmentVariableW(kCudaWarmupChildEnvironment, L"1")) {
+        throw std::runtime_error("Could not configure the isolated CUDA warmup process");
+    }
+    PROCESS_INFORMATION process{};
+    STARTUPINFOW startup{};
+    startup.cb = sizeof(startup);
+    const BOOL created = CreateProcessW(
+        executable.data(), command_line.data(), nullptr, nullptr, FALSE,
+        CREATE_NO_WINDOW, nullptr, nullptr, &startup, &process);
+    const DWORD create_error = created ? ERROR_SUCCESS : GetLastError();
+    SetEnvironmentVariableW(kCudaWarmupChildEnvironment, nullptr);
+    if (!created) {
+        throw std::runtime_error(
+            "Could not start the isolated CUDA warmup process; Windows error "
+            + std::to_string(create_error));
+    }
+    const UniqueHandle process_handle(process.hProcess);
+    const UniqueHandle thread_handle(process.hThread);
+    if (WaitForSingleObject(process_handle.get(), INFINITE) != WAIT_OBJECT_0) {
+        throw std::runtime_error("Could not wait for the isolated CUDA warmup process");
+    }
+    DWORD exit_code{};
+    if (!GetExitCodeProcess(process_handle.get(), &exit_code)) {
+        throw std::runtime_error("Could not read the isolated CUDA warmup exit code");
+    }
+    if (exit_code != 0) {
+        std::ostringstream message;
+        message << "ONNX CUDA warmup failed in an isolated process with exit code 0x"
+                << std::hex << std::uppercase << exit_code;
+        throw std::runtime_error(message.str());
+    }
+}
+#endif
 
 void requestStop(int) {
     stop_requested.store(true, std::memory_order_relaxed);
@@ -116,18 +181,37 @@ std::unique_ptr<NativeEnginePipeline> runBasePreflight(
     const ComputeSelection& selection) {
     validateSourceWithoutOpening(config.source);
     validateWritableOutput(config.output);
+#ifdef _WIN32
+    if (selection.provider == InferenceProvider::OnnxRuntimeCuda && !isCudaWarmupChild()) {
+        runIsolatedCudaWarmup();
+    }
+#endif
     auto pipeline = std::make_unique<NativeEnginePipeline>(enginePipelineConfig(config, selection));
+#ifdef _WIN32
+    if (selection.provider == InferenceProvider::OnnxRuntimeCuda && isCudaWarmupChild()) {
+        cv::Mat frame(480, 640, CV_8UC3, cv::Scalar(32, 64, 96));
+        const ProcessedFrame warmup = pipeline->processFrame(
+            frame, "cuda-preflight", 0, 0, "1970-01-01T00:00:00Z");
+        validateCanonicalMetadata(warmup.canonical);
+        if (warmup.canonical.frame_width != frame.cols
+            || warmup.canonical.frame_height != frame.rows) {
+            throw std::runtime_error("ONNX CUDA warmup returned an invalid canonical frame");
+        }
+    }
+#endif
     const auto& summary = pipeline->summary();
     std::cout << "OpenCV: " << CV_VERSION << " | provider: " << summary.provider << '\n';
     if (selection.backend == ComputeBackend::Cuda) {
         std::cout << "CUDA device " << summary.device_index << ": " << summary.device_name
-                  << " | SM " << summary.compute_major << '.' << summary.compute_minor
-                  << " | devices: " << summary.device_count << '\n';
+                   << " | SM " << summary.compute_major << '.' << summary.compute_minor
+                   << " | devices: " << summary.device_count << '\n';
+    }
+    if (selection.provider == InferenceProvider::TensorRt) {
         std::cout << "PPE engine: " << config.ppe_engine.string()
-                  << " | metadata prefix: " << (summary.ppe_metadata_prefix ? "yes" : "no") << '\n';
+                   << " | metadata prefix: " << (summary.ppe_metadata_prefix ? "yes" : "no") << '\n';
         if (summary.pose_loaded) {
             std::cout << "Pose engine: " << config.pose_engine.string()
-                      << " | metadata prefix: " << (summary.pose_metadata_prefix ? "yes" : "no") << '\n';
+                       << " | metadata prefix: " << (summary.pose_metadata_prefix ? "yes" : "no") << '\n';
         }
     } else {
         std::cout << "PPE ONNX: " << config.ppe_onnx.string() << '\n';
@@ -265,16 +349,9 @@ int monitor(
 
         for (const auto& event : processed.canonical.events) {
             try {
-                const EventCandidate candidate{
-                    event.track_id,
-                    event.type == "com.cuajone.safety.ppe.violation.v1"
-                        ? "INCUMPLIMIENTO_EPP" : "POSIBLE_CAIDA",
-                    event.status,
-                    event.confidence,
-                };
-                const auto record = evidence.append(frame, config.source_label, candidate);
+                const auto record = evidence.append(frame, config.source_label, event);
                 std::cout << "Event: " << record.event_type << " | track " << record.track_id
-                          << " | " << record.timestamp << '\n';
+                          << " | " << record.date << 'T' << record.time << "Z\n";
             } catch (const std::exception& error) {
                 std::cerr << "Evidence write failed: " << error.what() << '\n';
             }
@@ -352,6 +429,9 @@ int main(int argc, char** argv) {
             pipeline = runBasePreflight(config, effective_selection);
         }
         std::cout << "Preflight: OK\n";
+#ifdef _WIN32
+        if (isCudaWarmupChild()) return 0;
+#endif
         if (config.preflight) return 0;
         return monitor(config, *pipeline);
     } catch (const std::invalid_argument& error) {

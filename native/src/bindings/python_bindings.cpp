@@ -125,6 +125,10 @@ PYBIND11_MODULE(cuajone_native, module) {
     py::enum_<ComputeBackend>(module, "ComputeBackend")
         .value("CUDA", ComputeBackend::Cuda)
         .value("CPU", ComputeBackend::Cpu);
+    py::enum_<InferenceProvider>(module, "InferenceProvider")
+        .value("ONNX_RUNTIME_CPU", InferenceProvider::OnnxRuntimeCpu)
+        .value("ONNX_RUNTIME_CUDA", InferenceProvider::OnnxRuntimeCuda)
+        .value("TENSORRT", InferenceProvider::TensorRt);
 #endif
 
     py::class_<Box>(module, "Box")
@@ -222,6 +226,7 @@ PYBIND11_MODULE(cuajone_native, module) {
     py::class_<EnginePipelineConfig>(module, "EngineConfig")
         .def(py::init<>())
         .def_readwrite("backend", &EnginePipelineConfig::backend)
+        .def_readwrite("provider", &EnginePipelineConfig::provider)
         .def_property("ppe_engine",
             [](const EnginePipelineConfig& value) { return value.ppe_engine.string(); },
             [](EnginePipelineConfig& value, const std::string& input) { value.ppe_engine = input; })

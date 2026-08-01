@@ -3,6 +3,10 @@
 from __future__ import annotations
 
 from copy import deepcopy
+import json
+from pathlib import Path
+import subprocess
+import sys
 
 import numpy as np
 import pytest
@@ -35,14 +39,81 @@ def test_binding_import_versions_and_synthetic_pipeline() -> None:
     if native.ENGINE_RUNTIME_AVAILABLE:
         assert hasattr(native, "EngineConfig")
         assert hasattr(native, "EnginePipeline")
+        assert hasattr(native, "InferenceProvider")
         assert native.ComputeBackend.CPU != native.ComputeBackend.CUDA
         config = native.EngineConfig()
         config.backend = native.ComputeBackend.CPU
+        config.provider = native.InferenceProvider.ONNX_RUNTIME_CPU
         config.ppe_onnx = "ppe.onnx"
         config.pose_onnx = "pose.onnx"
         assert config.backend == native.ComputeBackend.CPU
+        assert config.provider == native.InferenceProvider.ONNX_RUNTIME_CPU
         assert config.ppe_onnx == "ppe.onnx"
         assert config.pose_onnx == "pose.onnx"
+
+
+def test_actual_binding_constructs_cpu_engine_pipelines_from_staged_onnx() -> None:
+    if not native.ENGINE_RUNTIME_AVAILABLE:
+        pytest.skip("binding does not include the engine runtime")
+    models = Path(__file__).parents[1] / ".tools" / "native" / "installer" / "stage" / "bin" / "models"
+    for role in ("ppe", "pose"):
+        model = models / f"{role}.onnx"
+        manifest_path = models / f"{role}.onnx.manifest.json"
+        if not model.is_file() or not manifest_path.is_file():
+            pytest.skip(f"staged {role} ONNX model and manifest are unavailable")
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        assert manifest["artifact_type"] == "onnx"
+        assert manifest["role"] == role
+        assert manifest["model_file"] == model.name
+
+    for mode in ("ppe-only", "ppe-fall"):
+        result = subprocess.run(
+            [
+                sys.executable,
+                "-c",
+                """
+import sys
+from pathlib import Path
+import os
+
+dll_handles = [
+    os.add_dll_directory(path)
+    for path in os.environ.get("CUAJONE_NATIVE_DLL_DIRS", "").split(os.pathsep)
+    if path
+]
+import cuajone_native as native
+
+mode = sys.argv[1]
+models = Path(sys.argv[2])
+config = native.EngineConfig()
+config.backend = native.ComputeBackend.CPU
+config.provider = native.InferenceProvider.ONNX_RUNTIME_CPU
+config.ppe_onnx = str(models / "ppe.onnx")
+config.pose_onnx = str(models / "pose.onnx") if mode == "ppe-fall" else ""
+config.ppe_labels = {
+    0: "Gloves",
+    1: "Hard_hat",
+    2: "Mask",
+    3: "Person",
+    4: "Safety_boots",
+    5: "Vest",
+}
+analytics = native.AnalyticsConfig()
+analytics.mode = (
+    native.AnalyticsMode.PPE_ONLY
+    if mode == "ppe-only"
+    else native.AnalyticsMode.PPE_FALL
+)
+config.analytics = analytics
+native.EnginePipeline(config)
+""",
+                mode,
+                str(models),
+            ],
+            capture_output=True,
+            text=True,
+        )
+        assert result.returncode == 0, result.stderr
 
 
 def test_binding_validates_numpy_without_implicit_copy() -> None:

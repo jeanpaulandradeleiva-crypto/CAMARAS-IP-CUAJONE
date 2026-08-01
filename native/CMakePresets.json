@@ -63,8 +63,11 @@
       "binaryDir": "${sourceDir}/../.tools/native/build/presets/gpu-onnx-integration",
       "cacheVariables": {
         "CUAJONE_BUILD_TESTS": "ON",
+        "CUAJONE_ENABLE_TENSORRT": "OFF",
         "CUAJONE_ENABLE_ONNX_CUDA_INTEGRATION_TESTS": "ON",
-        "CUAJONE_ONNX_CUDA_RUNTIME_DIR": "${sourceDir}/../.tools/native/installer/stage/bin"
+        "CUAJONE_ONNX_CUDA_RUNTIME_DIR": "${sourceDir}/../.tools/native/installer/stage/bin",
+        "CUAJONE_ONNX_CUDA_PPE_MODEL": "${sourceDir}/../.tools/native/installer/stage/bin/models/ppe.onnx",
+        "CUAJONE_ONNX_CUDA_POSE_MODEL": "${sourceDir}/../.tools/native/installer/stage/bin/models/pose.onnx"
       }
     }
   ],
@@ -103,7 +106,7 @@
       "configurePreset": "gpu-onnx-integration",
       "filter": {
         "include": {
-          "name": "^cuajone_onnx_cuda_integration_tests$"
+          "name": "^cuajone_onnx_(pose_cpu_standalone|cuda_ppe_only|cuda_hybrid_pipeline)_tests$"
         }
       },
       "output": { "outputOnFailure": true }

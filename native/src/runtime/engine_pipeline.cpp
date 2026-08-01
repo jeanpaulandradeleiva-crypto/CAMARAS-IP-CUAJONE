@@ -171,7 +171,9 @@ struct NativeEnginePipeline::Impl {
 
     void loadCudaOnnx() {
         summary.backend = ComputeBackend::Cuda;
-        summary.provider = "ONNX Runtime CUDAExecutionProvider";
+        summary.provider = config.analytics.mode == AnalyticsMode::PpeFall
+            ? "ONNX Runtime CUDAExecutionProvider (PPE) + CPUExecutionProvider (pose)"
+            : "ONNX Runtime CUDAExecutionProvider";
         if (!std::filesystem::is_regular_file(config.ppe_onnx)) {
             throw std::runtime_error("PPE ONNX model does not exist: " + config.ppe_onnx.string());
         }
@@ -205,16 +207,15 @@ struct NativeEnginePipeline::Impl {
         ppe_preprocessor = std::make_unique<LetterboxPreprocessor>(
             ppe_session->inputWidth(), ppe_session->inputHeight());
         if (config.analytics.mode == AnalyticsMode::PpeFall) {
-            if (config.pose_class_count != 1 || config.pose_keypoint_shape[1] < 3) {
-                throw std::runtime_error("CUDA ONNX pose contract is unsupported");
-            }
-            pose_session = std::make_unique<OnnxSession>(config.pose_onnx, ModelRole::Pose, OnnxSessionOptions{
-                OnnxExecutionProvider::Cuda, device,
-            });
+            pose_class_count = config.pose_class_count;
+            keypoint_shape = config.pose_keypoint_shape;
+            const auto pose_contract = validateOnnxPoseContract(pose_class_count, keypoint_shape);
+            pose_session = std::make_unique<OnnxSession>(
+                config.pose_onnx, ModelRole::Pose, OnnxSessionOptions{});
             validatePoseSchema(
-                pose_session->outputShape(), config.pose_class_count,
-                static_cast<std::size_t>(config.pose_keypoint_shape[0]),
-                static_cast<std::size_t>(config.pose_keypoint_shape[1]));
+                pose_session->outputShape(), pose_contract.class_count,
+                static_cast<std::size_t>(pose_contract.keypoint_shape[0]),
+                static_cast<std::size_t>(pose_contract.keypoint_shape[1]));
             pose_preprocessor = std::make_unique<LetterboxPreprocessor>(
                 pose_session->inputWidth(), pose_session->inputHeight());
             summary.pose_loaded = true;

@@ -37,8 +37,10 @@ struct OnnxSession::Impl {
         }
         input_name = session.GetInputNameAllocated(0, allocator).get();
         output_name = session.GetOutputNameAllocated(0, allocator).get();
-        const auto input_info = session.GetInputTypeInfo(0).GetTensorTypeAndShapeInfo();
-        const auto output_info = session.GetOutputTypeInfo(0).GetTensorTypeAndShapeInfo();
+        const auto input_type_info = session.GetInputTypeInfo(0);
+        const auto output_type_info = session.GetOutputTypeInfo(0);
+        const auto input_info = input_type_info.GetTensorTypeAndShapeInfo();
+        const auto output_info = output_type_info.GetTensorTypeAndShapeInfo();
         if (input_info.GetElementType() != ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT
             || output_info.GetElementType() != ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT) {
             throw std::runtime_error("ONNX models must use float32 input and output tensors");

@@ -1,11 +1,17 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
+#define NOMINMAX
+
 #include "cuajone/compute.hpp"
+#include "cuajone/contracts.hpp"
+#include "cuajone/engine_pipeline.hpp"
 #include "cuajone/onnx_session.hpp"
+#include "cuajone/yolo_decode.hpp"
 
 #include "onnx_fixture.hpp"
 
 #include <onnxruntime_cxx_api.h>
+#include <opencv2/core.hpp>
 
 #include <algorithm>
 #include <array>
@@ -14,10 +20,14 @@
 #include <fstream>
 #include <iostream>
 #include <iterator>
+#include <map>
+#include <numeric>
 #include <optional>
 #include <regex>
 #include <stdexcept>
 #include <string>
+#include <string_view>
+#include <utility>
 #include <vector>
 
 namespace {
@@ -82,11 +92,21 @@ std::string readText(const std::filesystem::path& path) {
     return {std::istreambuf_iterator<char>(input), std::istreambuf_iterator<char>()};
 }
 
+std::map<int, std::string> stagedPpeLabels() {
+    return {
+        {0, "Gloves"},
+        {1, "Hard_hat"},
+        {2, "Mask"},
+        {3, "Person"},
+        {4, "Safety_boots"},
+        {5, "Vest"},
+    };
+}
+
 void verifyCudaProfile(
     const std::filesystem::path& model_path,
     const std::filesystem::path& profile_prefix,
-    int device,
-    const std::vector<float>& input) {
+    int device) {
     Ort::Env environment(ORT_LOGGING_LEVEL_WARNING, "cuajone_onnx_cuda_integration");
     Ort::SessionOptions options;
     options.SetGraphOptimizationLevel(GraphOptimizationLevel::ORT_ENABLE_ALL);
@@ -98,72 +118,190 @@ void verifyCudaProfile(
     options.AppendExecutionProvider_CUDA(provider_options);
     Ort::Session session(environment, model_path.c_str(), options);
 
-    const std::array<std::int64_t, 4> shape{1, 3, 2, 2};
+    require(session.GetInputCount() == 1 && session.GetOutputCount() == 1,
+        "Staged PPE model must expose exactly one input and one output");
+    const auto input_type_info = session.GetInputTypeInfo(0);
+    const auto input_info = input_type_info.GetTensorTypeAndShapeInfo();
+    const auto shape = input_info.GetShape();
+    require(input_info.GetElementType() == ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT
+            && shape.size() == 4 && shape[0] == 1 && shape[1] == 3
+            && shape[2] > 0 && shape[3] > 0,
+        "Staged PPE model input is not fixed batch-1 FP32 NCHW");
+    const std::size_t input_elements = std::accumulate(
+        shape.begin(), shape.end(), std::size_t{1},
+        [](std::size_t product, std::int64_t dimension) {
+            return product * static_cast<std::size_t>(dimension);
+        });
+    std::vector<float> input(input_elements, 0.25F);
     const Ort::MemoryInfo memory = Ort::MemoryInfo::CreateCpu(OrtArenaAllocator, OrtMemTypeDefault);
     Ort::Value input_tensor = Ort::Value::CreateTensor<float>(
         memory, const_cast<float*>(input.data()), input.size(), shape.data(), shape.size());
-    const char* input_names[]{"input"};
-    const char* output_names[]{"output"};
-    const auto output = session.Run(Ort::RunOptions{nullptr}, input_names, &input_tensor, 1, output_names, 1);
-    require(output.size() == 1 && output.front().IsTensor(), "CUDA ONNX profile session returned no tensor output");
-    const float* values = output.front().GetTensorData<float>();
-    for (std::size_t index = 0; index < input.size(); ++index) {
-        require(values[index] == input[index] + 1.0F, "CUDA ONNX profile session returned an incorrect Add result");
-    }
-
     Ort::AllocatorWithDefaultOptions allocator;
+    const auto input_name = session.GetInputNameAllocated(0, allocator);
+    const auto output_name = session.GetOutputNameAllocated(0, allocator);
+    const char* input_names[]{input_name.get()};
+    const char* output_names[]{output_name.get()};
+    const auto output = session.Run(Ort::RunOptions{nullptr}, input_names, &input_tensor, 1, output_names, 1);
+    require(output.size() == 1 && output.front().IsTensor()
+            && output.front().GetTensorTypeAndShapeInfo().GetElementCount() > 0,
+        "Staged PPE CUDA profile session returned no tensor output");
+
     const auto profile_path = std::filesystem::path(session.EndProfilingAllocated(allocator).get());
     const std::string profile = readText(profile_path);
     require(std::regex_search(profile, std::regex(R"("provider"\s*:\s*"CUDAExecutionProvider")")),
-        "CUDAExecutionProvider did not execute the Add node. Verify the provider DLL search path and CUDA runtime closure");
+        "CUDAExecutionProvider did not execute the staged PPE graph. Verify the provider DLL search path and CUDA runtime closure");
 }
 
-void run() {
+void verifyStandalonePose(
+    const std::filesystem::path& pose_model,
+    OnnxSessionOptions options,
+    std::string_view provider_name) {
+    std::cout << "INFO: constructing standalone " << provider_name
+              << " OnnxSession with pose model: "
+              << pose_model.string() << std::endl;
+    OnnxSession pose_session(pose_model, ModelRole::Pose, options);
+    std::vector<float> input(
+        static_cast<std::size_t>(pose_session.inputWidth())
+            * static_cast<std::size_t>(pose_session.inputHeight()) * 3,
+        0.25F);
+    std::cout << "INFO: running standalone pose " << provider_name << " inference" << std::endl;
+    const InferenceOutput output = pose_session.infer(input);
+    const YoloSchema schema = validatePoseSchema(output.shape, 1, 17, 3);
+    require(output.values.size() == schema.predictions * schema.channels,
+        "Staged pose model returned an unexpected output element count");
+    std::cout << "PASS: standalone pose " << provider_name
+              << " inference returned a valid " << schema.predictions << 'x'
+              << schema.channels << " pose tensor" << std::endl;
+}
+
+void verifyNativePipeline(
+    const std::filesystem::path& ppe_model,
+    const std::filesystem::path& pose_model,
+    int device) {
+    EnginePipelineConfig config;
+    config.backend = ComputeBackend::Cuda;
+    config.provider = InferenceProvider::OnnxRuntimeCuda;
+    config.ppe_onnx = ppe_model;
+    config.pose_onnx = pose_model;
+    config.ppe_labels = stagedPpeLabels();
+    config.pose_class_count = 1;
+    config.pose_keypoint_shape = {17, 3};
+    config.device = device;
+    config.analytics.mode = AnalyticsMode::PpeFall;
+
+    std::cout << "INFO: constructing NativeEnginePipeline with staged PPE and pose ONNX models"
+              << std::endl;
+    NativeEnginePipeline pipeline(std::move(config));
+    const auto& summary = pipeline.summary();
+    require(summary.backend == ComputeBackend::Cuda,
+        "NativeEnginePipeline did not report the CUDA backend");
+    require(summary.provider
+            == "ONNX Runtime CUDAExecutionProvider (PPE) + CPUExecutionProvider (pose)",
+        "NativeEnginePipeline did not report the PPE-CUDA/pose-CPU hybrid provider split");
+    require(summary.pose_loaded, "NativeEnginePipeline did not load the pose model in ppe-fall mode");
+
+    std::cout << "INFO: processing deterministic 640x480 CV_8UC3 BGR frame" << std::endl;
+    cv::Mat frame(480, 640, CV_8UC3, cv::Scalar(32, 64, 96));
+    const ProcessedFrame processed = pipeline.processFrame(
+        frame, "cuda-integration", 1, 1000, "2026-08-01T00:00:00Z");
+    require(processed.canonical.source_id == "cuda-integration"
+            && processed.canonical.frame_id == 1
+            && processed.canonical.monotonic_timestamp_ms == 1000
+            && processed.canonical.frame_width == frame.cols
+            && processed.canonical.frame_height == frame.rows,
+        "NativeEnginePipeline returned invalid canonical frame metadata");
+    const std::string canonical = canonicalJson(processed.canonical);
+    require(!canonical.empty()
+            && canonical.find(R"("contract_version":"1.0.0")") != std::string::npos
+            && canonical.find(R"("source_id":"cuda-integration")") != std::string::npos,
+        "NativeEnginePipeline did not serialize valid canonical output");
+    std::cout << "PASS: NativeEnginePipeline ppe-fall processed a deterministic BGR frame with "
+              << summary.provider << "; pose loaded; canonical bytes=" << canonical.size() << '\n';
+}
+
+int cudaDeviceOrSkip() {
     const auto probe = probeHardware();
     if (probe.status != HardwareProbeStatus::CudaReady) {
         std::cout << "SKIP: no compatible NVIDIA GPU/CUDA driver: "
                   << hardwareProbeStatusName(probe.status) << "; " << probe.detail << '\n';
         throw kSkipped;
     }
-    const int device = selectCompatibleCudaDevice(probe.cuda_devices, std::nullopt);
+    return selectCompatibleCudaDevice(probe.cuda_devices, std::nullopt);
+}
+
+void runPpeOnly(const std::filesystem::path& ppe_model) {
+    const int device = cudaDeviceOrSkip();
     configureProviderDllSearch(cudaRuntimeDirectory());
 
     TemporaryDirectory directory;
-    const Bytes model = addModel();
-    const auto model_path = writeModelSet(directory, "cuda-add.onnx", model);
-    const std::vector<float> input{0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11};
+    verifyCudaProfile(
+        ppe_model, directory.path() / L"cuajone_staged_ppe_cuda_profile", device);
 
-    OnnxSession project_session(model_path, ModelRole::Ppe, OnnxSessionOptions{
-        OnnxExecutionProvider::Cuda, device,
-    });
-    const InferenceOutput output = project_session.infer(input);
-    require(output.values.size() == input.size(), "Project CUDA ONNX session changed the output size");
-    for (std::size_t index = 0; index < input.size(); ++index) {
-        require(output.values[index] == input[index] + 1.0F,
-            "Project CUDA ONNX session returned an incorrect Add result");
-    }
+    EnginePipelineConfig config;
+    config.backend = ComputeBackend::Cuda;
+    config.provider = InferenceProvider::OnnxRuntimeCuda;
+    config.ppe_onnx = ppe_model;
+    config.ppe_labels = stagedPpeLabels();
+    config.device = device;
+    config.analytics.mode = AnalyticsMode::PpeOnly;
+    NativeEnginePipeline pipeline(std::move(config));
+    require(pipeline.summary().backend == ComputeBackend::Cuda
+            && pipeline.summary().provider == "ONNX Runtime CUDAExecutionProvider"
+            && !pipeline.summary().pose_loaded,
+        "PPE-only production pipeline did not preserve its CUDA-only provider contract");
+    cv::Mat frame(480, 640, CV_8UC3, cv::Scalar(32, 64, 96));
+    const ProcessedFrame processed = pipeline.processFrame(
+        frame, "ppe-cuda-integration", 1, 1000, "2026-08-01T00:00:00Z");
+    require(processed.canonical.source_id == "ppe-cuda-integration"
+            && processed.canonical.frame_width == frame.cols
+            && processed.canonical.frame_height == frame.rows,
+        "PPE-only production pipeline returned invalid canonical frame metadata");
+    std::cout << "PASS: CUDAExecutionProvider executed the real staged PPE graph and "
+                 "the PPE-only production pipeline processed a deterministic BGR frame"
+              << std::endl;
+}
 
-    verifyCudaProfile(model_path, directory.path() / L"cuajone_onnx_cuda_profile", device, input);
+void runStandalonePoseCpu(const std::filesystem::path& pose_model) {
+    verifyStandalonePose(pose_model, OnnxSessionOptions{}, "CPU");
+}
+
+void runPipeline(
+    const std::filesystem::path& ppe_model,
+    const std::filesystem::path& pose_model) {
+    const int device = cudaDeviceOrSkip();
+    configureProviderDllSearch(cudaRuntimeDirectory());
+    const auto probe = probeHardware();
     const auto selected = std::find_if(probe.cuda_devices.begin(), probe.cuda_devices.end(), [&](const auto& value) {
         return value.device_index == device;
     });
     require(selected != probe.cuda_devices.end(), "Selected CUDA device disappeared from the hardware probe");
-    std::cout << "PASS: CUDAExecutionProvider executed Add on GPU " << selected->name
+    std::cout << "INFO: hybrid pipeline selected GPU " << selected->name
               << " (device " << device << ", SM " << selected->compute_major << '.' << selected->compute_minor
-              << ")\n";
+              << ')' << std::endl;
+    verifyNativePipeline(ppe_model, pose_model, device);
 }
 
 }  // namespace
 
-int main() {
+int main(int argc, char** argv) {
     try {
-        run();
+        if (argc == 3 && std::string_view(argv[1]) == "standalone-pose-cpu") {
+            runStandalonePoseCpu(argv[2]);
+        } else if (argc == 3 && std::string_view(argv[1]) == "ppe-only") {
+            runPpeOnly(argv[2]);
+        } else if (argc == 4 && std::string_view(argv[1]) == "pipeline") {
+            runPipeline(argv[2], argv[3]);
+        } else {
+            throw std::invalid_argument("Usage: cuajone_onnx_cuda_integration_tests "
+                "standalone-pose-cpu <pose.onnx> | ppe-only <ppe.onnx> | "
+                "pipeline <ppe.onnx> <pose.onnx>");
+        }
         return 0;
     } catch (int code) {
         return code;
     } catch (const Ort::Exception& error) {
-        std::cerr << "FAIL: CUDAExecutionProvider session creation or inference failed. "
-                  << "Verify the provider DLL search path and CUDA runtime closure: " << error.what() << '\n';
+        std::cerr << "FAIL: ONNX Runtime session creation or inference failed: "
+                  << error.what() << '\n';
     } catch (const std::exception& error) {
         std::cerr << "FAIL: " << error.what() << '\n';
     }

@@ -11,14 +11,16 @@ dependencies = [
     "openpyxl>=3.1,<4",
     "pandas>=2.1,<3",
     "python-dotenv>=1.0,<2",
-    "torch>=2.2,<3",
-    "ultralytics>=8.3,<9",
 ]
 
 [project.scripts]
 cuajone-qa = "cuajone_qa.cli:main"
 
 [project.optional-dependencies]
+experimental = [
+    "torch>=2.2,<3",
+    "ultralytics>=8.3,<9",
+]
 cvat = [
     "cvat-sdk==2.71.0",
 ]
@@ -28,7 +30,12 @@ supervision = [
 
 [dependency-groups]
 dev = [
+    { include-group = "experimental-tests" },
     "pytest>=8,<10",
+]
+experimental-tests = [
+    "torch>=2.2,<3",
+    "ultralytics>=8.3,<9",
 ]
 bindings = [
     "pybind11==3.0.4",

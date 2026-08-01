@@ -278,6 +278,15 @@ std::vector<DetectionType> nms(
 
 }  // namespace
 
+OnnxPoseContract validateOnnxPoseContract(
+    std::size_t class_count,
+    std::array<int, 2> keypoint_shape) {
+    if (class_count != 1 || keypoint_shape[0] <= 0 || keypoint_shape[1] < 3) {
+        throw std::runtime_error("ONNX pose contract is unsupported");
+    }
+    return {class_count, keypoint_shape};
+}
+
 YoloSchema validateDetectSchema(std::span<const std::int64_t> shape, std::size_t class_count) {
     return validateSchema(shape, class_count, 0, 0);
 }

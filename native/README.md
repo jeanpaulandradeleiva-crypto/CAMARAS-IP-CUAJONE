@@ -1,10 +1,13 @@
 # Runtime nativo C++ para EPP y caídas
 
-Este directorio contiene el runtime Windows x64. Ejecuta modelos ONNX con CPU o
-CUDA mediante ONNX Runtime, y engines TensorRT opcionales con CUDA, sin Python,
+Este directorio contiene el runtime Windows x64. Ejecuta PPE ONNX con CPU o CUDA
+mediante ONNX Runtime; en `ppe-fall` con ONNX CUDA mantiene PPE en CUDA y pose en
+CPU. Los engines TensorRT opcionales sí usan CUDA para ambos modelos, sin Python,
 PyTorch ni Ultralytics durante la ejecución. `Auto` prefiere CUDA solo cuando
 hardware, driver y artefactos están listos; si no, usa ONNX CPU.
-`ppe_reportev2.py` continúa siendo la referencia de comportamiento.
+La ruta oficial de producción es el MSI aprobado -> NexoAI Vision launcher ->
+`cuajone_native.exe`. `ppe_reportev2.py` y `cuajone_native.pyd` son exclusivamente
+un harness local de desarrollo/QA y no constituyen un fallback operativo.
 El target WIN32 separado `cuajone_launcher.exe` ofrece la interfaz gráfica y no
 enlaza `cuajone_runtime`, OpenCV, ONNX Runtime, CUDA ni TensorRT.
 
@@ -21,8 +24,8 @@ enlaza `cuajone_runtime`, OpenCV, ONNX Runtime, CUDA ni TensorRT.
 4. Compila `windows-msvc` y ejecuta `--preflight` con engines compatibles.
 5. Recién después realiza una prueba controlada con un video autorizado.
 
-El preflight no abre la fuente ni ejecuta inferencia. Sí selecciona CUDA,
-deserializa ambos engines de forma secuencial y valida sus tensores.
+El preflight no abre la fuente. Para TensorRT deserializa los engines y valida sus
+tensores. Para ONNX CUDA ejecuta además un warmup aislado con un frame BGR real.
 
 ## Arquitectura
 
@@ -40,9 +43,9 @@ deserializa ambos engines de forma secuencial y valida sus tensores.
 | `fall_analytics` | Validación de keypoints, geometría, descenso, confirmación, recuperación y cooldown. |
 | `contracts` | Versiones, CloudEvents y serialización JSON canónica sin secretos. |
 | `analytics_pipeline` | Composición reutilizable, timestamps/frame IDs inyectables, orden estricto y reset. |
-| `engine_pipeline` | Pre/postproceso y analítica compartidos por ONNX CPU/CUDA y TensorRT CUDA. |
+| `engine_pipeline` | Pre/postproceso y analítica compartidos por ONNX CPU, ONNX híbrido PPE-CUDA/pose-CPU y TensorRT CUDA. |
 | `capture` | Un único slot reemplazable, reinicio sin frame obsoleto, fallback de apertura y reconexión RTSP con transporte configurable. |
-| `evidence` | JPEG anotado y CSV append-only; no genera Excel. |
+| `evidence` | Contrato v1 común: JPEG anotado y CSV UTF-8 append-only; el MSI no genera XLSX. |
 | `launcher_support` | Matriz estructural de modelos, plan de argumentos, quoting Windows y redacción RTSP comprobables sin el runtime. |
 | `launcher` | UI Win32, ejecución del CLI hermano, log ProgramData, Job Object y parada acotada. |
 
@@ -114,20 +117,32 @@ no busca ni enlaza CUDA/TensorRT. El preset completo habilita ambos backends.
 
 ### Integración ONNX CUDA real
 
-La prueba `gpu-onnx-integration` permanece desactivada por defecto. Usa un modelo
-ONNX `Add` sintético y válido, crea una `OnnxSession` del proyecto con CUDA y exige
-que el perfil de ONNX Runtime registre la ejecución del nodo por
-`CUDAExecutionProvider`. No descarga modelos ni usa RTSP ni TensorRT.
+La prueba `gpu-onnx-integration` permanece desactivada por defecto. Perfila el
+modelo PPE real del stage y exige que ONNX Runtime registre su ejecución mediante
+`CUDAExecutionProvider`. Después prueba el pose real de forma aislada mediante
+`CPUExecutionProvider` y crea el `NativeEnginePipeline` real con ambos modelos,
+backend CUDA y proveedor híbrido
+`ONNX Runtime CUDAExecutionProvider (PPE) + CPUExecutionProvider (pose)`. La prueba
+de pipeline procesa un frame BGR determinístico y valida el resumen, `pose_loaded`
+y la salida canónica. No descarga modelos ni usa RTSP ni TensorRT.
+
+La división es deliberada: el grafo pose YOLO26 real del stage viola acceso en
+ORT CUDA 1.25 sobre la GTX 1650 Ti, mientras el mismo artefacto pasa en CPU y el
+grafo PPE pasa en CUDA. Por eso la aceptación predeterminada NO ejecuta pose
+aislado en CUDA. Los labels de CTest documentan esta excepción; un fallo del pose
+en CPU o del PPE en CUDA sigue siendo un fallo real, no un skip.
 
 La prueba consume el cierre de DLL ya preparado para la aplicación final en
 `.tools\native\installer\stage\bin`: `onnxruntime_providers_cuda.dll`,
 `onnxruntime_providers_shared.dll`, CUDA, cuDNN, cuBLAS y cuFFT. Ese directorio es
 generado y verificado por `installer\native\build-installer.ps1`; reutiliza un stage
-local existente para esta prueba, sin reconstruir ni instalar un MSI. Si el stage
-está en otro lugar, reemplaza `CUAJONE_ONNX_CUDA_RUNTIME_DIR` al configurar.
+local existente para esta prueba, sin reconstruir ni instalar un MSI. El preset
+resuelve `models\ppe.onnx`, `models\pose.onnx` y sus manifests desde ese stage. Si
+están en otro lugar, reemplaza `CUAJONE_ONNX_CUDA_RUNTIME_DIR`,
+`CUAJONE_ONNX_CUDA_PPE_MODEL` y `CUAJONE_ONNX_CUDA_POSE_MODEL` al configurar.
 
 ```powershell
-. .\activate-native.ps1
+. .\activate-native.ps1 -CpuOnly
 
 cmake --preset gpu-onnx-integration
 cmake --build --preset gpu-onnx-integration-release
@@ -141,7 +156,7 @@ reemplazado por una copia del stage o del sistema. Un host sin GPU NVIDIA/driver
 compatible termina
 como `Skipped` (código 77); una GPU compatible con provider, modelo o DLLs
 incorrectos termina como fallo. El resultado exitoso informa el nombre real de la
-GPU y `CUDAExecutionProvider`.
+GPU y el perfil del grafo PPE confirma `CUDAExecutionProvider`.
 
 Las rutas activadas son TensorRT `11.1.0.106`, CUDA runtime `12.9.79`, OpenCV
 `4.12.0` (`vc16`, ABI compatible con VS2022), CMake `3.31.8`, Ninja `1.13.1` y
@@ -370,15 +385,20 @@ memoria, manifest/hash/rol/I/O, extensión, límites, external data y dominios c
 y labels CPU, omisión pose en `PPE only`, quoting de `CreateProcessW` y redacción
 de credenciales RTSP.
 
-`cuajone_onnx_cuda_integration_tests` es el contrato GPU opt-in: la sesión del
-proyecto debe ejecutar un `Add` ONNX validado mediante `CUDAExecutionProvider` en
-una GPU compatible. Su perfil de ONNX Runtime es la evidencia de asignación del
-nodo, no un preflight ni una selección declarativa.
+`cuajone_onnx_cuda_integration_tests` es el contrato GPU opt-in: ONNX Runtime debe
+ejecutar el grafo PPE real mediante `CUDAExecutionProvider`, el pose real debe
+completar una inferencia aislada mediante `CPUExecutionProvider` y el
+`NativeEnginePipeline` debe cargar ambos modelos reales con esa misma división,
+preservar los 17 keypoints y producir salida canónica desde un frame BGR. El perfil
+del grafo PPE es evidencia de asignación GPU, no una selección declarativa. El
+preflight de ONNX CUDA realiza el mismo pipeline híbrido y warmup real en un proceso
+hijo. CUDA forzado pasa cuando ese warmup pasa; `Auto` conserva CUDA y no ejecuta su
+fallback. Un fallo nativo todavía queda aislado y permite a `Auto` reconstruir con
+`CPUExecutionProvider`.
 
-Baseline de esta corrección: CTest `3/3` tanto en CPU-only como en el build completo;
-la suite Python ejecutada con `python -m pytest` informa `93 passed, 1 skipped` sin
-binding (el único skip es el módulo nativo opcional) y `104 passed` con el binding
-MSVC cargado.
+Baseline actual verificada: CTest CPU `4/4` e integración GPU `3/3`. En una GTX
+1650 Ti SM 7.5, la integración ejecutó pose staged de forma aislada en CPU, PPE en
+CUDA y el pipeline híbrido `ppe-fall` con PPE en CUDA y pose en CPU.
 
 La prueba TensorRT es deliberadamente opt-in y solo inspecciona un engine real:
 
@@ -401,19 +421,31 @@ para compilación, API sintética, runtime externo y paridad.
 
 ```text
 <output>/
-  native_events.csv
-  evidence/
-    <source>_<event>_<track>_<timestamp>.jpg
+  Reporte_Eventos_Seguridad.csv
+  Evidencias/
+    <camara>_<tipo>_<YYYYMMDD_HHMMSS_mmm>_<ultimos-8-del-evento>.jpg
 ```
 
-El CSV contiene timestamp, etiqueta de fuente, ID temporal, tipo, confianza,
-estado y ruta JPEG. El ID correlaciona observaciones; no identifica personas. La
-consolidación XLSX y la revisión humana permanecen en el worker Python.
+El runtime recibe el `CanonicalEvent` completo y conserva su ID estable, tipo,
+timestamp UTC, track, estado y confianza. El CSV UTF-8 usa exactamente:
 
-Cada append hace `flush()` y comprueba el stream. En Windows eso NO equivale a una
-transacción ni garantiza durabilidad física en disco ante corte de energía: no se
-invoca `_commit` sobre un descriptor nativo porque esta implementación usa
-`std::ofstream` y no expone uno de forma portable y segura.
+```csv
+Evento_ID,Camara,Fecha,Hora,Tipo_Evento,Casco,Chaleco,Estado_EPP,Confianza_Evento,ID_Seguimiento_Temporal,Estado_Revision,Identificacion_Humana,Observaciones_Revision,Foto
+```
+
+El [contrato v1](../docs/operator-evidence-contract-v1.md) define el mapeo
+`SI`/`NO`/`N/D`, revisión `PENDIENTE`, escape CSV, timestamp y nombre del JPEG. El
+ID temporal correlaciona observaciones; no identifica personas. El MSI no genera
+XLSX; la exportación del harness Python es solo QA local/offline.
+
+La imagen se escribe y confirma antes de anexar la fila, evitando filas sin foto
+cuando falla OpenCV. En Windows, tanto el JPEG temporal como cada append CSV usan
+`FlushFileBuffers`. Esto no crea una transacción entre ambos archivos: un fallo CSV
+posterior puede dejar una imagen huérfana.
+
+`native_events.csv` y `evidence/` de versiones anteriores no se mueven ni se
+convierten automáticamente. Se conservan al lado de los nombres nuevos y no deben
+concatenarse porque su esquema es incompatible.
 
 ## Distribución esperada
 
@@ -426,8 +458,6 @@ de esos componentes; todavía no se midió y no se estima aquí.
 
 - El tracker es IoU determinista. NO ofrece paridad ByteTrack y puede cambiar IDs
   ante oclusiones, cruces o movimiento rápido.
-- Existe comparación sintética por etapas, pero no una comparación de modelos
-  reales ni una prueba en la GTX 1650 Ti.
 - Los defaults de una clase y 17 keypoints para pose raw deben confirmarse contra
   el exportador real.
 - No se soportan NMS fusionado, múltiples heads/outputs ni outputs dinámicos.
@@ -435,5 +465,5 @@ de esos componentes; todavía no se midió y no se estima aquí.
 - El fallback de apertura simple puede quedar sujeto a un timeout interno del
   backend distinto de los valores configurados; `stop()` no puede cancelar de
   forma segura un `open/read` que OpenCV ya esté ejecutando.
-- No se genera Excel. Python sigue siendo la referencia de consolidación.
+- El runtime de producción no genera Excel; el facade Python conserva una consolidación compatible solo para QA local.
 - No se afirma paridad total ni mejora de rendimiento hasta compilar y medir.

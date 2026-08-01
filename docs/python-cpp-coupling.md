@@ -1,9 +1,9 @@
 # Acoplamiento Python/C++ para desarrollo y QA
 
-El acoplamiento usa contratos JSON v1 y un binding `pybind11` opcional. El
-ejecutable de producción y el MSI no dependen de Python. La paridad demostrada en
-el repositorio es sintética; la paridad de modelos requiere engines y material
-autorizado externos.
+El acoplamiento usa contratos JSON v1 y un binding `pybind11` opcional. La ruta de
+producción es MSI aprobado -> NexoAI Vision launcher -> `cuajone_native.exe`; no
+depende de Python. La paridad demostrada en el repositorio es sintética y la
+paridad de modelos requiere artefactos y material autorizado externos.
 
 ## Ruta rápida
 
@@ -16,23 +16,26 @@ autorizado externos.
 
 | Componente | Propósito | Se incluye en el MSI |
 | --- | --- | --- |
-| `cuajone_native.exe` | Runtime Windows TensorRT | Sí |
+| `cuajone_native.exe` | Runtime Windows con TensorRT y ONNX Runtime CPU/CUDA híbrido | Sí |
+| NexoAI Vision launcher | Inicio y perfiles RTSP seguros de producción | Sí |
 | `cuajone_native.pyd` | Binding de desarrollo/QA | No |
+| `ppe_reportev2.py` | Harness local del `.pyd` con ONNX fijo, captura y reportes | No |
 | `cuajone_qa` | CLI, contratos, demos, adapters y paridad | No |
 | `jsonschema` | Validación requerida del runtime Python de QA | No |
 | Ultralytics/PyTorch | Backend experimental | No |
 | CVAT/Supervision | Integración opcional de anotación/datasets | No |
 | Fixtures y recibos de paridad | Evidencia de QA | No |
 
-`ppe_reportev2.py` continúa como entrada operativa compatible. La nueva librería
-no intenta reescribir el monolito: reutiliza sus contratos de comportamiento de
-forma incremental y mantiene sus límites explícitos.
+`ppe_reportev2.py` conserva su import y CLI raíz para pruebas locales, pero no es
+entrada oficial de producción ni fallback. Solo orquesta configuración, captura,
+`NativeBackend`, evidencia, reportes y cierre. La analítica Ultralytics histórica
+se conserva separada en `cuajone_qa/experimental/legacy_ultralytics.py`.
 
 ```mermaid
 flowchart LR
-    PY["Python experimental<br/>Ultralytics y QA"] --> CONTRACTS["Contratos JSON v1<br/>eventos canónicos"]
+    PY["Python local<br/>harness .pyd y experimentos"] --> CONTRACTS["Contratos JSON v1<br/>eventos canónicos"]
     CONTRACTS --> CORE["Semántica determinista<br/>tracking, EPP y caídas"]
-    CORE --> CPP["Runtime C++ de producción<br/>TensorRT en Windows"]
+    CORE --> CPP["Runtime C++ de producción<br/>TensorRT y ONNX Runtime CPU/CUDA híbrido"]
     CPP --> MSI["MSI x64<br/>sin Python"]
     CORE --> BINDING["Binding pybind11<br/>solo desarrollo y QA"]
 ```
@@ -59,6 +62,14 @@ Los eventos usan el sobre obligatorio de CloudEvents 1.0. Sus tipos canónicos s
 
 Las evidencias se representan mediante referencia y SHA-256. El sobre no admite
 URLs RTSP, userinfo ni campos arbitrarios de contraseña.
+
+La persistencia para operadores tiene un segundo contrato versionado, derivado del
+evento canónico sin reconstruir su ID: el
+[contrato CSV/evidencia v1](operator-evidence-contract-v1.md). Producción MSI y el
+harness Python comparten nombres, orden de 14 campos, tipos de evento y semántica
+`SI`/`NO`/`N/D`. La salida nativa es autoritativa. El XLSX existe únicamente como
+exportación local/offline para QA y revisión humana; no se genera ni se incluye una
+biblioteca Excel en el MSI.
 
 ## Binding nativo
 
@@ -95,10 +106,16 @@ python -m cuajone_qa demo --backend native --mode ppe-fall `
 ```
 
 Para una fuente autorizada, selecciona `image`, `video`, `webcam` o `rtsp` y aporta
-modelos/engines externos. `experimental` usa Ultralytics y ByteTrack mediante
-imports diferidos. `native` usa TensorRT y el tracker IoU compartido con el
-ejecutable. Ninguna ruta abre una fuente durante importación, `--help` o validación
-de contratos.
+artefactos externos. `native` usa el tracker IoU compartido con el ejecutable. El
+módulo `cuajone_qa.experimental.legacy_ultralytics` conserva Ultralytics y
+ByteTrack solo para experimentos/compatibilidad y requiere el extra explícito:
+
+```powershell
+uv sync --locked --extra experimental
+```
+
+El facade raíz no importa PyTorch ni Ultralytics. Ninguna ruta nativa abre una
+fuente durante importación, `--help` o validación de contratos.
 
 CVAT y Supervision se instalan por separado:
 
@@ -173,6 +190,6 @@ el binding no son aplicaciones ACAP.
 
 - No se ejecutó inferencia ni se cargaron engines/modelos durante esta integración.
 - No se afirma paridad completa, rendimiento, multicámara, Milestone ni ACAP.
-- El binding es desarrollo/QA y no constituye una API de producto estable.
+- El binding y `ppe_reportev2.py` son desarrollo/QA y no constituyen APIs de producto estables.
 - El runtime en vivo conserva el slot de último frame; las llamadas offline al
   pipeline procesan cada frame recibido y exigen orden monotónico.

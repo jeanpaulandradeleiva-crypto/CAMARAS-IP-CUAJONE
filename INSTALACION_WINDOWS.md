@@ -49,6 +49,12 @@ PowerShell ni escribir comandos.
    iniciador valida primero la configuración y muestra el error sin cerrar la
    ventana si falta un dato.
 
+Cuando ocurre un evento, la carpeta de salida contiene
+`Reporte_Eventos_Seguridad.csv` y las fotos anotadas en `Evidencias/`. Es la salida
+de producción que debe conservarse para el procedimiento autorizado de revisión.
+La aplicación instalada no crea un archivo Excel. Un XLSX que genere el harness
+Python pertenece únicamente a una revisión local/offline de QA.
+
 No escribas una contraseña RTSP en documentos, capturas o tickets. El iniciador no
 la guarda como configuración permanente; deberás volver a proporcionarla cuando
 corresponda.
@@ -72,6 +78,10 @@ fuera de la carpeta de instalación, bajo `C:\ProgramData\NexoAI Vision`.
 Al actualizar desde Cuajone PPE Monitor, NexoAI Vision usa la carpeta nueva para
 archivos nuevos. No elimina ni mueve la carpeta anterior; el iniciador también
 detecta modelos que permanezcan bajo `C:\ProgramData\Cuajone PPE Monitor`.
+
+Si una carpeta de salida conserva `native_events.csv` o `evidence/`, son resultados
+de una versión nativa anterior. No los borres ni los combines con el CSV nuevo;
+solicita a soporte una migración offline si deben conservarse en el flujo actual.
 
 Se espera que versiones futuras permitan agregar más configuraciones de cámara
 sin reinstalar la aplicación en otra carpeta. Esto dependerá del soporte del

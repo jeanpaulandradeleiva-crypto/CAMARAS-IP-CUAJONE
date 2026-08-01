@@ -167,10 +167,18 @@ El runtime de consola permanece instalado en
 de soporte requiera opciones explícitas, `--help`, el probe JSON o automatización.
 No entregues al usuario normal una línea de comandos con credenciales RTSP.
 
-Los modelos siguen fuera del MSI. GPU usa engines TensorRT aprobados; CPU usa
-modelos ONNX aprobados con sus manifests adyacentes. Conserva hashes, procedencia y
-autorización junto con la evidencia de despliegue, pero no copies modelos al
-directorio de binarios.
+El MSI incluye por defecto los modelos ONNX aprobados de EPP y pose con sus
+manifests adyacentes. Los modelos fuente o de desarrollo permanecen fuera del MSI;
+GPU usa engines TensorRT externos aprobados. Conserva hashes, procedencia y
+autorización junto con la evidencia de despliegue, y no copies modelos adicionales
+al directorio de binarios.
+
+La salida de producción sigue el
+[contrato v1 común](docs/operator-evidence-contract-v1.md):
+`Reporte_Eventos_Seguridad.csv` y `Evidencias/`. El MSI no genera XLSX; esa
+exportación existe solo en el harness Python de QA local/offline. En una salida
+reutilizada, conserva `native_events.csv` y `evidence/` antiguos por separado y no
+los concatenes con el contrato nuevo.
 
 ## Reparar, actualizar y desinstalar
 

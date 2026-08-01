@@ -5,6 +5,7 @@
 #include "cuajone/letterbox.hpp"
 #include "cuajone/types.hpp"
 
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <span>
@@ -36,6 +37,15 @@ struct DecodeLimits {
     std::size_t max_nms_candidates{30000};
     std::size_t max_detections{300};
 };
+
+struct OnnxPoseContract {
+    std::size_t class_count;
+    std::array<int, 2> keypoint_shape;
+};
+
+OnnxPoseContract validateOnnxPoseContract(
+    std::size_t class_count,
+    std::array<int, 2> keypoint_shape);
 
 YoloSchema validateDetectSchema(
     std::span<const std::int64_t> shape,

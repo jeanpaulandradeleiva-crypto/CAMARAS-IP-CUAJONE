@@ -298,7 +298,7 @@ void printHelp(std::ostream& output) {
         "  --ppe-engine <file.engine>   PPE TensorRT engine for CUDA\n"
         "  --pose-engine <file.engine>  Pose TensorRT engine for CUDA ppe-fall\n"
         "  --ppe-onnx <file.onnx>       PPE ONNX model for CPU or CUDA\n"
-        "  --pose-onnx <file.onnx>      Pose ONNX model for CPU or CUDA ppe-fall\n\n"
+        "  --pose-onnx <file.onnx>      Pose ONNX model for CPU or hybrid ppe-fall (CPU session)\n\n"
         "Diagnostics and identity:\n"
         "  --help                       Show this help without runtime startup\n"
         "  --hardware-probe-json        Print stable NVIDIA/CUDA probe JSON and exit\n"

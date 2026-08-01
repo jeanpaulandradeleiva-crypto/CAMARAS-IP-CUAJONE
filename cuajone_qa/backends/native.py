@@ -15,6 +15,13 @@ from ..contracts import CONTRACT_VERSION, validate_instance
 from .base import BackendResult
 
 
+_INFERENCE_PROVIDERS = {
+    ("cpu", "onnx-runtime-cpu"): "ONNX_RUNTIME_CPU",
+    ("cuda", "onnx-runtime-cuda"): "ONNX_RUNTIME_CUDA",
+    ("cuda", "tensorrt"): "TENSORRT",
+}
+
+
 class NativeBackend:
     """Thin conversion layer over the shared C++ analytics implementation."""
 
@@ -44,28 +51,44 @@ class NativeBackend:
                 raise RuntimeError("This cuajone_native build does not include the external engine runtime")
             native_engine = self._module.EngineConfig()
             backend = str(engine_config.get("backend", "cuda")).lower()
-            if backend == "cpu":
+            default_provider = {
+                "cpu": "onnx-runtime-cpu",
+                "cuda": "tensorrt",
+            }.get(backend)
+            provider = str(engine_config.get("provider", default_provider)).lower()
+            provider_key = (backend, provider)
+            try:
+                native_provider = _INFERENCE_PROVIDERS[provider_key]
+            except KeyError as exc:
+                raise ValueError(
+                    "Native engine backend/provider must be cpu/onnx-runtime-cpu, "
+                    "cuda/onnx-runtime-cuda, or cuda/tensorrt"
+                ) from exc
+            native_engine.provider = getattr(self._module.InferenceProvider, native_provider)
+            if provider in {"onnx-runtime-cpu", "onnx-runtime-cuda"}:
                 if not engine_config.get("ppe_onnx"):
-                    raise ValueError("Native CPU engine config requires ppe_onnx")
+                    raise ValueError("Native ONNX engine config requires ppe_onnx")
                 if config.mode == "ppe-fall" and not engine_config.get("pose_onnx"):
-                    raise ValueError("Native CPU ppe-fall config requires pose_onnx")
+                    raise ValueError("Native ONNX ppe-fall config requires pose_onnx")
                 if not engine_config.get("ppe_labels"):
-                    raise ValueError("Native CPU engine config requires ppe_labels")
-                native_engine.backend = self._module.ComputeBackend.CPU
+                    raise ValueError("Native ONNX engine config requires ppe_labels")
+                native_engine.backend = (
+                    self._module.ComputeBackend.CPU
+                    if backend == "cpu"
+                    else self._module.ComputeBackend.CUDA
+                )
                 native_engine.ppe_onnx = str(engine_config["ppe_onnx"])
                 native_engine.pose_onnx = str(engine_config.get("pose_onnx", ""))
-                native_engine.device = None
-            elif backend == "cuda":
+                native_engine.device = None if backend == "cpu" else int(engine_config.get("device", 0))
+            else:
                 if not engine_config.get("ppe_engine"):
-                    raise ValueError("Native CUDA engine config requires ppe_engine")
+                    raise ValueError("Native TensorRT engine config requires ppe_engine")
                 if config.mode == "ppe-fall" and not engine_config.get("pose_engine"):
-                    raise ValueError("Native CUDA ppe-fall config requires pose_engine")
+                    raise ValueError("Native TensorRT ppe-fall config requires pose_engine")
                 native_engine.backend = self._module.ComputeBackend.CUDA
                 native_engine.ppe_engine = str(engine_config["ppe_engine"])
                 native_engine.pose_engine = str(engine_config.get("pose_engine", ""))
                 native_engine.device = int(engine_config.get("device", 0))
-            else:
-                raise ValueError("Native engine backend must be cpu or cuda")
             native_engine.ppe_labels = engine_config.get("ppe_labels")
             native_engine.pose_class_count = int(engine_config.get("pose_class_count", 1))
             native_engine.pose_keypoint_shape = engine_config.get("pose_keypoint_shape", [17, 3])

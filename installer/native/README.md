@@ -1,6 +1,8 @@
 # Referencia avanzada: MSI Windows del runtime nativo
 
-Esta es la referencia de ingeniería para construir, firmar y validar el MSI x64.
+Esta es la referencia de ingeniería para construir, firmar y validar el MSI x64,
+la única distribución de producción aprobada. La ejecución normal continúa desde
+NexoAI Vision hacia `cuajone_native.exe`; no existe fallback Python.
 Para el piloto operativo usa primero el
 [runbook breve Para TI](../../PARA_TI_WINDOWS.md). La persona usuaria debe seguir
 la [guía simple de instalación](../../INSTALACION_WINDOWS.md).
@@ -25,8 +27,11 @@ de cámaras ni datos operativos.
 
 También falla cerrado si staging o extracción contienen Python, `.py`, `.pyc`,
 `.pyd`, runtime Python, PyTorch, Ultralytics, CVAT, Supervision, datasets, fixtures,
-modelos/engines, JSONL o recibos de paridad. El binding y `cuajone_qa` son solo de
-desarrollo/QA.
+JSONL, recibos de paridad o modelos/engines fuera de la política explícita del
+instalador. Esa política permite únicamente el bundle ONNX aprobado y, cuando se
+configuran expresamente, los engines TensorRT aprobados en las rutas de modelos
+permitidas; cualquier otro modelo o engine se rechaza. El binding y `cuajone_qa`
+son solo de desarrollo/QA.
 
 El instalador no fija el producto a una cámara. La configuración ocurre después y
 los datos mutables permanecen bajo `C:\ProgramData\NexoAI Vision`, separados
@@ -108,6 +113,12 @@ C:\ProgramData\NexoAI Vision\runtime\output
 C:\ProgramData\NexoAI Vision\runtime\logs
 ```
 
+La carpeta `output` usa el
+[contrato v1 de eventos y evidencias](../../docs/operator-evidence-contract-v1.md):
+`Reporte_Eventos_Seguridad.csv` y `Evidencias/`. Esa es la salida autoritativa del
+runtime MSI. El MSI no genera `Reporte_Eventos_Seguridad.xlsx`; dicho archivo es
+solo una exportación local/offline del harness Python de QA.
+
 Los usuarios estándar reciben permisos de modificación solo en esas cuatro
 carpetas. Los binarios conservan los permisos endurecidos heredados de
 `Program Files`. La instalación crea el acceso principal **NexoAI Vision**
@@ -118,6 +129,11 @@ Al actualizar desde Cuajone PPE Monitor, el MSI no mueve ni elimina
 propia carpeta y el iniciador conserva lectura de modelos desde la ruta heredada.
 El valor `ComputeMode` se busca primero en `HKLM\SOFTWARE\NexoAI Vision` y después
 en la clave heredada; una instalación nueva escribe solo la clave NexoAI Vision.
+
+Dentro de una carpeta de salida reutilizada, `native_events.csv` y `evidence/` de
+versiones anteriores también permanecen intactos. El runtime nuevo escribe los
+nombres v1 al lado; soporte no debe concatenar ambos CSV porque sus columnas no son
+compatibles.
 
 La pantalla de cómputo ofrece Auto, GPU (CUDA) y CPU. GPU se marca como no disponible si DXGI y
 la API del driver CUDA 12.9 (`12090`) no están listos o ningún dispositivo alcanza

@@ -28,6 +28,11 @@ def native_module() -> SimpleNamespace:
         CONTRACT_VERSION=CONTRACT_VERSION,
         ENGINE_RUNTIME_AVAILABLE=True,
         ComputeBackend=SimpleNamespace(CPU="cpu", CUDA="cuda"),
+        InferenceProvider=SimpleNamespace(
+            ONNX_RUNTIME_CPU="onnx-runtime-cpu",
+            ONNX_RUNTIME_CUDA="onnx-runtime-cuda",
+            TENSORRT="tensorrt",
+        ),
         AnalyticsMode=SimpleNamespace(PPE_ONLY="ppe-only", PPE_FALL="ppe-fall"),
         AnalyticsConfig=_Values,
         TrackerConfig=_Values,
@@ -53,9 +58,46 @@ def test_native_backend_maps_cpu_onnx_config() -> None:
 
     config = backend._engine_pipeline.config
     assert config.backend == "cpu"
+    assert config.provider == "onnx-runtime-cpu"
     assert config.ppe_onnx == "ppe.onnx"
     assert config.pose_onnx == "pose.onnx"
     assert config.device is None
+
+
+@pytest.mark.parametrize(
+    ("provider", "artifacts", "expected_provider"),
+    (
+        (
+            "onnx-runtime-cuda",
+            {
+                "ppe_onnx": "ppe.onnx",
+                "pose_onnx": "pose.onnx",
+                "ppe_labels": {0: "Person"},
+            },
+            "onnx-runtime-cuda",
+        ),
+        (
+            "tensorrt",
+            {"ppe_engine": "ppe.engine", "pose_engine": "pose.engine"},
+            "tensorrt",
+        ),
+    ),
+)
+def test_native_backend_maps_explicit_cuda_provider(
+    provider: str,
+    artifacts: dict[str, object],
+    expected_provider: str,
+) -> None:
+    backend = NativeBackend(
+        QaRuntimeConfig.defaults(mode="ppe-fall", backend="native"),
+        module=native_module(),
+        engine_config={"backend": "cuda", "provider": provider, **artifacts},
+    )
+
+    config = backend._engine_pipeline.config
+    assert config.backend == "cuda"
+    assert config.provider == expected_provider
+    assert config.device == 0
 
 
 @pytest.mark.parametrize(
@@ -64,7 +106,8 @@ def test_native_backend_maps_cpu_onnx_config() -> None:
         ({"backend": "cpu", "ppe_labels": {0: "Person"}}, "ppe_onnx"),
         ({"backend": "cpu", "ppe_onnx": "ppe.onnx", "ppe_labels": {0: "Person"}}, "pose_onnx"),
         ({"backend": "cpu", "ppe_onnx": "ppe.onnx", "pose_onnx": "pose.onnx"}, "ppe_labels"),
-        ({"backend": "auto"}, "cpu or cuda"),
+        ({"backend": "auto"}, "backend/provider"),
+        ({"backend": "cpu", "provider": "tensorrt"}, "backend/provider"),
     ),
 )
 def test_native_backend_rejects_incomplete_or_unresolved_engine_config(

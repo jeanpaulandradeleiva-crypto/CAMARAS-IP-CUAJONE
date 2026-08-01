@@ -7,6 +7,7 @@
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
 
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
@@ -44,9 +45,9 @@ inline void appendStringField(Bytes& output, std::uint32_t field, std::string_vi
     appendBytesField(output, field, std::as_bytes(std::span(value.data(), value.size())));
 }
 
-inline Bytes tensorShape() {
+inline Bytes tensorShape(std::span<const std::uint64_t> dimensions) {
     Bytes shape;
-    for (const std::uint64_t dimension : {1ULL, 3ULL, 2ULL, 2ULL}) {
+    for (const std::uint64_t dimension : dimensions) {
         Bytes dim;
         appendVarintField(dim, 1, dimension);
         appendBytesField(shape, 1, dim);
@@ -54,10 +55,10 @@ inline Bytes tensorShape() {
     return shape;
 }
 
-inline Bytes valueInfo(std::string_view name) {
+inline Bytes valueInfo(std::string_view name, std::span<const std::uint64_t> dimensions) {
     Bytes tensor_type;
     appendVarintField(tensor_type, 1, 1);  // FLOAT
-    const Bytes shape = tensorShape();
+    const Bytes shape = tensorShape(dimensions);
     appendBytesField(tensor_type, 2, shape);
     Bytes type;
     appendBytesField(type, 1, tensor_type);
@@ -65,6 +66,11 @@ inline Bytes valueInfo(std::string_view name) {
     appendStringField(value, 1, name);
     appendBytesField(value, 2, type);
     return value;
+}
+
+inline Bytes valueInfo(std::string_view name) {
+    constexpr std::array dimensions{1ULL, 3ULL, 2ULL, 2ULL};
+    return valueInfo(name, dimensions);
 }
 
 inline Bytes identityModel(std::string_view node_domain = {}) {
@@ -125,6 +131,48 @@ inline Bytes addModel() {
     appendBytesField(model, 7, graph);
     appendBytesField(model, 8, opset);
     return model;
+}
+
+inline Bytes constantPoseModel() {
+    constexpr std::array input_dimensions{1ULL, 3ULL, 640ULL, 640ULL};
+    constexpr std::array output_dimensions{1ULL, 1ULL, 56ULL};
+    const std::vector<float> values(56, 0.0F);
+    Bytes tensor;
+    for (const std::uint64_t dimension : output_dimensions) {
+        appendVarintField(tensor, 1, dimension);
+    }
+    appendVarintField(tensor, 2, 1);  // FLOAT
+    appendStringField(tensor, 8, "output");
+    appendBytesField(tensor, 9, std::as_bytes(std::span(values)));
+
+    Bytes graph;
+    appendStringField(graph, 2, "cuajone-synthetic-pose-contract");
+    appendBytesField(graph, 5, tensor);
+    const Bytes input = valueInfo("input", input_dimensions);
+    const Bytes output = valueInfo("output", output_dimensions);
+    appendBytesField(graph, 11, input);
+    appendBytesField(graph, 12, output);
+
+    Bytes opset;
+    appendVarintField(opset, 2, 21);
+    Bytes model;
+    appendVarintField(model, 1, 10);
+    appendStringField(model, 2, "cuajone-tests");
+    appendBytesField(model, 7, graph);
+    appendBytesField(model, 8, opset);
+    return model;
+}
+
+inline std::string poseManifest(const std::filesystem::path& model_path, const Bytes& model) {
+    return "{\"schema_version\":1,\"artifact_type\":\"onnx\",\"role\":\"pose\","
+           "\"model_file\":\"" + model_path.filename().string()
+        + "\",\"model_sha256\":\"" + sha256Hex(model) + "\",\"model_size_bytes\":"
+        + std::to_string(model.size())
+        + ",\"external_data\":false,\"custom_operators\":false,"
+          "\"input\":{\"name\":\"input\",\"element_type\":\"float32\",\"shape\":[1,3,640,640]},"
+          "\"output\":{\"name\":\"output\",\"element_type\":\"float32\",\"shape\":[1,1,56]},"
+          "\"provenance\":{\"source_uri\":\"urn:cuajone:synthetic-pose-contract\","
+          "\"exporter\":\"cuajone-tests\",\"license\":\"AGPL-3.0-only\"}}";
 }
 
 inline Bytes externalDataModel() {
