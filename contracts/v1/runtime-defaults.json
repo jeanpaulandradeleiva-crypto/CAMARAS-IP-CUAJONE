@@ -8,10 +8,13 @@
     "maximum_detections": 300
   },
   "tracker": {
-    "profile": "native-iou",
-    "minimum_iou": 0.3,
+    "profile": "byte-track-eigen",
+    "high_confidence_threshold": 0.35,
+    "low_confidence_threshold": 0.1,
+    "match_threshold": 0.8,
     "maximum_age": 30,
-    "maximum_tracks": 128
+    "maximum_tracks": 128,
+    "frame_rate": 30
   },
   "ppe": {
     "window": 20,

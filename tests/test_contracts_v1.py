@@ -38,7 +38,7 @@ def test_invalid_synthetic_fixture(name: str) -> None:
 
 
 def test_defaults_and_semantic_labels_are_versioned() -> None:
-    assert runtime_defaults()["tracker"]["profile"] == "native-iou"
+    assert runtime_defaults()["tracker"]["profile"] == "byte-track-eigen"
     assert set(ppe_labels()["semantics"]) == {"person", "helmet", "vest"}
 
 

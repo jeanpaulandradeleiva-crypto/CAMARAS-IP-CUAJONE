@@ -598,6 +598,10 @@ $tensorRtRoot = Join-Path $ToolRoot "tensorrt\TensorRT-11.1.0.106"
 $tensorRtBin = Join-Path $tensorRtRoot "bin"
 $onnxRuntimeRoot = Join-Path $ToolRoot "onnxruntime-win-x64-1.25.0"
 $onnxRuntimeGpuDefaultRoot = Join-Path $ToolRoot "onnxruntime-win-x64-gpu-1.25.0"
+$byteTrackCommit = "a865158906f6138465668810a98ffd918d95f9a3"
+$eigenCommit = "3147391d946bb4b6c68edd901f2add6ac1f31f8c"
+$byteTrackRoot = Join-Path $ToolRoot "dependencies\byte-track-eigen-$byteTrackCommit"
+$eigenRoot = Join-Path $ToolRoot "dependencies\eigen-$eigenCommit"
 if ([string]::IsNullOrWhiteSpace($OnnxRuntimeGpuRoot)) { $OnnxRuntimeGpuRoot = $onnxRuntimeGpuDefaultRoot }
 $onnxRuntimeBin = Join-Path $onnxRuntimeRoot "lib"
 $msvcCrt = Join-Path $ToolRoot "vs\VC\Redist\MSVC\14.44.35112\x64\Microsoft.VC143.CRT"
@@ -605,6 +609,11 @@ $searchDirectories = @($openCvBin, $cudaBin, $cublasBin, $cudnnBin, $cufftBin, $
 
 Assert-File $dumpbin "MSVC dumpbin"
 Assert-File $wix "WiX CLI"
+Assert-File (Join-Path $byteTrackRoot "LICENSE") "ByteTrack-Eigen MIT license"
+Assert-File (Join-Path $byteTrackRoot ".cuajone-source-receipt.json") "ByteTrack-Eigen source receipt"
+Assert-File (Join-Path $eigenRoot "COPYING.MPL2") "Eigen MPL-2.0 license"
+Assert-File (Join-Path $eigenRoot "COPYING.README") "Eigen licensing readme"
+Assert-File (Join-Path $eigenRoot ".cuajone-source-receipt.json") "Eigen source receipt"
 Ensure-OnnxRuntimeCudaPackage $OnnxRuntimeGpuRoot
 Expand-VerifiedNvidiaWheel $cublasWheel "623f43027d40d44ceadf0043f002bd25cf353e8f13ce90b9a87057019f560661" $cublasRoot "nvidia\cublas\bin\cublasLt64_12.dll" "NVIDIA cuBLAS Windows wheel"
 Expand-VerifiedNvidiaWheel $cudnnWheel "cbd41a0ab084422c936dc9fb2fc89be5ea9a85bc421c6f23d0243bdfc945fbef" $cudnnRoot "nvidia\cudnn\bin\cudnn64_9.dll" "NVIDIA cuDNN Windows wheel"
@@ -928,6 +937,9 @@ Copy-StagedInput $cufftLicense (Join-Path $stageLicenses.FullName "NVIDIA-cuFFT-
 Copy-StagedInput (Join-Path $tensorRtRoot "doc\README.txt") (Join-Path $stageLicenses.FullName "NVIDIA-TensorRT-README.txt") "tool" "TensorRT redistribution and license reference"
 Copy-StagedInput (Join-Path $onnxRuntimeRoot "LICENSE") (Join-Path $stageLicenses.FullName "ONNX-Runtime-LICENSE.txt") "tool" "ONNX Runtime MIT license"
 Copy-StagedInput (Join-Path $onnxRuntimeRoot "ThirdPartyNotices.txt") (Join-Path $stageLicenses.FullName "ONNX-Runtime-ThirdPartyNotices.txt") "tool" "ONNX Runtime third-party notices"
+Copy-StagedInput (Join-Path $byteTrackRoot "LICENSE") (Join-Path $stageLicenses.FullName "ByteTrack-Eigen-MIT.txt") "tool" "Statically linked ByteTrack-Eigen license"
+Copy-StagedInput (Join-Path $eigenRoot "COPYING.MPL2") (Join-Path $stageLicenses.FullName "Eigen-MPL-2.0.txt") "tool" "Statically linked Eigen license"
+Copy-StagedInput (Join-Path $eigenRoot "COPYING.README") (Join-Path $stageLicenses.FullName "Eigen-COPYING-README.txt") "tool" "Eigen licensing scope and EIGEN_MPL2_ONLY notice"
 
 $projectSourceAvailability = if ($BuildMode -eq "Release") {
     "$SourceArchiveUrl`nSHA-256: $($SourceArchiveSha256.ToLowerInvariant())"
@@ -1090,6 +1102,35 @@ $sbomPackages = @($resolved.GetEnumerator() | Sort-Object Key | ForEach-Object {
         copyrightText = "NOASSERTION"
     }
 })
+$sbomPackages += @(
+    [ordered]@{
+        SPDXID = "SPDXRef-Static-ByteTrack-Eigen"
+        name = "byte-track-eigen"
+        versionInfo = "2.1.0"
+        downloadLocation = "https://codeload.github.com/cj-mills/byte-track-eigen/zip/$byteTrackCommit"
+        filesAnalyzed = $false
+        checksums = @([ordered]@{ algorithm = "SHA256"; checksumValue = "e5a075df5e8b4ed4bb7436ffe7fe0f4cee5c6a6663112d6a1c47a99ffb704d88" })
+        licenseConcluded = "MIT"
+        licenseDeclared = "MIT"
+        copyrightText = "Copyright (c) 2023 Christian J. Mills"
+    },
+    [ordered]@{
+        SPDXID = "SPDXRef-Static-Eigen"
+        name = "eigen"
+        versionInfo = "3.4.0"
+        downloadLocation = "https://gitlab.com/libeigen/eigen/-/archive/$eigenCommit/eigen-$eigenCommit.zip"
+        filesAnalyzed = $false
+        checksums = @([ordered]@{ algorithm = "SHA256"; checksumValue = "9eec4ec4e5e459b2f59dbbaa4280e1bb3ee61cccd8a7c0af0321d29d95fece9e" })
+        licenseConcluded = "MPL-2.0"
+        licenseDeclared = "MPL-2.0"
+        copyrightText = "NOASSERTION"
+    }
+)
+$releasePackageName = Split-Path -Leaf $ReleaseExecutable
+$releasePackage = @($sbomPackages | Where-Object { $_.name -ceq $releasePackageName })
+if ($releasePackage.Count -ne 1) {
+    throw "Could not identify the application package for static-dependency SBOM relationships"
+}
 $sbom = [ordered]@{
     spdxVersion = "SPDX-2.3"
     dataLicense = "CC0-1.0"
@@ -1101,6 +1142,10 @@ $sbom = [ordered]@{
         creators = @("Tool: installer/native/build-installer.ps1")
     }
     packages = $sbomPackages
+    relationships = @(
+        [ordered]@{ spdxElementId = $releasePackage[0].SPDXID; relationshipType = "STATIC_LINK"; relatedSpdxElement = "SPDXRef-Static-ByteTrack-Eigen" },
+        [ordered]@{ spdxElementId = $releasePackage[0].SPDXID; relationshipType = "STATIC_LINK"; relatedSpdxElement = "SPDXRef-Static-Eigen" }
+    )
 }
 $sbom | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath (Join-Path $stageDocs.FullName "sbom.spdx.json") -Encoding UTF8
 

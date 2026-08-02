@@ -109,9 +109,12 @@ class NativeBackend:
             else self._module.AnalyticsMode.PPE_FALL
         )
         tracker = self._module.TrackerConfig()
-        tracker.minimum_iou = values["tracker"]["minimum_iou"]
+        tracker.high_confidence_threshold = values["tracker"]["high_confidence_threshold"]
+        tracker.low_confidence_threshold = values["tracker"]["low_confidence_threshold"]
+        tracker.match_threshold = values["tracker"]["match_threshold"]
         tracker.maximum_age = values["tracker"]["maximum_age"]
         tracker.maximum_tracks = values["tracker"]["maximum_tracks"]
+        tracker.frame_rate = values["tracker"]["frame_rate"]
         result.tracker = tracker
         ppe = self._module.PpeConfig()
         ppe.window = values["ppe"]["window"]

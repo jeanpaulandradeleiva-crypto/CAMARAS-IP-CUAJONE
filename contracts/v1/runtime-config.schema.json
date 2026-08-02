@@ -30,12 +30,15 @@
     "tracker": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["profile", "minimum_iou", "maximum_age", "maximum_tracks"],
+      "required": ["profile", "high_confidence_threshold", "low_confidence_threshold", "match_threshold", "maximum_age", "maximum_tracks", "frame_rate"],
       "properties": {
-        "profile": {"const": "native-iou"},
-        "minimum_iou": {"type": "number", "minimum": 0, "maximum": 1},
+        "profile": {"const": "byte-track-eigen"},
+        "high_confidence_threshold": {"type": "number", "exclusiveMinimum": 0.2, "maximum": 1},
+        "low_confidence_threshold": {"const": 0.1},
+        "match_threshold": {"type": "number", "minimum": 0, "maximum": 1},
         "maximum_age": {"type": "integer", "minimum": 1},
-        "maximum_tracks": {"type": "integer", "minimum": 1}
+        "maximum_tracks": {"type": "integer", "minimum": 1},
+        "frame_rate": {"type": "integer", "minimum": 1}
       }
     },
     "ppe": {

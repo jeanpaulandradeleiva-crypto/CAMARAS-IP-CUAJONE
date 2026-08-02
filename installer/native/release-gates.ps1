@@ -89,9 +89,9 @@ function Assert-ProductionParityReceipt(
         }
     }
 
-    if ($receipt.tracker_profiles.production_sim -cne "native-iou" -or
+    if ($receipt.tracker_profiles.production_sim -cne "byte-track-eigen" -or
         $receipt.tracker_profiles.experimental_live -cne "ultralytics-bytetrack-not-equivalent") {
-        throw "Parity receipt must preserve the explicit native-IoU versus ByteTrack distinction"
+        throw "Parity receipt must preserve the explicit native ByteTrack-Eigen versus experimental distinction"
     }
     $expectedTolerances = [ordered]@{
         box_absolute = 0.0001

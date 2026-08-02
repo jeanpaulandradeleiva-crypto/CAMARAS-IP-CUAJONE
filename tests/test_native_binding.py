@@ -16,7 +16,7 @@ from cuajone_qa.backends.native import NativeBackend
 from cuajone_qa.canonical import canonical_json, safe_source_id
 from cuajone_qa.config import QaRuntimeConfig
 from cuajone_qa.contracts import runtime_defaults
-from cuajone_qa.parity import run_synthetic_parity, synthetic_frames
+from cuajone_qa.parity import normalize_track_identities, run_synthetic_parity, synthetic_frames
 
 native = pytest.importorskip("cuajone_native")
 
@@ -132,7 +132,7 @@ def test_actual_binding_staged_synthetic_parity() -> None:
     assert receipt["stages"][-1]["status"] == "skipped"
 
 
-def test_binding_and_python_emit_exact_canonical_json() -> None:
+def test_binding_and_python_emit_exact_canonical_json_after_identity_normalization() -> None:
     values = deepcopy(binding_config().values)
     values["analytics"]["mode"] = "ppe-only"
     values["ppe"]["window"] = 1
@@ -160,8 +160,16 @@ def test_binding_and_python_emit_exact_canonical_json() -> None:
     )
     experimental = ExperimentalBackend(config).process_observations(frame)
 
-    assert native_bundle[0] == canonical_json(experimental.frame_result)
-    assert native_bundle[1] == [canonical_json(event) for event in experimental.events]
+    native_frame, native_events = normalize_track_identities(
+        json.loads(native_bundle[0]), [json.loads(event) for event in native_bundle[1]]
+    )
+    experimental_frame, experimental_events = normalize_track_identities(
+        experimental.frame_result, experimental.events
+    )
+    assert canonical_json(native_frame) == canonical_json(experimental_frame)
+    assert [canonical_json(event) for event in native_events] == [
+        canonical_json(event) for event in experimental_events
+    ]
 
 
 @pytest.mark.parametrize("source_id", ("CAMERA_01", "ZONE/A 01", "camera:west"))

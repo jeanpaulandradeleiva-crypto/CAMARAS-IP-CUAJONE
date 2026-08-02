@@ -10,7 +10,7 @@
     {"identity": "authorized-video", "sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"}
   ],
   "tracker_profiles": {
-    "production_sim": "native-iou",
+    "production_sim": "byte-track-eigen",
     "experimental_live": "ultralytics-bytetrack-not-equivalent"
   },
   "numeric_tolerances": {

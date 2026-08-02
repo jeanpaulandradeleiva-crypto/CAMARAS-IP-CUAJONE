@@ -40,10 +40,12 @@ struct RuntimeConfig {
     float ppe_confidence{0.30F};
     float pose_confidence{0.35F};
     float nms_iou{0.45F};
-    float tracker_iou{0.30F};
+    float tracker_high_threshold{0.35F};
+    float tracker_match_threshold{0.80F};
     std::size_t max_det{300};
     std::size_t tracker_max_age{30};
     std::size_t tracker_max_tracks{128};
+    int tracker_frame_rate{30};
     double target_fps{};
     double reconnect_delay_seconds{5.0};
     double maximum_reconnect_delay_seconds{30.0};

@@ -37,7 +37,8 @@ uv run python ppe_reportev2.py --mode ppe-only --preflight
 
 Configura en el `.env` local las rutas de `PPE_ONNX_PATH`, `POSE_ONNX_PATH` y sus
 manifests adyacentes. `PPE_LABELS` declara el orden fijo de clases del ONNX. El
-facade no carga modelos `.pt`, PyTorch, Ultralytics ni ByteTrack.
+facade Python no carga modelos `.pt`, PyTorch ni Ultralytics. El backend nativo
+enlaza ByteTrack-Eigen estaticamente sin importar paquetes Python.
 
 La configuración mínima de QA es:
 
@@ -113,7 +114,8 @@ personas.
 
 ## Ultralytics experimental
 
-La antigua analítica `.pt`/`.engine`, selección PyTorch CUDA y ByteTrack vive
+La antigua analítica `.pt`/`.engine`, selección PyTorch CUDA y ByteTrack de
+Ultralytics vive
 explícitamente en `cuajone_qa/experimental/legacy_ultralytics.py`. Se conserva para
 compatibilidad de experimentos y caracterización, no como ruta de producción ni
 como implementación del facade raíz.

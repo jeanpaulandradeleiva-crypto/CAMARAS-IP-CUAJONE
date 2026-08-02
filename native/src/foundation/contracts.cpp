@@ -144,7 +144,7 @@ std::string canonicalJson(const CanonicalFrameResult& result) {
 }
 
 std::string runtimeDefaultsJson() {
-    return R"({"analytics":{"backend":"native","mode":"ppe-fall"},"contract_version":"1.0.0","fall":{"alert_cooldown_ms":120000,"aspect_ratio":1.05,"confirm_frames":12,"descent_ratio":0.12,"near_floor_ratio":0.65,"reset_frames":20,"torso_angle_degrees":55.0,"track_ttl_ms":5000},"ppe":{"alert_cooldown_ms":60000,"minimum_samples":12,"present_ratio":0.35,"track_ttl_ms":5000,"window":20},"thresholds":{"maximum_detections":300,"nms_iou":0.45,"pose_confidence":0.35,"ppe_confidence":0.3},"tracker":{"maximum_age":30,"maximum_tracks":128,"minimum_iou":0.3,"profile":"native-iou"}})";
+    return R"({"analytics":{"backend":"native","mode":"ppe-fall"},"contract_version":"1.0.0","fall":{"alert_cooldown_ms":120000,"aspect_ratio":1.05,"confirm_frames":12,"descent_ratio":0.12,"near_floor_ratio":0.65,"reset_frames":20,"torso_angle_degrees":55.0,"track_ttl_ms":5000},"ppe":{"alert_cooldown_ms":60000,"minimum_samples":12,"present_ratio":0.35,"track_ttl_ms":5000,"window":20},"thresholds":{"maximum_detections":300,"nms_iou":0.45,"pose_confidence":0.35,"ppe_confidence":0.3},"tracker":{"frame_rate":30,"high_confidence_threshold":0.35,"low_confidence_threshold":0.1,"match_threshold":0.8,"maximum_age":30,"maximum_tracks":128,"profile":"byte-track-eigen"}})";
 }
 
 }  // namespace cuajone

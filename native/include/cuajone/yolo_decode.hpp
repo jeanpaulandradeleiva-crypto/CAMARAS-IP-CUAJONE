@@ -18,7 +18,13 @@ enum class TensorLayout {
     PredictionsFirst,
 };
 
+enum class YoloOutputFormat {
+    Raw,
+    PoseEndToEnd,
+};
+
 struct YoloSchema {
+    YoloOutputFormat format{YoloOutputFormat::Raw};
     TensorLayout layout{};
     std::size_t predictions{};
     std::size_t channels{};

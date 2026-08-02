@@ -13,7 +13,7 @@ from typing import Any
 
 from .backends.experimental import ExperimentalBackend
 from .backends.native import NativeBackend
-from .canonical import canonical_json, normalize_event
+from .canonical import normalize_event
 from .config import QaRuntimeConfig
 from .contracts import CONTRACT_VERSION, runtime_defaults, validate_instance
 
@@ -73,6 +73,42 @@ def _close(left: Any, right: Any, tolerance: float = 1e-5) -> bool:
     if isinstance(left, list) and isinstance(right, list):
         return len(left) == len(right) and all(_close(a, b, tolerance) for a, b in zip(left, right))
     return left == right
+
+
+def normalize_track_identities(
+    frame_result: dict[str, Any],
+    events: list[dict[str, Any]] | None = None,
+) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    """Compare tracker behavior without requiring process-global IDs to restart at one."""
+    normalized_frame = deepcopy(frame_result)
+    people = sorted(normalized_frame.get("people", []), key=lambda person: tuple(person["box"]))
+    identity_map = {
+        person["track_id"]: index for index, person in enumerate(people, start=1)
+    }
+    for person in people:
+        person["track_id"] = identity_map[person["track_id"]]
+    normalized_frame["people"] = people
+
+    def event_id(value: str, track_id: int) -> str:
+        parts = value.rsplit("-", 2)
+        if len(parts) != 3:
+            raise ValueError("Canonical event ID does not contain track and event suffixes")
+        parts[1] = str(identity_map[track_id])
+        return "-".join(parts)
+
+    normalized_frame["events"] = sorted(
+        event_id(value, int(value.rsplit("-", 2)[1]))
+        for value in normalized_frame.get("events", [])
+    )
+    normalized_events = list(deepcopy(events or []))
+    for event in normalized_events:
+        payload = event.get("data", event)
+        original = payload["track_id"]
+        payload["track_id"] = identity_map[original]
+        event["subject"] = f"track/{identity_map[original]}"
+        event["id"] = event_id(event["id"], original)
+    normalized_events.sort(key=lambda event: event["id"])
+    return normalized_frame, normalized_events
 
 
 def _letterbox(width: int, height: int, model_width: int, model_height: int) -> dict[str, Any]:
@@ -173,7 +209,7 @@ def build_authorized_receipt(
         "authorization_reference": authorization_reference,
         "approved_inputs": deepcopy(approved_inputs),
         "tracker_profiles": {
-            "production_sim": "native-iou",
+            "production_sim": "byte-track-eigen",
             "experimental_live": "ultralytics-bytetrack-not-equivalent",
         },
         "numeric_tolerances": NUMERIC_TOLERANCES,
@@ -207,18 +243,26 @@ def run_synthetic_parity(
 
     native_results = [native.process_observations(frame) for frame in synthetic_frames()]
     experimental_results = [experimental.process_observations(frame) for frame in synthetic_frames()]
-    first_equal = _close(native_results[0].frame_result["people"], experimental_results[0].frame_result["people"])
+    native_first, _ = normalize_track_identities(native_results[0].frame_result)
+    experimental_first, _ = normalize_track_identities(experimental_results[0].frame_result)
+    first_equal = _close(native_first["people"], experimental_first["people"])
     stages.append({"name": "detections-keypoints-canonicalization", "status": "passed" if first_equal else "failed", "comparisons": len(native_results[0].frame_result["people"])})
 
-    final_equal = _close(native_results[-1].frame_result, experimental_results[-1].frame_result)
-    native_before_reset = canonical_json(native_results[-1].frame_result)
+    native_final, native_events = normalize_track_identities(
+        native_results[-1].frame_result, native_results[-1].events
+    )
+    experimental_final, experimental_events = normalize_track_identities(
+        experimental_results[-1].frame_result, experimental_results[-1].events
+    )
+    final_equal = _close(native_final, experimental_final)
     native.reset()
     native_repeated = [native.process_observations(frame) for frame in synthetic_frames()][-1]
-    deterministic = canonical_json(native_repeated.frame_result) == native_before_reset
+    repeated_final, _ = normalize_track_identities(native_repeated.frame_result)
+    deterministic = _close(repeated_final, native_final)
     stages.append({"name": "tracking-ppe-fall-determinism", "status": "passed" if final_equal and deterministic else "failed", "comparisons": 2})
 
-    native_events = [normalize_event(event) for event in native_results[-1].events]
-    experimental_events = [normalize_event(event) for event in experimental_results[-1].events]
+    native_events = [normalize_event(event) for event in native_events]
+    experimental_events = [normalize_event(event) for event in experimental_events]
     events_equal = _close(native_events, experimental_events)
     stages.append({"name": "canonical-events", "status": "passed" if events_equal else "failed", "comparisons": len(native_events)})
     # Synthetic observations prove deterministic semantics, never model/engine parity.
@@ -236,7 +280,7 @@ def run_synthetic_parity(
         "generated_at": datetime.now(UTC).isoformat().replace("+00:00", "Z"),
         "scope": "synthetic-only",
         "tracker_profiles": {
-            "production_sim": "native-iou",
+            "production_sim": "byte-track-eigen",
             "experimental_live": "ultralytics-bytetrack-not-equivalent",
         },
         "numeric_tolerances": NUMERIC_TOLERANCES,

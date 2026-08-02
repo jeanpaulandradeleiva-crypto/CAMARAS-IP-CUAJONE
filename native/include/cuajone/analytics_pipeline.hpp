@@ -3,8 +3,8 @@
 #pragma once
 
 #include "cuajone/contracts.hpp"
+#include "cuajone/byte_tracker.hpp"
 #include "cuajone/fall_analytics.hpp"
-#include "cuajone/iou_tracker.hpp"
 #include "cuajone/ppe_analytics.hpp"
 
 #include <cstdint>
@@ -17,7 +17,7 @@ namespace cuajone {
 
 struct AnalyticsPipelineConfig {
     AnalyticsMode mode{AnalyticsMode::PpeFall};
-    IoUTrackerConfig tracker;
+    ByteTrackConfig tracker;
     PpeConfig ppe;
     FallConfig fall;
     float pose_confidence{0.35F};
@@ -53,7 +53,7 @@ public:
 
 private:
     AnalyticsPipelineConfig config_;
-    IoUTracker tracker_;
+    ByteTracker tracker_;
     PpeAnalyzer ppe_analyzer_;
     FallAnalyzer fall_analyzer_;
     std::optional<std::uint64_t> last_frame_id_;

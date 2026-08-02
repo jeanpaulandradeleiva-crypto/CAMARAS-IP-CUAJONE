@@ -30,6 +30,14 @@ avisos de terceros. El paquete MSI conserva la licencia upstream, registra el
 asset oficial por URL y SHA-256, e inventaría `onnxruntime.dll` en un SBOM SPDX
 2.3. ONNX Runtime no relicencia los modelos ONNX aportados por el operador.
 
+El runtime nativo enlaza estaticamente ByteTrack-Eigen 2.1.0 bajo MIT, fijado al
+commit `a865158906f6138465668810a98ffd918d95f9a3`, y Eigen 3.4.0, fijado al
+commit `3147391d946bb4b6c68edd901f2add6ac1f31f8c`. Eigen se compila con
+`EIGEN_MPL2_ONLY` y conserva MPL-2.0. El instalador incluye ambos textos de
+licencia, sus hashes de archivo fuente y relaciones `STATIC_LINK` en el SBOM. Una
+distribucion de Eigen en forma ejecutable debe mantener disponible el codigo
+fuente cubierto por MPL-2.0 mediante un medio razonable y oportuno.
+
 ## Runtime Python de QA y herramientas opcionales
 
 `jsonschema` 4.25.1 (MIT) es una dependencia requerida del runtime Python de QA

@@ -56,7 +56,7 @@ function New-PositiveReceipt([string]$Commit) {
             [ordered]@{ identity = "authorized-video"; sha256 = New-TestHash 'b' }
         )
         tracker_profiles = [ordered]@{
-            production_sim = "native-iou"
+            production_sim = "byte-track-eigen"
             experimental_live = "ultralytics-bytetrack-not-equivalent"
         }
         numeric_tolerances = [ordered]@{

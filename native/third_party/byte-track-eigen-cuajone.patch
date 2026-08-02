@@ -1,0 +1,272 @@
+diff --git a/include/BYTETracker.h b/include/BYTETracker.h
+index 85e2a92..ec02102 100644
+--- a/include/BYTETracker.h
++++ b/include/BYTETracker.h
+@@ -34,7 +34,8 @@ public:
+      * @param match_thresh Threshold for matching detections to tracks.
+      * @param frame_rate Frame rate of the video being processed.
+      */
+-    BYTETracker(float track_thresh = 0.25, int track_buffer = 30, float match_thresh = 0.8, int frame_rate = 30);
++    BYTETracker(float track_thresh = 0.25, int track_buffer = 30, float match_thresh = 0.8,
++        int frame_rate = 30, std::size_t maximum_tracks = 128);
+ 
+ private:
+     // Internal constants and thresholds
+@@ -50,6 +51,7 @@ private:
+     float det_thresh;   // Detection threshold for filtering weak detections.
+     int buffer_size;    // Size of the history buffer for tracks.
+     int max_time_lost;  // Maximum time a track can be lost before removal.
++    std::size_t maximum_tracks;
+ 
+     // Kalman filter and track lists
+     KalmanFilter kalman_filter; // Kalman filter for state estimation.
+@@ -105,5 +107,7 @@ public:
+      * @return std::vector<KalmanBBoxTrack> List of updated tracks after processing the frame.
+      */
+     std::vector<KalmanBBoxTrack> process_frame_detections(const Eigen::MatrixXf& output_results);
++    std::size_t retained_track_count() const;
++    void reset();
+ 
+ };
+diff --git a/include/BaseTrack.h b/include/BaseTrack.h
+index 85110c0..83b4cc6 100644
+--- a/include/BaseTrack.h
++++ b/include/BaseTrack.h
+@@ -1,5 +1,6 @@
+ #pragma once
+ 
++#include <atomic>
+ #include <iostream>
+ #include <map>
+ #include <vector>
+@@ -22,7 +23,7 @@ enum class TrackState {
+  */
+ class BaseTrack {
+ private:
+-    static int _count; // Static counter used to assign unique IDs to each track.
++    static std::atomic<int> _count; // Process-wide counter used to assign unique IDs safely.
+ 
+ protected:
+     int track_id; // Unique identifier for the track.
+diff --git a/include/Export.h b/include/Export.h
+index 890129f..398aa60 100644
+--- a/include/Export.h
++++ b/include/Export.h
+@@ -1,4 +1,6 @@
+-#ifdef BUILDING_BYTE_TRACK_EIGEN
++#ifdef BYTE_TRACK_EIGEN_STATIC
++#define BYTE_TRACK_EIGEN_API
++#elif defined(BUILDING_BYTE_TRACK_EIGEN)
+ #ifdef _WIN32
+ #define BYTE_TRACK_EIGEN_API __declspec(dllexport)
+ #else
+@@ -10,4 +12,4 @@
+ #else
+ #define BYTE_TRACK_EIGEN_API
+ #endif
+-#endif
+\ No newline at end of file
++#endif
+diff --git a/src/BYTETracker.cpp b/src/BYTETracker.cpp
+index e9b603e..3fd7164 100644
+--- a/src/BYTETracker.cpp
++++ b/src/BYTETracker.cpp
+@@ -1,5 +1,8 @@
+ #include "BYTETracker.h"
+ 
++#include <cmath>
++#include <unordered_set>
++
+ /**
+  * @brief Constructor for the BYTETracker class.
+  *
+@@ -16,22 +19,27 @@
+  * @param frame_rate The frame rate of the video being processed.
+  *        It is used to adjust the buffer size relative to the BASE_FRAME_RATE.
+  */
+-BYTETracker::BYTETracker(float track_thresh, int track_buffer, float match_thresh, int frame_rate) :
++BYTETracker::BYTETracker(float track_thresh, int track_buffer, float match_thresh, int frame_rate,
++    std::size_t maximum_tracks) :
+ 	track_thresh(track_thresh),
+ 	match_thresh(match_thresh),
+ 	frame_id(0),
+ 	det_thresh(track_thresh + MIN_KEEP_THRESH),
+ 	buffer_size(static_cast<int>(frame_rate / BASE_FRAME_RATE * track_buffer)),
+ 	max_time_lost(buffer_size),
++	maximum_tracks(maximum_tracks),
+ 	kalman_filter(KalmanFilter())
+ {
++	if (!std::isfinite(track_thresh) || track_thresh <= MIN_KEEP_THRESH || track_thresh >= 1.0f
++		|| !std::isfinite(match_thresh) || match_thresh < 0.0f || match_thresh > 1.0f
++		|| track_buffer <= 0 || frame_rate <= 0 || maximum_tracks == 0) {
++		throw std::invalid_argument("Invalid ByteTrack configuration");
++	}
+ 	// Initialize tracking lists
+ 	tracked_tracks.clear();
+ 	lost_tracks.clear();
+ 	removed_tracks.clear();
+ 
+-	// Reset the BaseTrack counter to ensure track IDs are unique per instance
+-	BaseTrack::reset_count();
+ }
+ 
+ /**
+@@ -346,10 +354,10 @@ void BYTETracker::handle_lost_and_removed_tracks(
+ 	// or have been marked as removed
+ 	this->lost_tracks = sub_tracks(this->lost_tracks, this->tracked_tracks);
+ 	this->lost_tracks.insert(this->lost_tracks.end(), lost_tracks.begin(), lost_tracks.end());
+-	this->lost_tracks = sub_tracks(this->lost_tracks, this->removed_tracks);
++	this->lost_tracks = sub_tracks(this->lost_tracks, removed_tracks);
+ 
+-	// Clean up removed tracks
+-	this->removed_tracks.clear();
++	// Retain only tracks removed in this frame; old removed tracks cannot grow forever.
++	this->removed_tracks = removed_tracks;
+ }
+ 
+ /**
+@@ -421,9 +429,22 @@ std::vector<KalmanBBoxTrack> BYTETracker::process_frame_detections(const Eigen::
+ 	}
+ 
+ 	// Handle new tracks from unpaired detections
++	std::unordered_set<int> retained_ids;
++	for (const auto& track : this->tracked_tracks) retained_ids.insert(track->get_track_id());
++	for (const auto& track : this->lost_tracks) retained_ids.insert(track->get_track_id());
++	for (const auto& track : activated_tracks) {
++		if (track->get_track_id() > 0) retained_ids.insert(track->get_track_id());
++	}
++	for (const auto& track : reacquired_tracked_tracks) {
++		if (track->get_track_id() > 0) retained_ids.insert(track->get_track_id());
++	}
+ 	for (int i : unpaired_detection_indices) {
++		if (retained_ids.size() >= this->maximum_tracks) {
++			break;
++		}
+ 		if (high_confidence_detections[i].get_score() >= this->det_thresh) {
+ 			high_confidence_detections[i].activate(this->kalman_filter, this->frame_id);
++			retained_ids.insert(high_confidence_detections[i].get_track_id());
+ 			activated_tracks.push_back(std::make_shared<KalmanBBoxTrack>(high_confidence_detections[i]));
+ 		}
+ 	}
+@@ -434,9 +455,6 @@ std::vector<KalmanBBoxTrack> BYTETracker::process_frame_detections(const Eigen::
+ 	// Handle lost tracks and remove outdated ones
+ 	handle_lost_and_removed_tracks(removed_tracks, lost_tracks);
+ 
+-	// Consolidate and clean up track lists
+-	this->removed_tracks.insert(this->removed_tracks.end(), removed_tracks.begin(), removed_tracks.end());
+-
+ 	// Remove duplicate tracks
+ 	std::tie(this->tracked_tracks, this->lost_tracks) = remove_duplicate_tracks(this->tracked_tracks, this->lost_tracks);
+ 
+@@ -450,3 +468,17 @@ std::vector<KalmanBBoxTrack> BYTETracker::process_frame_detections(const Eigen::
+ 
+ 	return return_tracks;
+ }
++
++std::size_t BYTETracker::retained_track_count() const {
++	std::unordered_set<int> retained_ids;
++	for (const auto& track : this->tracked_tracks) retained_ids.insert(track->get_track_id());
++	for (const auto& track : this->lost_tracks) retained_ids.insert(track->get_track_id());
++	return retained_ids.size();
++}
++
++void BYTETracker::reset() {
++	this->frame_id = 0;
++	this->tracked_tracks.clear();
++	this->lost_tracks.clear();
++	this->removed_tracks.clear();
++}
+diff --git a/src/BaseTrack.cpp b/src/BaseTrack.cpp
+index a0898be..ea05df6 100644
+--- a/src/BaseTrack.cpp
++++ b/src/BaseTrack.cpp
+@@ -1,7 +1,7 @@
+ #include "BaseTrack.h"
+ 
+ // Initialize the static member variable _count to 0.
+-int BaseTrack::_count = 0;
++std::atomic<int> BaseTrack::_count{0};
+ 
+ // Default constructor: Initializes a new track with default values.
+ BaseTrack::BaseTrack() :
+@@ -36,7 +36,7 @@ int BaseTrack::end_frame() const {
+ 
+ // next_id: Increments and returns the next unique track ID.
+ int BaseTrack::next_id() {
+-    return ++_count;
++    return _count.fetch_add(1, std::memory_order_relaxed) + 1;
+ }
+ 
+ // activate: Placeholder for activating the track. Throws a runtime error if not implemented.
+@@ -66,7 +66,7 @@ void BaseTrack::mark_removed() {
+ 
+ // resetCount: Resets the static track ID counter to 0.
+ void BaseTrack::reset_count() {
+-    _count = 0;
++    _count.store(0, std::memory_order_relaxed);
+ }
+ 
+ // Getter functions below provide safe access to the track's properties.
+@@ -93,4 +93,4 @@ int BaseTrack::get_frame_id() const {
+ 
+ int BaseTrack::get_track_id() const {
+     return this->track_id;
+-}
+\ No newline at end of file
++}
+diff --git a/src/BoundingBoxIoUMatching.cpp b/src/BoundingBoxIoUMatching.cpp
+index 4498a72..7ad20cd 100644
+--- a/src/BoundingBoxIoUMatching.cpp
++++ b/src/BoundingBoxIoUMatching.cpp
+@@ -1,5 +1,8 @@
+ #include "BoundingBoxIoUMatching.h"
+ 
++#include <algorithm>
++#include <tuple>
++
+ /**
+  * Calculates the Intersection over Union (IoU) for pairs of bounding boxes.
+  *
+@@ -111,22 +114,30 @@ std::vector<int> match_detections_with_tracks(
+     // Calculate IoU matrix
+     Eigen::MatrixXd iou = box_iou_batch(track_boxes, tlbr_boxes);
+ 
+-    // Match detections with tracks based on IoU
++    struct Candidate {
++        double iou;
++        int track_id;
++        std::size_t track_index;
++        std::size_t detection_index;
++    };
++    std::vector<Candidate> candidates;
+     for (size_t i = 0; i < m; i++) {
+-        int idx_max = -1;
+-        double max_val = 0;
+         for (size_t j = 0; j < n; j++) {
+-            if (iou(i, j) > max_val) {
+-                max_val = iou(i, j);
+-                idx_max = (int)j;
+-            }
+-        }
+-
+-        // Assign track IDs based on highest IoU
+-        if (max_val > 0) {
+-            track_ids[idx_max] = tracks[i].get_track_id();
++            if (iou(i, j) > 0.0) candidates.push_back({iou(i, j), tracks[i].get_track_id(), i, j});
+         }
+     }
++    std::sort(candidates.begin(), candidates.end(), [](const Candidate& lhs, const Candidate& rhs) {
++        return std::tuple{-lhs.iou, lhs.track_id, lhs.detection_index}
++            < std::tuple{-rhs.iou, rhs.track_id, rhs.detection_index};
++    });
++
++    std::vector<bool> used_tracks(m, false);
++    for (const auto& candidate : candidates) {
++        if (used_tracks[candidate.track_index]
++            || track_ids[candidate.detection_index] != -1) continue;
++        used_tracks[candidate.track_index] = true;
++        track_ids[candidate.detection_index] = candidate.track_id;
++    }
+ 
+     return track_ids;
+ }

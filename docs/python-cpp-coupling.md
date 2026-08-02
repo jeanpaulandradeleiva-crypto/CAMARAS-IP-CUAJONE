@@ -106,7 +106,7 @@ python -m cuajone_qa demo --backend native --mode ppe-fall `
 ```
 
 Para una fuente autorizada, selecciona `image`, `video`, `webcam` o `rtsp` y aporta
-artefactos externos. `native` usa el tracker IoU compartido con el ejecutable. El
+artefactos externos. `native` usa el adapter ByteTrack-Eigen compartido con el ejecutable. El
 módulo `cuajone_qa.experimental.legacy_ultralytics` conserva Ultralytics y
 ByteTrack solo para experimentos/compatibilidad y requiere el extra explícito:
 
@@ -157,8 +157,8 @@ El runner compara en orden:
 El recibo sintético se escribe en D: y declara
 `full_model_parity_claimed=false`. No habilita un build `Release`. El gate de
 producción exige alcance `authorized-engine-data`, commit y contrato exactos y las
-seis etapas aprobadas. ByteTrack no se considera equivalente al tracker IoU: el
-perfil `production_sim` siempre usa IoU nativo.
+seis etapas aprobadas. El perfil `production_sim` usa ByteTrack-Eigen nativo; el
+tracker Ultralytics experimental continúa declarado como no equivalente.
 
 El recibo comparte `contracts/v1/parity-receipt.schema.json` entre Python y
 PowerShell. Un Release exige autorización, al menos dos inputs aprobados con

@@ -75,16 +75,22 @@ ProcessedFrame AnalyticsPipeline::process(const ObservationFrame& frame) {
         candidates = frame.pose_detections;
     }
 
-    std::vector<Box> boxes;
-    boxes.reserve(candidates.size());
-    for (const auto& candidate : candidates) boxes.push_back(candidate.box);
-    const auto track_ids = tracker_.update(boxes);
+    std::vector<TrackingDetection> tracking_detections;
+    tracking_detections.reserve(candidates.size());
+    for (const auto& candidate : candidates) {
+        tracking_detections.push_back({candidate.box, candidate.confidence});
+    }
+    const auto track_ids = tracker_.update(tracking_detections);
     const float keypoint_threshold = std::clamp(config_.pose_confidence, 0.25F, 0.50F);
     std::vector<TrackedPerson> tracked;
     tracked.reserve(candidates.size());
     for (std::size_t index = 0; index < candidates.size(); ++index) {
         if (track_ids[index] < 0) continue;
-        // Preserve pre-refactor IDs: track every decoded pose, then reject invalid people.
+        // Low-confidence rows remain available to ByteTrack but cannot drive public analytics.
+        if (config_.mode == AnalyticsMode::PpeFall
+            && candidates[index].confidence < config_.pose_confidence) {
+            continue;
+        }
         if (config_.mode == AnalyticsMode::PpeFall
             && !isValidPosePerson(
                 candidates[index], ppe_person_boxes, config_.pose_confidence, config_.nms_iou)) {

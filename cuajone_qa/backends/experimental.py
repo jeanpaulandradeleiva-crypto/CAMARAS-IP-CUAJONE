@@ -104,7 +104,7 @@ class ExperimentalBackend:
         ):
             return [int(track_id) for track_id in provided_ids if track_id is not None]
         maximum_age = self.config.values["tracker"]["maximum_age"]
-        minimum_iou = self.config.values["tracker"]["minimum_iou"]
+        minimum_iou = max(0.0, 1.0 - self.config.values["tracker"]["match_threshold"])
         maximum_tracks = self.config.values["tracker"]["maximum_tracks"]
         tracks = {track_id: (box, missed + 1) for track_id, (box, missed) in self._tracks.items()}
         candidates = sorted(

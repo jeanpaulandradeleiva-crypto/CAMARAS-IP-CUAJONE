@@ -155,11 +155,14 @@ PYBIND11_MODULE(cuajone_native, module) {
         .def_readwrite("person_ids", &PpeClassMap::person_ids)
         .def_readwrite("helmet_ids", &PpeClassMap::helmet_ids)
         .def_readwrite("vest_ids", &PpeClassMap::vest_ids);
-    py::class_<IoUTrackerConfig>(module, "TrackerConfig")
+    py::class_<ByteTrackConfig>(module, "TrackerConfig")
         .def(py::init<>())
-        .def_readwrite("minimum_iou", &IoUTrackerConfig::minimum_iou)
-        .def_readwrite("maximum_age", &IoUTrackerConfig::maximum_age)
-        .def_readwrite("maximum_tracks", &IoUTrackerConfig::maximum_tracks);
+        .def_readwrite("high_confidence_threshold", &ByteTrackConfig::high_confidence_threshold)
+        .def_readwrite("low_confidence_threshold", &ByteTrackConfig::low_confidence_threshold)
+        .def_readwrite("match_threshold", &ByteTrackConfig::match_threshold)
+        .def_readwrite("maximum_age", &ByteTrackConfig::maximum_age)
+        .def_readwrite("maximum_tracks", &ByteTrackConfig::maximum_tracks)
+        .def_readwrite("frame_rate", &ByteTrackConfig::frame_rate);
     py::class_<PpeConfig>(module, "PpeConfig")
         .def(py::init<>())
         .def_property("window", [](const PpeConfig& value) { return value.window; },

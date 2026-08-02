@@ -65,6 +65,62 @@ endif()
 
 find_package(OpenCV 4.8 REQUIRED COMPONENTS core imgproc)
 
+set(CUAJONE_BYTE_TRACK_COMMIT "a865158906f6138465668810a98ffd918d95f9a3")
+set(CUAJONE_EIGEN_COMMIT "3147391d946bb4b6c68edd901f2add6ac1f31f8c")
+set(CUAJONE_BYTE_TRACK_ROOT
+    "${CMAKE_CURRENT_SOURCE_DIR}/../.tools/native/dependencies/byte-track-eigen-${CUAJONE_BYTE_TRACK_COMMIT}"
+    CACHE PATH "Verified patched ByteTrack-Eigen 2.1.0 source root")
+set(CUAJONE_EIGEN_ROOT
+    "${CMAKE_CURRENT_SOURCE_DIR}/../.tools/native/dependencies/eigen-${CUAJONE_EIGEN_COMMIT}"
+    CACHE PATH "Verified Eigen 3.4.0 source root")
+if(NOT EXISTS "${CUAJONE_BYTE_TRACK_ROOT}/include/BYTETracker.h"
+    OR NOT EXISTS "${CUAJONE_BYTE_TRACK_ROOT}/.cuajone-source-receipt.json"
+    OR NOT EXISTS "${CUAJONE_EIGEN_ROOT}/Eigen/Dense"
+    OR NOT EXISTS "${CUAJONE_EIGEN_ROOT}/.cuajone-source-receipt.json")
+    message(FATAL_ERROR
+        "Pinned ByteTrack-Eigen/Eigen sources are missing. Run native/Provision-TrackingDependencies.ps1 first")
+endif()
+file(SHA256 "${CMAKE_CURRENT_SOURCE_DIR}/third_party/byte-track-eigen-cuajone.patch"
+    CUAJONE_BYTE_TRACK_PATCH_SHA256)
+function(cuajone_validate_source_receipt receipt_path expected_archive_sha256)
+    file(READ "${receipt_path}" receipt_json)
+    string(JSON archive_sha256 GET "${receipt_json}" archive_sha256)
+    string(JSON patch_sha256 GET "${receipt_json}" patch_sha256)
+    if(NOT archive_sha256 STREQUAL expected_archive_sha256
+        OR NOT patch_sha256 STREQUAL CUAJONE_BYTE_TRACK_PATCH_SHA256)
+        message(FATAL_ERROR
+            "Native tracking dependency receipt does not match approved source and patch hashes: ${receipt_path}")
+    endif()
+endfunction()
+cuajone_validate_source_receipt(
+    "${CUAJONE_BYTE_TRACK_ROOT}/.cuajone-source-receipt.json"
+    "e5a075df5e8b4ed4bb7436ffe7fe0f4cee5c6a6663112d6a1c47a99ffb704d88")
+cuajone_validate_source_receipt(
+    "${CUAJONE_EIGEN_ROOT}/.cuajone-source-receipt.json"
+    "9eec4ec4e5e459b2f59dbbaa4280e1bb3ee61cccd8a7c0af0321d29d95fece9e")
+
+add_library(cuajone_byte_track_upstream STATIC
+    "${CUAJONE_BYTE_TRACK_ROOT}/src/BaseTrack.cpp"
+    "${CUAJONE_BYTE_TRACK_ROOT}/src/BoundingBoxIoUMatching.cpp"
+    "${CUAJONE_BYTE_TRACK_ROOT}/src/BoundingBoxTrackUtils.cpp"
+    "${CUAJONE_BYTE_TRACK_ROOT}/src/BYTETracker.cpp"
+    "${CUAJONE_BYTE_TRACK_ROOT}/src/HungarianAlgorithmEigen.cpp"
+    "${CUAJONE_BYTE_TRACK_ROOT}/src/KalmanBBoxTrack.cpp"
+    "${CUAJONE_BYTE_TRACK_ROOT}/src/KalmanFilter.cpp"
+    "${CUAJONE_BYTE_TRACK_ROOT}/src/LinearAssignment.cpp"
+)
+target_include_directories(cuajone_byte_track_upstream SYSTEM PUBLIC
+    "${CUAJONE_BYTE_TRACK_ROOT}/include"
+    "${CUAJONE_EIGEN_ROOT}")
+target_compile_definitions(cuajone_byte_track_upstream
+    PUBLIC EIGEN_MPL2_ONLY BYTE_TRACK_EIGEN_STATIC)
+target_compile_features(cuajone_byte_track_upstream PUBLIC cxx_std_20)
+
+add_library(cuajone_byte_track_adapter STATIC src/analytics/byte_tracker.cpp)
+target_include_directories(cuajone_byte_track_adapter PUBLIC include)
+target_link_libraries(cuajone_byte_track_adapter PRIVATE cuajone_byte_track_upstream)
+target_compile_features(cuajone_byte_track_adapter PUBLIC cxx_std_20)
+
 add_library(cuajone_compute
     src/foundation/compute.cpp
 )
@@ -83,13 +139,14 @@ target_compile_features(cuajone_contracts PUBLIC cxx_std_20)
 add_library(cuajone_analytics
     src/analytics/analytics_pipeline.cpp
     src/analytics/fall_analytics.cpp
-    src/analytics/iou_tracker.cpp
     src/analytics/letterbox.cpp
     src/analytics/ppe_analytics.cpp
     src/foundation/types.cpp
 )
 target_include_directories(cuajone_analytics PUBLIC include)
-target_link_libraries(cuajone_analytics PUBLIC cuajone_contracts)
+target_link_libraries(cuajone_analytics
+    PUBLIC cuajone_contracts
+    PRIVATE cuajone_byte_track_adapter)
 target_compile_features(cuajone_analytics PUBLIC cxx_std_20)
 
 add_library(cuajone_inference
@@ -109,11 +166,11 @@ target_include_directories(cuajone_core PUBLIC include)
 target_link_libraries(cuajone_core PUBLIC cuajone_contracts cuajone_analytics cuajone_inference cuajone_compute)
 target_compile_features(cuajone_core PUBLIC cxx_std_20)
 if(MSVC)
-    foreach(target cuajone_compute cuajone_contracts cuajone_analytics cuajone_inference cuajone_core)
+    foreach(target cuajone_compute cuajone_contracts cuajone_byte_track_adapter cuajone_analytics cuajone_inference cuajone_core)
         target_compile_options(${target} PRIVATE /W4 /permissive- /EHsc)
     endforeach()
 else()
-    foreach(target cuajone_compute cuajone_contracts cuajone_analytics cuajone_inference cuajone_core)
+    foreach(target cuajone_compute cuajone_contracts cuajone_byte_track_adapter cuajone_analytics cuajone_inference cuajone_core)
         target_compile_options(${target} PRIVATE -Wall -Wextra -Wpedantic)
     endforeach()
 endif()
@@ -339,13 +396,17 @@ if(CUAJONE_BUILD_RUNTIME)
             "Verified PPE ONNX model used by the opt-in CUDA pipeline integration test")
         set(CUAJONE_ONNX_CUDA_POSE_MODEL "" CACHE FILEPATH
             "Verified pose ONNX model used by the opt-in CUDA pipeline integration test")
+        set(CUAJONE_ONNX_REAL_PERSON_IMAGE
+            "${CMAKE_CURRENT_SOURCE_DIR}/../PPE/PPE DETECTION.v14i.yolov8/test/images/00113_jpg.rf.0589d64e23e7c5f892540643e794a541.jpg"
+            CACHE FILEPATH "Offline person image used by the native real-model regression")
         foreach(required_file
                 "${CUAJONE_ONNX_CUDA_RUNTIME_DIR}/onnxruntime_providers_cuda.dll"
                 "${CUAJONE_ONNX_CUDA_RUNTIME_DIR}/onnxruntime_providers_shared.dll"
                 "${CUAJONE_ONNX_CUDA_PPE_MODEL}"
                 "${CUAJONE_ONNX_CUDA_PPE_MODEL}.manifest.json"
                 "${CUAJONE_ONNX_CUDA_POSE_MODEL}"
-                "${CUAJONE_ONNX_CUDA_POSE_MODEL}.manifest.json")
+                "${CUAJONE_ONNX_CUDA_POSE_MODEL}.manifest.json"
+                "${CUAJONE_ONNX_REAL_PERSON_IMAGE}")
             if(NOT EXISTS "${required_file}")
                 message(FATAL_ERROR
                     "ONNX CUDA integration prerequisite is missing: ${required_file}")
@@ -372,7 +433,8 @@ if(CUAJONE_BUILD_RUNTIME)
                 ppe-only "${CUAJONE_ONNX_CUDA_PPE_MODEL}")
         add_test(NAME cuajone_onnx_cuda_hybrid_pipeline_tests
             COMMAND cuajone_onnx_cuda_integration_tests pipeline
-                "${CUAJONE_ONNX_CUDA_PPE_MODEL}" "${CUAJONE_ONNX_CUDA_POSE_MODEL}")
+                "${CUAJONE_ONNX_CUDA_PPE_MODEL}" "${CUAJONE_ONNX_CUDA_POSE_MODEL}"
+                "${CUAJONE_ONNX_REAL_PERSON_IMAGE}")
         set_tests_properties(
             cuajone_onnx_pose_cpu_standalone_tests
             cuajone_onnx_cuda_ppe_only_tests

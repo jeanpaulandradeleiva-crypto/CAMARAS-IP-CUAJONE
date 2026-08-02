@@ -74,10 +74,34 @@ YoloSchema validateSchema(
     }
     const auto& candidate = candidates.front();
     return {
+        YoloOutputFormat::Raw,
         candidate.layout,
         candidate.predictions,
         candidate.channels,
         candidate.objectness,
+        class_count,
+        keypoint_count,
+        keypoint_dimensions,
+    };
+}
+
+std::optional<YoloSchema> validateApprovedEndToEndPoseSchema(
+    std::span<const std::int64_t> shape,
+    std::size_t class_count,
+    std::size_t keypoint_count,
+    std::size_t keypoint_dimensions) {
+    if (shape.size() != 3 || shape[0] != 1 || shape[1] != 300) return std::nullopt;
+    const std::size_t expected_channels = 6 + keypoint_count * keypoint_dimensions;
+    if (shape[2] != static_cast<std::int64_t>(expected_channels)) return std::nullopt;
+    if (class_count == 0 || keypoint_count == 0 || keypoint_dimensions < 3) {
+        throw std::invalid_argument("End-to-end pose decoding requires classes and x/y/confidence keypoints");
+    }
+    return YoloSchema{
+        YoloOutputFormat::PoseEndToEnd,
+        TensorLayout::PredictionsFirst,
+        300,
+        expected_channels,
+        false,
         class_count,
         keypoint_count,
         keypoint_dimensions,
@@ -299,6 +323,10 @@ YoloSchema validatePoseSchema(
     if (keypoint_count == 0) {
         throw std::invalid_argument("Pose decoding requires at least one keypoint");
     }
+    if (const auto end_to_end = validateApprovedEndToEndPoseSchema(
+            shape, class_count, keypoint_count, keypoint_dimensions)) {
+        return *end_to_end;
+    }
     return validateSchema(shape, class_count, keypoint_count, keypoint_dimensions);
 }
 
@@ -347,10 +375,31 @@ std::vector<PoseDetection> decodePoses(
         tensor.shape, class_count, keypoint_count, keypoint_dimensions);
     const PredictionAccessor values(tensor, schema);
     BoundedCandidates<PoseDetection> candidates(limits.max_nms_candidates);
-    const std::size_t keypoint_offset = (schema.has_objectness ? 5 : 4) + class_count;
+    const bool end_to_end = schema.format == YoloOutputFormat::PoseEndToEnd;
+    const std::size_t keypoint_offset = end_to_end
+        ? 6 : (schema.has_objectness ? 5 : 4) + class_count;
     for (std::size_t prediction = 0; prediction < schema.predictions; ++prediction) {
-        const auto raw_box = rawBox(values, prediction);
-        const auto confidence = confidenceFor(values, schema, prediction);
+        std::optional<RawBox> raw_box;
+        std::optional<Confidence> confidence;
+        Box decoded_box;
+        if (end_to_end) {
+            decoded_box = {
+                values.at(prediction, 0), values.at(prediction, 1),
+                values.at(prediction, 2), values.at(prediction, 3),
+            };
+            const float score = values.at(prediction, 4);
+            const float class_value = values.at(prediction, 5);
+            if (std::isfinite(score) && std::isfinite(class_value)
+                && class_value == std::floor(class_value)
+                && class_value >= 0.0F
+                && class_value < static_cast<float>(class_count)) {
+                confidence = Confidence{score, static_cast<int>(class_value)};
+            }
+        } else {
+            raw_box = rawBox(values, prediction);
+            confidence = confidenceFor(values, schema, prediction);
+            if (raw_box) decoded_box = modelBox(*raw_box);
+        }
         PoseDetection detection;
         bool finite_keypoints = true;
         detection.keypoints.reserve(keypoint_count);
@@ -365,16 +414,22 @@ std::vector<PoseDetection> decodePoses(
             }
             detection.keypoints.push_back({x, y, point_confidence});
         }
-        if (!raw_box || !confidence || !finite_keypoints
+        if ((!end_to_end && !raw_box) || !confidence || !finite_keypoints
             || confidence->value < confidence_threshold
-            || raw_box->width <= 0.0F || raw_box->height <= 0.0F) continue;
-        detection.box = modelBox(*raw_box);
+            || (!end_to_end && (raw_box->width <= 0.0F || raw_box->height <= 0.0F))) continue;
+        detection.box = decoded_box;
         detection.confidence = confidence->value;
         detection.class_id = confidence->class_id;
         if (!isFiniteDetection(detection) || !hasFinitePositiveArea(detection.box)) continue;
         candidates.add(std::move(detection));
     }
-    auto detections = nms(candidates.take(), iou_threshold, limits.max_detections);
+    auto detections = candidates.take();
+    if (end_to_end) {
+        std::stable_sort(detections.begin(), detections.end(), DetectionBetter{});
+        if (detections.size() > limits.max_detections) detections.resize(limits.max_detections);
+    } else {
+        detections = nms(std::move(detections), iou_threshold, limits.max_detections);
+    }
     for (auto& detection : detections) {
         detection.box = transform.restore(detection.box);
         for (auto& keypoint : detection.keypoints) {

@@ -246,7 +246,8 @@ struct NativeEnginePipeline::Impl {
                 {pose_output.values, pose_output.shape}, pose_class_count,
                 static_cast<std::size_t>(keypoint_shape[0]),
                 static_cast<std::size_t>(keypoint_shape[1]),
-                config.pose_confidence, config.nms_iou, pose_input.transform,
+                config.analytics.tracker.low_confidence_threshold,
+                config.nms_iou, pose_input.transform,
                 {DecodeLimits{}.max_nms_candidates, config.maximum_detections});
         }
         return analytics.process({

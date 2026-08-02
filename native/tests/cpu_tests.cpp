@@ -3,9 +3,9 @@
 
 #include "cuajone/cli.hpp"
 #include "cuajone/analytics_pipeline.hpp"
+#include "cuajone/byte_tracker.hpp"
 #include "cuajone/contracts.hpp"
 #include "cuajone/fall_analytics.hpp"
-#include "cuajone/iou_tracker.hpp"
 #include "cuajone/ppe_analytics.hpp"
 #include "cuajone/preprocess.hpp"
 #include "cuajone/runtime_execution_plan.hpp"
@@ -23,6 +23,7 @@
 #include <stdexcept>
 #include <string>
 #include <string_view>
+#include <thread>
 #include <vector>
 
 namespace {
@@ -246,6 +247,45 @@ void testPoseSchemaAndDecode() {
     nonfinite[5] = std::numeric_limits<float>::infinity();
     require(decodePoses({nonfinite, shape}, 1, 2, 3, 0.5F, 0.45F, transform).empty(),
         "Non-finite pose keypoint coordinate was accepted");
+
+    constexpr std::size_t keypoint_count = 17;
+    constexpr std::size_t end_to_end_channels = 6 + keypoint_count * 3;
+    std::vector<float> end_to_end_values(300 * end_to_end_channels, 0.0F);
+    end_to_end_values[0] = 80.0F;
+    end_to_end_values[1] = 60.0F;
+    end_to_end_values[2] = 240.0F;
+    end_to_end_values[3] = 500.0F;
+    end_to_end_values[4] = 0.90F;
+    end_to_end_values[5] = 0.0F;
+    for (std::size_t keypoint = 0; keypoint < keypoint_count; ++keypoint) {
+        const std::size_t offset = 6 + keypoint * 3;
+        end_to_end_values[offset] = 100.0F + static_cast<float>(keypoint);
+        end_to_end_values[offset + 1] = 120.0F + static_cast<float>(keypoint);
+        end_to_end_values[offset + 2] = 0.80F;
+    }
+    const std::array<std::int64_t, 3> end_to_end_shape{1, 300, 57};
+    const auto end_to_end_schema = validatePoseSchema(
+        end_to_end_shape, 1, keypoint_count, 3);
+    require(end_to_end_schema.format == YoloOutputFormat::PoseEndToEnd
+            && end_to_end_schema.layout == TensorLayout::PredictionsFirst,
+        "Approved [1,300,57] pose output was not recognized as end-to-end");
+    const auto end_to_end = decodePoses(
+        {end_to_end_values, end_to_end_shape}, 1, keypoint_count, 3,
+        0.35F, 0.45F, transform);
+    require(end_to_end.size() == 1 && end_to_end.front().class_id == 0
+            && end_to_end.front().keypoints.size() == keypoint_count,
+        "End-to-end pose row did not produce the person detection");
+    requireNear(end_to_end.front().confidence, 0.90F, 0.0001F,
+        "End-to-end confidence was multiplied by class_id");
+    requireNear(end_to_end.front().box.x1, 80.0F, 0.01F,
+        "End-to-end xyxy box was decoded as xywh");
+
+    auto invalid_class = end_to_end_values;
+    invalid_class[5] = 0.5F;
+    require(decodePoses(
+                {invalid_class, end_to_end_shape}, 1, keypoint_count, 3,
+                0.35F, 0.45F, transform).empty(),
+        "Fractional end-to-end class ID was accepted");
 }
 
 void testCliUrlsAndInvariantDefense() {
@@ -281,6 +321,23 @@ void testCliUrlsAndInvariantDefense() {
     require(parsed.max_det == 42 && parsed.rtsp_transport == RtspTransport::Udp
             && parsed.capture_open_timeout.count() == 0 && parsed.device == 2,
         "CLI did not preserve max-det, transport, zero timeout, or device");
+    auto byte_track = base;
+    byte_track.insert(byte_track.end(), {
+        "--tracker-high-threshold", "0.4", "--tracker-match-threshold", "0.7",
+        "--tracker-max-age", "45", "--tracker-max-tracks", "64",
+        "--tracker-frame-rate", "25",
+    });
+    const RuntimeConfig parsed_byte_track = parse(byte_track);
+    require(parsed_byte_track.tracker_high_threshold == 0.4F
+            && parsed_byte_track.tracker_match_threshold == 0.7F
+            && parsed_byte_track.tracker_max_age == 45
+            && parsed_byte_track.tracker_max_tracks == 64
+            && parsed_byte_track.tracker_frame_rate == 25,
+        "CLI did not preserve ByteTrack configuration");
+    auto legacy_tracker_iou = base;
+    legacy_tracker_iou.insert(legacy_tracker_iou.end(), {"--tracker-iou", "0.3"});
+    requireNear(parse(legacy_tracker_iou).tracker_match_threshold, 0.7F, 0.0001F,
+        "Legacy tracker IoU alias was not converted to ByteTrack match cost");
     auto invalid_confidence = base;
     invalid_confidence.insert(invalid_confidence.end(), {"--pose-conf", "1.1"});
     requireThrows([&] { parse(invalid_confidence); }, "CLI accepted confidence above one");
@@ -312,7 +369,7 @@ void testCliUrlsAndInvariantDefense() {
     requireThrows([&] { parse(invalid_compute); }, "CLI accepted an unknown compute backend");
 
     requireThrows(
-        [] { IoUTracker({0.3F, 0, 1}); },
+        [] { ByteTracker({0.35F, 0.10F, 0.80F, 0, 1, 30}); },
         "Zero tracker age was accepted by the constructor");
     requireThrows(
         [] { PpeAnalyzer({1, 1, 0.5F, std::chrono::seconds(-1), std::chrono::seconds(1)}); },
@@ -538,17 +595,87 @@ void testRuntimeExecutionPlanning() {
     }
 }
 
-void testTrackerContinuityAndExpiry() {
-    IoUTracker tracker({0.3F, 2, 4});
-    const std::array<Box, 1> first{{{0, 0, 100, 100}}};
+void testByteTrackLifecycleAndLowConfidenceAssociation() {
+    ByteTracker tracker({0.35F, 0.10F, 0.80F, 2, 4, 30});
+    const std::array<TrackingDetection, 1> first{{{{0, 0, 100, 100}, 0.90F}}};
     const int id = tracker.update(first)[0];
-    const std::array<Box, 1> moved{{{5, 0, 105, 100}}};
-    require(tracker.update(moved)[0] == id, "Tracker did not preserve ID");
+    require(id > 0, "ByteTrack did not activate a high-confidence detection");
+    const std::array<TrackingDetection, 1> moved{{{{5, 0, 105, 100}, 0.90F}}};
+    require(tracker.update(moved)[0] == id, "ByteTrack did not preserve ID");
+    tracker.update({});
+    const std::array<TrackingDetection, 1> occluded_return{{{{10, 0, 110, 100}, 0.90F}}};
+    require(tracker.update(occluded_return)[0] == id,
+        "ByteTrack did not reacquire a briefly occluded track");
+    const std::array<TrackingDetection, 1> low_confidence{{{{12, 0, 112, 100}, 0.20F}}};
+    require(tracker.update(low_confidence)[0] == id,
+        "ByteTrack did not use a low-confidence detection in second-stage association");
     tracker.update({});
     tracker.update({});
-    require(tracker.activeTrackCount() == 1, "Tracker expired too early");
+    require(tracker.activeTrackCount() == 1, "ByteTrack expired too early");
     tracker.update({});
-    require(tracker.activeTrackCount() == 0, "Tracker did not expire at maximum age");
+    require(tracker.activeTrackCount() == 0, "ByteTrack did not expire after the lost buffer");
+}
+
+void testByteTrackCapacityResetEmptyFramesAndTies() {
+    ByteTracker empty_tracker({0.35F, 0.10F, 0.80F, 2, 2, 30});
+    require(empty_tracker.update({}).empty() && empty_tracker.activeTrackCount() == 0,
+        "Empty ByteTrack frame created tracks");
+    ByteTracker tracker({0.35F, 0.10F, 0.80F, 2, 2, 30});
+    const std::array<TrackingDetection, 3> detections{{
+        {{0, 0, 100, 100}, 0.90F},
+        {{200, 0, 300, 100}, 0.90F},
+        {{400, 0, 500, 100}, 0.90F},
+    }};
+    const auto ids = tracker.update(detections);
+    const auto assigned = std::count_if(ids.begin(), ids.end(), [](int id) { return id > 0; });
+    require(assigned == 2 && tracker.activeTrackCount() == 2,
+        "ByteTrack capacity mismatch: assigned=" + std::to_string(assigned)
+            + ", retained=" + std::to_string(tracker.activeTrackCount()));
+    tracker.reset();
+    require(tracker.activeTrackCount() == 0,
+        "ByteTrack reset did not clear retained state");
+    const int post_reset_id = tracker.update(std::span(detections).first<1>())[0];
+    require(post_reset_id > 0
+            && std::find(ids.begin(), ids.end(), post_reset_id) == ids.end(),
+        "ByteTrack reset reused a process-wide identity");
+
+    ByteTracker tied({0.35F, 0.10F, 0.80F, 2, 2, 30});
+    const std::array<TrackingDetection, 2> identical{{
+        {{10, 10, 110, 110}, 0.90F},
+        {{10, 10, 110, 110}, 0.90F},
+    }};
+    const auto tied_ids = tied.update(identical);
+    require(tied_ids[0] > 0 && tied_ids[1] > 0 && tied_ids[0] != tied_ids[1],
+        "ByteTrack tie handling silently assigned one ID twice");
+
+    ByteTracker first_camera;
+    ByteTracker second_camera;
+    const std::array<TrackingDetection, 1> person{{{{0, 0, 100, 100}, 0.90F}}};
+    int first_camera_id{};
+    int second_camera_id{};
+    std::jthread first_thread([&] { first_camera_id = first_camera.update(person)[0]; });
+    std::jthread second_thread([&] { second_camera_id = second_camera.update(person)[0]; });
+    first_thread.join();
+    second_thread.join();
+    require(first_camera_id > 0 && second_camera_id > 0
+            && first_camera_id != second_camera_id,
+        "Constructing another camera tracker reset the process-wide identity counter");
+
+    ByteTracker long_running({0.35F, 0.10F, 0.80F, 1, 1, 30});
+    for (int cycle = 0; cycle < 64; ++cycle) {
+        const float offset = static_cast<float>(cycle * 200);
+        const std::array<TrackingDetection, 1> detection{{{
+            {offset, 0, offset + 100, 100}, 0.90F,
+        }}};
+        long_running.update(detection);
+        require(long_running.update(detection)[0] > 0
+                && long_running.activeTrackCount() == 1,
+            "Long-running ByteTrack cycle did not activate within capacity");
+        long_running.update({});
+        long_running.update({});
+        require(long_running.activeTrackCount() == 0,
+            "Removed ByteTrack state grew across long-running cycles");
+    }
 }
 
 void testPpeAssociationVotingAndCooldown() {
@@ -667,11 +794,13 @@ void testPoseFilteringPreservesTrackerIdentity() {
 
     const auto result = pipeline.process(frame);
     require(result.canonical.people.size() == 1, "Invalid pose was not filtered after tracking");
-    require(result.canonical.people.front().track_id == 2,
-        "Filtering invalid pose before tracker update renumbered the valid identity");
+    const int valid_track_id = result.canonical.people.front().track_id;
+    require(valid_track_id > 0,
+        "Filtering invalid pose removed the valid ByteTrack identity");
     require(result.canonical.events.size() == 1
-            && result.canonical.events.front().track_id == 2
-            && result.canonical.events.front().id == "evt-POSE_ORDER_QA-1-2-0",
+            && result.canonical.events.front().track_id == valid_track_id
+            && result.canonical.events.front().id
+                == "evt-POSE_ORDER_QA-1-" + std::to_string(valid_track_id) + "-0",
         "Pose filtering changed the pre-refactor event identity");
 }
 
@@ -681,8 +810,8 @@ void testCanonicalContractsAndDeterministicPipeline() {
     config.ppe = {2, 2, 0.5F, std::chrono::seconds(60), std::chrono::seconds(5)};
     AnalyticsPipeline pipeline(config);
     require(pipeline.contractVersion() == "1.0.0", "Pipeline contract version changed");
-    require(runtimeDefaultsJson().find("\"profile\":\"native-iou\"") != std::string::npos,
-        "Canonical defaults lost the native tracker profile");
+    require(runtimeDefaultsJson().find("\"profile\":\"byte-track-eigen\"") != std::string::npos,
+        "Canonical defaults lost the ByteTrack-Eigen profile");
 
     const auto first = pipeline.process(syntheticPpeFrame(1, 100));
     require(first.canonical.people.size() == 1 && first.canonical.events.empty(),
@@ -692,7 +821,9 @@ void testCanonicalContractsAndDeterministicPipeline() {
     const std::string expected = canonicalJson(second.canonical);
     require(expected.find("INCUMPLIMIENTO_EPP") == std::string::npos,
         "Frame result leaked the legacy event name instead of canonical references");
-    require(expected.find("evt-SYNTHETIC_QA_01-2-1-0") != std::string::npos,
+    require(expected.find("evt-SYNTHETIC_QA_01-2-"
+                + std::to_string(second.canonical.people.front().track_id) + "-0")
+            != std::string::npos,
         "Canonical event ID changed");
     const std::string event_json = canonicalJson(second.canonical.events.front());
     require(event_json.find("\"specversion\":\"1.0\"") != std::string::npos,
@@ -702,10 +833,15 @@ void testCanonicalContractsAndDeterministicPipeline() {
     requireThrows([&] { pipeline.process(syntheticPpeFrame(2, 300)); },
         "Duplicate frame_id was accepted");
 
+    const int first_sequence_id = second.canonical.people.front().track_id;
     pipeline.reset();
     pipeline.process(syntheticPpeFrame(1, 100));
-    require(canonicalJson(pipeline.process(syntheticPpeFrame(2, 200)).canonical) == expected,
-        "Reset did not reproduce byte-stable canonical output");
+    const auto repeated = pipeline.process(syntheticPpeFrame(2, 200));
+    require(repeated.canonical.people.size() == 1
+            && repeated.canonical.events.size() == 1
+            && repeated.canonical.people.front().track_id != first_sequence_id
+            && repeated.canonical.events.front().status == second.canonical.events.front().status,
+        "Reset did not clear analytics state while preserving unique track IDs");
     auto unsupported = syntheticPpeFrame(3, 300);
     unsupported.contract_version = "2.0.0";
     requireThrows([&] { pipeline.process(unsupported); },
@@ -736,7 +872,8 @@ int main() {
         {"CLI URLs and invariants", testCliUrlsAndInvariantDefense},
         {"compute selection and probe contract", testComputeSelectionAndProbeContract},
         {"runtime execution planning", testRuntimeExecutionPlanning},
-        {"IoU tracker", testTrackerContinuityAndExpiry},
+        {"ByteTrack lifecycle", testByteTrackLifecycleAndLowConfidenceAssociation},
+        {"ByteTrack bounds and identity", testByteTrackCapacityResetEmptyFramesAndTies},
         {"PPE analytics", testPpeAssociationVotingAndCooldown},
         {"fall analytics", testFallConfirmationRecoveryAndCooldown},
         {"pose filtering tracker compatibility", testPoseFilteringPreservesTrackerIdentity},

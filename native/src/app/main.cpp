@@ -167,7 +167,14 @@ EnginePipelineConfig enginePipelineConfig(
         config.max_det,
         {
             config.analytics_mode,
-            {config.tracker_iou, config.tracker_max_age, config.tracker_max_tracks},
+            {
+                config.tracker_high_threshold,
+                0.10F,
+                config.tracker_match_threshold,
+                config.tracker_max_age,
+                config.tracker_max_tracks,
+                config.tracker_frame_rate,
+            },
             config.ppe,
             config.fall,
             config.pose_confidence,

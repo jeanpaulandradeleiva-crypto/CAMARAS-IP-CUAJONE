@@ -34,7 +34,7 @@
       "additionalProperties": false,
       "required": ["production_sim", "experimental_live"],
       "properties": {
-        "production_sim": {"const": "native-iou"},
+        "production_sim": {"const": "byte-track-eigen"},
         "experimental_live": {"const": "ultralytics-bytetrack-not-equivalent"}
       }
     },

@@ -12,6 +12,7 @@
 
 #include <onnxruntime_cxx_api.h>
 #include <opencv2/core.hpp>
+#include <opencv2/imgcodecs.hpp>
 
 #include <algorithm>
 #include <array>
@@ -177,6 +178,7 @@ void verifyStandalonePose(
 void verifyNativePipeline(
     const std::filesystem::path& ppe_model,
     const std::filesystem::path& pose_model,
+    const std::filesystem::path& person_image,
     int device) {
     EnginePipelineConfig config;
     config.backend = ComputeBackend::Cuda;
@@ -200,8 +202,10 @@ void verifyNativePipeline(
         "NativeEnginePipeline did not report the PPE-CUDA/pose-CPU hybrid provider split");
     require(summary.pose_loaded, "NativeEnginePipeline did not load the pose model in ppe-fall mode");
 
-    std::cout << "INFO: processing deterministic 640x480 CV_8UC3 BGR frame" << std::endl;
-    cv::Mat frame(480, 640, CV_8UC3, cv::Scalar(32, 64, 96));
+    std::cout << "INFO: processing offline person image: " << person_image.string() << std::endl;
+    cv::Mat frame = cv::imread(person_image.string(), cv::IMREAD_COLOR);
+    require(!frame.empty() && frame.type() == CV_8UC3,
+        "Could not load the offline person regression image");
     const ProcessedFrame processed = pipeline.processFrame(
         frame, "cuda-integration", 1, 1000, "2026-08-01T00:00:00Z");
     require(processed.canonical.source_id == "cuda-integration"
@@ -215,8 +219,15 @@ void verifyNativePipeline(
             && canonical.find(R"("contract_version":"1.0.0")") != std::string::npos
             && canonical.find(R"("source_id":"cuda-integration")") != std::string::npos,
         "NativeEnginePipeline did not serialize valid canonical output");
+    require(!processed.canonical.people.empty(),
+        "Real staged pose model produced no native Person output for the known person image");
+    require(std::all_of(
+                processed.canonical.people.begin(), processed.canonical.people.end(),
+                [](const auto& person) { return person.keypoints.size() == 17; }),
+        "Real staged pose output did not preserve all 17 keypoints");
     std::cout << "PASS: NativeEnginePipeline ppe-fall processed a deterministic BGR frame with "
-              << summary.provider << "; pose loaded; canonical bytes=" << canonical.size() << '\n';
+              << summary.provider << "; people=" << processed.canonical.people.size()
+              << "; pose loaded; canonical bytes=" << canonical.size() << '\n';
 }
 
 int cudaDeviceOrSkip() {
@@ -267,7 +278,8 @@ void runStandalonePoseCpu(const std::filesystem::path& pose_model) {
 
 void runPipeline(
     const std::filesystem::path& ppe_model,
-    const std::filesystem::path& pose_model) {
+    const std::filesystem::path& pose_model,
+    const std::filesystem::path& person_image) {
     const int device = cudaDeviceOrSkip();
     configureProviderDllSearch(cudaRuntimeDirectory());
     const auto probe = probeHardware();
@@ -278,7 +290,7 @@ void runPipeline(
     std::cout << "INFO: hybrid pipeline selected GPU " << selected->name
               << " (device " << device << ", SM " << selected->compute_major << '.' << selected->compute_minor
               << ')' << std::endl;
-    verifyNativePipeline(ppe_model, pose_model, device);
+    verifyNativePipeline(ppe_model, pose_model, person_image, device);
 }
 
 }  // namespace
@@ -289,12 +301,12 @@ int main(int argc, char** argv) {
             runStandalonePoseCpu(argv[2]);
         } else if (argc == 3 && std::string_view(argv[1]) == "ppe-only") {
             runPpeOnly(argv[2]);
-        } else if (argc == 4 && std::string_view(argv[1]) == "pipeline") {
-            runPipeline(argv[2], argv[3]);
+        } else if (argc == 5 && std::string_view(argv[1]) == "pipeline") {
+            runPipeline(argv[2], argv[3], argv[4]);
         } else {
             throw std::invalid_argument("Usage: cuajone_onnx_cuda_integration_tests "
                 "standalone-pose-cpu <pose.onnx> | ppe-only <ppe.onnx> | "
-                "pipeline <ppe.onnx> <pose.onnx>");
+                "pipeline <ppe.onnx> <pose.onnx> <person-image>");
         }
         return 0;
     } catch (int code) {

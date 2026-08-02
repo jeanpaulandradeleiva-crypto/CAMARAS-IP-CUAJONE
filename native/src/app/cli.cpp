@@ -193,11 +193,14 @@ void validate(RuntimeConfig& config) {
     ratio(config.ppe_confidence, "--ppe-conf");
     ratio(config.pose_confidence, "--pose-conf");
     ratio(config.nms_iou, "--nms-iou");
-    ratio(config.tracker_iou, "--tracker-iou");
+    ratio(config.tracker_high_threshold, "--tracker-high-threshold");
+    ratio(config.tracker_match_threshold, "--tracker-match-threshold");
     ratio(config.ppe.present_ratio, "--ppe-present-ratio");
     if ((config.device && *config.device < 0) || config.pose_class_count == 0 || config.max_det == 0
         || config.max_det > DecodeLimits{}.max_nms_candidates
+        || config.tracker_high_threshold <= 0.20F
         || config.tracker_max_age == 0 || config.tracker_max_tracks == 0
+        || config.tracker_frame_rate <= 0
         || config.target_fps < 0.0 || config.reconnect_delay_seconds < 0.0
         || config.maximum_reconnect_delay_seconds < config.reconnect_delay_seconds) {
         throw std::invalid_argument("Device, detection, tracker, FPS, or reconnect settings are outside supported ranges");
@@ -259,9 +262,12 @@ RuntimeConfig parseCommandLine(int argc, char** argv) {
         else if (option == "--pose-conf") config.pose_confidence = parseNumber<float>(requireValue(index, argc, argv, option), option);
         else if (option == "--nms-iou") config.nms_iou = parseNumber<float>(requireValue(index, argc, argv, option), option);
         else if (option == "--max-det") config.max_det = parseNumber<std::size_t>(requireValue(index, argc, argv, option), option);
-        else if (option == "--tracker-iou") config.tracker_iou = parseNumber<float>(requireValue(index, argc, argv, option), option);
+        else if (option == "--tracker-high-threshold") config.tracker_high_threshold = parseNumber<float>(requireValue(index, argc, argv, option), option);
+        else if (option == "--tracker-match-threshold") config.tracker_match_threshold = parseNumber<float>(requireValue(index, argc, argv, option), option);
+        else if (option == "--tracker-iou") config.tracker_match_threshold = 1.0F - parseNumber<float>(requireValue(index, argc, argv, option), option);
         else if (option == "--tracker-max-age") config.tracker_max_age = parseNumber<std::size_t>(requireValue(index, argc, argv, option), option);
         else if (option == "--tracker-max-tracks") config.tracker_max_tracks = parseNumber<std::size_t>(requireValue(index, argc, argv, option), option);
+        else if (option == "--tracker-frame-rate") config.tracker_frame_rate = parseNumber<int>(requireValue(index, argc, argv, option), option);
         else if (option == "--target-fps") config.target_fps = parseNumber<double>(requireValue(index, argc, argv, option), option);
         else if (option == "--reconnect-delay") config.reconnect_delay_seconds = parseNumber<double>(requireValue(index, argc, argv, option), option);
         else if (option == "--max-reconnect-delay") config.maximum_reconnect_delay_seconds = parseNumber<double>(requireValue(index, argc, argv, option), option);
@@ -315,9 +321,12 @@ void printHelp(std::ostream& output) {
         "  --pose-conf <0..1>           Pose confidence (default: 0.35)\n"
         "  --nms-iou <0..1>             Class-aware NMS IoU (default: 0.45)\n"
         "  --max-det <number>           Final detections per engine (default: 300)\n"
-        "  --tracker-iou <0..1>         IoU tracker association threshold\n"
-        "  --tracker-max-age <number>   Positive missed-frame age (default: 30)\n"
-        "  --tracker-max-tracks <count> Positive tracker capacity (default: 128)\n"
+        "  --tracker-high-threshold <0..1> ByteTrack new-track confidence (default: 0.35)\n"
+        "  --tracker-match-threshold <0..1> ByteTrack assignment cost limit (default: 0.80)\n"
+        "  --tracker-iou <0..1>         Legacy minimum-IoU alias converted to match cost\n"
+        "  --tracker-max-age <number>   Positive ByteTrack lost-frame buffer (default: 30)\n"
+        "  --tracker-max-tracks <count> Positive retained-track capacity (default: 128)\n"
+        "  --tracker-frame-rate <fps>   Positive ByteTrack reference FPS (default: 30)\n"
         "  --target-fps <number>        Non-negative; 0 processes every latest frame\n"
         "  --show                       Display the annotated OpenCV window\n\n"
         "Capture and RTSP:\n"

@@ -19,10 +19,11 @@ enlaza `cuajone_runtime`, OpenCV, ONNX Runtime, CUDA ni TensorRT.
 ## Ruta rápida
 
 1. Prepara `.tools\native` con las herramientas y SDK indicados en Prerrequisitos.
-2. Define `ONNXRUNTIME_ROOT`, `TENSORRT_ROOT` y `OpenCV_DIR` sin copiar binarios al repositorio.
-3. Compila y ejecuta primero `cpu-tests`.
-4. Compila `windows-msvc` y ejecuta `--preflight` con engines compatibles.
-5. Recién después realiza una prueba controlada con un video autorizado.
+2. Ejecuta `./native/Provision-TrackingDependencies.ps1` para verificar las fuentes de tracking.
+3. Define `ONNXRUNTIME_ROOT`, `TENSORRT_ROOT` y `OpenCV_DIR` sin copiar binarios al repositorio.
+4. Compila y ejecuta primero `cpu-tests`.
+5. Compila `windows-msvc` y ejecuta `--preflight` con engines compatibles.
+6. Recién después realiza una prueba controlada con un video autorizado.
 
 El preflight no abre la fuente. Para TensorRT deserializa los engines y valida sus
 tensores. Para ONNX CUDA ejecuta además un warmup aislado con un frame BGR real.
@@ -37,8 +38,8 @@ tensores. Para ONNX CUDA ejecuta además un warmup aislado con un frame BGR real
 | `onnx_session` | Sesión ONNX Runtime CPU o CUDA creada desde los bytes ya verificados, con un input/output FP32 y shapes fijos. |
 | `tensorrt_runtime` | Backend opcional: RAII para runtime, contexto, stream y buffers CUDA. |
 | `preprocess` | Letterbox OpenCV, BGR a RGB, normalización y empaquetado NCHW FP32; conserva escala y padding exactos. |
-| `yolo_decode` | Rechaza valores no finitos, limita candidatos, aplica NMS por clase en coordenadas del modelo y recién después restaura/recorta. |
-| `iou_tracker` | IDs temporales mediante asociación IoU determinista, edad máxima y capacidad acotada. |
+| `yolo_decode` | Valida y decodifica PPE raw, pose raw y pose end-to-end `[1,300,57]`; rechaza valores no finitos y limita candidatos. |
+| `byte_tracker` | Adapter privado sobre ByteTrack-Eigen: Kalman/Hungarian, segunda asociación de baja confianza, IDs alineados, edad y capacidad acotadas. |
 | `ppe_analytics` | Anclas `Person`, asociación anatómica casco/chaleco, votación temporal y cooldown. |
 | `fall_analytics` | Validación de keypoints, geometría, descenso, confirmación, recuperación y cooldown. |
 | `contracts` | Versiones, CloudEvents y serialización JSON canónica sin secretos. |
@@ -124,7 +125,9 @@ modelo PPE real del stage y exige que ONNX Runtime registre su ejecución median
 backend CUDA y proveedor híbrido
 `ONNX Runtime CUDAExecutionProvider (PPE) + CPUExecutionProvider (pose)`. La prueba
 de pipeline procesa un frame BGR determinístico y valida el resumen, `pose_loaded`
-y la salida canónica. No descarga modelos ni usa RTSP ni TensorRT.
+y la salida canónica. El pipeline procesa la imagen offline conocida
+`PPE/PPE DETECTION.v14i.yolov8/test/images/00113_...jpg` y exige al menos una
+persona con 17 keypoints. No descarga modelos ni usa RTSP ni TensorRT.
 
 La división es deliberada: el grafo pose YOLO26 real del stage viola acceso en
 ORT CUDA 1.25 sobre la GTX 1650 Ti, mientras el mismo artefacto pasa en CPU y el
@@ -246,8 +249,9 @@ build\windows-msvc\Release\cuajone_native.exe `
 ```
 
 Para CPU reemplaza engines por `--ppe-onnx`, `--pose-onnx` y declara el orden de
-clases con `--ppe-labels`. CPU exige modelos FP32 con batch 1, NCHW fijo, un input
-y un output raw. Shapes dinámicos, NMS fusionado o múltiples outputs fallan cerrado.
+clases con `--ppe-labels`. CPU exige modelos FP32 con batch 1, NCHW fijo y un input
+y output. PPE usa output raw; pose acepta raw o el contrato end-to-end aprobado
+`[1,300,57]`. Shapes dinámicos o múltiples outputs fallan cerrado.
 
 Cada `<modelo>.onnx` requiere un `<modelo>.onnx.manifest.json` adyacente. El sidecar
 es parte del artefacto aprobado y usa exactamente este contrato:
@@ -290,7 +294,8 @@ build\windows-msvc\Release\cuajone_native.exe --help
 ```
 
 Opciones principales de calibración: `--ppe-conf`, `--pose-conf`, `--nms-iou`,
-`--max-det`, `--tracker-iou`, `--tracker-max-age`, `--tracker-max-tracks`,
+`--max-det`, `--tracker-high-threshold`, `--tracker-match-threshold`,
+`--tracker-max-age`, `--tracker-max-tracks`, `--tracker-frame-rate`,
 `--target-fps`, `--ppe-window`, `--ppe-min-samples`, `--ppe-present-ratio`,
 `--ppe-cooldown`, `--ppe-track-ttl`, `--fall-confirm-frames`,
 `--fall-reset-frames`, `--fall-cooldown`, `--fall-track-ttl`,
@@ -338,11 +343,13 @@ Se admiten solamente:
 - Batch 1, entrada NCHW de tres canales, FP32 o FP16. Cada dimensión `-1` se
   reemplaza individualmente; H/W fijos se conservan y H/W dinámicos requieren
   `imgsz` validado.
-- Exactamente un tensor de entrada y uno de salida raw, ambos device-located,
-  lineales, no vectorizados, con un componente por elemento y no shape-inference.
+- Exactamente un tensor de entrada y uno de salida, ambos device-located, lineales,
+  no vectorizados, con un componente por elemento y no shape-inference.
 - Salida rank 2 o rank 3, con batch 1 cuando corresponda.
-- Layout `[C,N]` o `[N,C]` cuando una sola dimensión satisface exactamente
+- Layout raw `[C,N]` o `[N,C]` cuando una sola dimensión satisface exactamente
   `4 + clases + keypoints` o `5 + clases + keypoints`.
+- Para pose ONNX aprobado, layout end-to-end exacto `[1,300,57]` con filas
+  `x1,y1,x2,y2,confidence,class_id,17*(x,y,confidence)`.
 
 Los límites previos a reserva son: manifest ONNX 64 KiB, modelo ONNX 256 MiB,
 engine TensorRT 1 GiB, rank máximo 8, H/W máximo 4096, entrada máxima
@@ -351,7 +358,7 @@ tensor. Una dimensión individual no puede superar 1 000 000. Las multiplicacion
 de elementos y bytes se comprueban antes de reservar memoria CPU o CUDA.
 
 El segundo caso incluye objectness. Si ninguna fórmula coincide, ambas coinciden,
-el output es dinámico o el engine contiene NMS fusionado/múltiples outputs, el
+el output es dinámico o el engine contiene múltiples outputs, el
 inicio falla. No se intenta adivinar el schema.
 
 Cada predicción se descarta completa si objectness, algún score de clase, caja o
@@ -376,8 +383,9 @@ SM, TensorRT, CUDA, driver, precisión, tamaño y forma usados en el host final.
 
 `cuajone_cpu_tests` cubre sin GPU el prefijo y JSON de metadata, surrogate pairs,
 URLs/redacción RTSP, letterbox, rechazo no-finito, decode detect/pose, orden de NMS,
-límites de detección, defensas de constructores, continuidad/expiración del
-tracker, asociación/votación EPP, confirmación/recuperación de caída, las 120
+límites de detección, el pose end-to-end real, defensas de constructores,
+continuidad/oclusión/expiración/reset/capacidad/empates de ByteTrack, asociación y
+votación EPP, confirmación/recuperación de caída, las 120
 combinaciones de política de cómputo y la selección multidispositivo. El target
 `cuajone_onnx_tests` genera protobufs sintéticos y cubre inferencia positiva desde
 memoria, manifest/hash/rol/I/O, extensión, límites, external data y dominios custom.
@@ -456,11 +464,12 @@ de esos componentes; todavía no se midió y no se estima aquí.
 
 ## Brechas conocidas
 
-- El tracker es IoU determinista. NO ofrece paridad ByteTrack y puede cambiar IDs
-  ante oclusiones, cruces o movimiento rápido.
+- ByteTrack usa únicamente movimiento y geometría; no incorpora ReID visual y puede
+  cambiar IDs en oclusiones largas o cruces ambiguos.
 - Los defaults de una clase y 17 keypoints para pose raw deben confirmarse contra
   el exportador real.
-- No se soportan NMS fusionado, múltiples heads/outputs ni outputs dinámicos.
+- Fuera del pose ONNX `[1,300,57]` aprobado no se soportan otros layouts NMS
+  fusionados, múltiples heads/outputs ni outputs dinámicos.
 - La persistencia JPEG/CSV es síncrona y puede afectar latencia durante eventos.
 - El fallback de apertura simple puede quedar sujeto a un timeout interno del
   backend distinto de los valores configurados; `stop()` no puede cancelar de
