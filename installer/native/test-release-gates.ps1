@@ -173,7 +173,62 @@ try {
         param($value) $value.approved_inputs[1].identity = $value.approved_inputs[0].identity
     }
 
-    [pscustomobject]@{ positiveCases = 1; adversarialCases = 17; result = "passed" }
+    function Assert-FastGateRejected([string]$Name, [scriptblock]$Test) {
+        $rejected = $false
+        try {
+            & $Test
+        } catch {
+            $rejected = $true
+        }
+        if (-not $rejected) {
+            throw "Fast iteration adversarial gate was accepted: $Name"
+        }
+    }
+
+    if ((Get-CabinetCompressionLevel $false) -cne "high") { throw "Release must keep high cabinet compression" }
+    if ((Get-CabinetCompressionLevel $true) -cne "low") { throw "FastPreview must use low cabinet compression" }
+    $fullScope = Get-AcceptanceScope
+    $fastScope = Get-AcceptanceScope -FastPreview
+    $stageOnlyScope = Get-AcceptanceScope -StageOnly
+    if ($fullScope -cne "MSI database, administrative extraction, launcher/runtime PE subsystem, loader, --help, and hardware probe only; no install, engines, cameras, preflight, or inference") {
+        throw "Full preview acceptance scope changed"
+    }
+    if ($fastScope -ceq $fullScope -or $stageOnlyScope -ceq $fullScope -or $stageOnlyScope -ceq $fastScope) {
+        throw "FastPreview and StageOnly acceptance scopes must be distinct from the full scope"
+    }
+    if ($fastScope -notmatch 'administrative extraction') {
+        throw "FastPreview scope must honestly disclose the skipped administrative extraction"
+    }
+    if ($stageOnlyScope -notmatch 'no MSI') {
+        throw "StageOnly scope must disclose that no MSI was produced"
+    }
+    $fastMetadata = Get-FastIterationMetadata -FastPreview
+    $releaseMetadata = Get-FastIterationMetadata
+    $stageOnlyMetadata = Get-FastIterationMetadata -StageOnly
+    if ($fastMetadata.fastPreview -ne $true -or $fastMetadata.stageOnly -ne $false -or $fastMetadata.cabinetCompressionLevel -cne "low") {
+        throw "FastPreview receipt metadata is wrong"
+    }
+    if ($releaseMetadata.fastPreview -ne $false -or $releaseMetadata.stageOnly -ne $false -or $releaseMetadata.cabinetCompressionLevel -cne "high") {
+        throw "Release receipt metadata must stay unmarked and high-compression"
+    }
+    if ($stageOnlyMetadata.stageOnly -ne $true -or $stageOnlyMetadata.fastPreview -ne $false) {
+        throw "StageOnly receipt metadata is wrong"
+    }
+    Assert-FastIterationFlags -BuildMode Preview
+    Assert-FastIterationFlags -FastPreview -BuildMode Preview
+    Assert-FastIterationFlags -StageOnly -BuildMode Preview
+    Assert-FastIterationFlags -FastPreview -StageOnly -BuildMode Preview
+    Assert-FastGateRejected "FastPreview with Release" { Assert-FastIterationFlags -FastPreview -BuildMode Release }
+    Assert-FastGateRejected "StageOnly with Release" { Assert-FastIterationFlags -StageOnly -BuildMode Release }
+    Assert-FastGateRejected "FastPreview and StageOnly with Release" { Assert-FastIterationFlags -FastPreview -StageOnly -BuildMode Release }
+
+    [pscustomobject]@{
+        positiveCases = 1
+        adversarialCases = 17
+        fastIterationPositiveCases = 13
+        fastIterationAdversarialCases = 3
+        result = "passed"
+    }
 } finally {
     Remove-Item -LiteralPath $TestRoot -Recurse -Force
 }

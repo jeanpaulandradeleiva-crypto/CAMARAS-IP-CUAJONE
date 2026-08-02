@@ -17,7 +17,9 @@ param(
 
     [switch]$AllowInternalPilotTrust,
     [string]$CertificateThumbprint = $env:CUAJONE_CERTIFICATE_SHA1,
-    [string]$PilotRootCertificatePath = $env:CUAJONE_PILOT_ROOT_CER
+    [string]$PilotRootCertificatePath = $env:CUAJONE_PILOT_ROOT_CER,
+
+    [switch]$FastPreview
 )
 
 Set-StrictMode -Version Latest
@@ -221,6 +223,14 @@ if ($sbom.spdxVersion -cne "SPDX-2.3" -or $sbom.dataLicense -cne "CC0-1.0" -or
 if ([System.IO.Path]::GetFullPath($stageMetadata.sourceRoots.repository) -cne $projectRoot) {
     throw "Staged provenance does not identify the current repository root"
 }
+$fastPreviewProperty = $stageMetadata.PSObject.Properties["fastPreview"]
+$stageWasFastPreview = ($null -ne $fastPreviewProperty) -and $fastPreviewProperty.Value -eq $true
+if ($FastPreview -and -not $stageWasFastPreview) {
+    throw "FastPreview verification requires a stage built with -FastPreview (metadata.fastPreview)"
+}
+if (-not $FastPreview -and $stageWasFastPreview) {
+    throw "Full verification cannot be applied to a fast-preview stage; rebuild without -FastPreview"
+}
 
 $classifiedStagePaths = [System.Collections.Generic.HashSet[string]]::new(
     [System.StringComparer]::OrdinalIgnoreCase
@@ -261,16 +271,18 @@ foreach ($entry in $stageMetadata.sourceProvenance) {
     Assert-File $entry.sourcePath "Current provenance source"
     $stagedInput = Join-Path $stage $entry.stagedRelativePath
     Assert-File $stagedInput "Provenance staged input"
-    $currentSourceHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $entry.sourcePath).Hash.ToLowerInvariant()
-    $currentStageHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $stagedInput).Hash.ToLowerInvariant()
-    if ($currentSourceHash -cne $entry.sourceSha256.ToLowerInvariant()) {
-        throw "Source changed after staging: $($entry.sourcePath)"
+    if (-not $FastPreview) {
+        $currentSourceHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $entry.sourcePath).Hash.ToLowerInvariant()
+        $currentStageHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $stagedInput).Hash.ToLowerInvariant()
+        if ($currentSourceHash -cne $entry.sourceSha256.ToLowerInvariant()) {
+            throw "Source changed after staging: $($entry.sourcePath)"
+        }
+        if ($currentStageHash -cne $entry.stagedSha256.ToLowerInvariant() -or
+            $currentStageHash -cne $currentSourceHash) {
+            throw "Stage no longer corresponds to source: $($entry.stagedRelativePath)"
+        }
+        $sourceFilesCompared++
     }
-    if ($currentStageHash -cne $entry.stagedSha256.ToLowerInvariant() -or
-        $currentStageHash -cne $currentSourceHash) {
-        throw "Stage no longer corresponds to source: $($entry.stagedRelativePath)"
-    }
-    $sourceFilesCompared++
 }
 
 $expectedRepositoryMappings = [ordered]@{
@@ -347,7 +359,9 @@ $extractApp = Join-Path $imageRoot "PFiles64\NexoAI Vision"
 New-Item -ItemType Directory -Path $runRoot | Out-Null
 New-Item -ItemType Directory -Path $tempDir | Out-Null
 New-Item -ItemType Directory -Path $validateDir | Out-Null
-New-Item -ItemType Directory -Path $imageRoot | Out-Null
+if (-not $FastPreview) {
+    New-Item -ItemType Directory -Path $imageRoot | Out-Null
+}
 
 $originalTemp = $env:TEMP
 $originalTmp = $env:TMP
@@ -670,125 +684,172 @@ try {
         [void][System.Runtime.InteropServices.Marshal]::FinalReleaseComObject($windowsInstaller)
     }
 
-    $adminLog = Join-Path $runRoot "administrative-extraction.log"
-    $adminArguments = @(
-        "/a", $installer,
-        "/qn",
-        "/norestart",
-        "TARGETDIR=$imageRoot",
-        "/L*V", $adminLog
-    )
-    & "$env:SystemRoot\System32\msiexec.exe" @adminArguments
-    $adminExitCode = $LASTEXITCODE
-    if ($adminExitCode -ne 0) {
-        throw "MSI administrative extraction failed with exit code $adminExitCode; see $adminLog"
-    }
-    for ($attempt = 0; $attempt -lt 100 -and
-        -not (Test-Path -LiteralPath $extractApp -PathType Container); $attempt++) {
-        Start-Sleep -Milliseconds 100
-    }
-    Assert-Directory $extractApp "Administrative application image"
-    $expectedPayloadCount = @(Get-ChildItem -LiteralPath $stage -Recurse -File).Count
-    for ($attempt = 0; $attempt -lt 600; $attempt++) {
-        $currentPayloadCount = @(Get-ChildItem -LiteralPath $extractApp -Recurse -File).Count
-        if ($currentPayloadCount -ge $expectedPayloadCount) {
-            break
+    if (-not $FastPreview) {
+        $adminLog = Join-Path $runRoot "administrative-extraction.log"
+        $adminArguments = @(
+            "/a", $installer,
+            "/qn",
+            "/norestart",
+            "TARGETDIR=$imageRoot",
+            "/L*V", $adminLog
+        )
+        & "$env:SystemRoot\System32\msiexec.exe" @adminArguments
+        $adminExitCode = $LASTEXITCODE
+        if ($adminExitCode -ne 0) {
+            throw "MSI administrative extraction failed with exit code $adminExitCode; see $adminLog"
         }
-        Start-Sleep -Milliseconds 100
-    }
-    Assert-NoForbiddenPayloadFiles $extractApp "administrative image"
-
-    $payloadCount = 0
-    foreach ($stagedFile in Get-ChildItem -LiteralPath $stage -Recurse -File) {
-        $relative = [System.IO.Path]::GetRelativePath($stage, $stagedFile.FullName)
-        $extractedFile = Join-Path $extractApp $relative
-        Assert-File $extractedFile "Extracted payload file"
-        $stageHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $stagedFile.FullName).Hash
-        $extractedHash = Get-FileHashWithRetry $extractedFile
-        if ($extractedHash -cne $stageHash) {
-            throw "Administrative extraction changed payload bytes: $relative"
+        for ($attempt = 0; $attempt -lt 100 -and
+            -not (Test-Path -LiteralPath $extractApp -PathType Container); $attempt++) {
+            Start-Sleep -Milliseconds 100
         }
-        $payloadCount++
-    }
-    $extractedPayloadCount = @(Get-ChildItem -LiteralPath $extractApp -Recurse -File).Count
-    if ($extractedPayloadCount -ne $payloadCount) {
-        throw "Administrative image file count mismatch: stage=$payloadCount extracted=$extractedPayloadCount"
-    }
-
-    $metadataPath = Join-Path $extractApp "build-metadata.json"
-    $metadata = Get-Content -LiteralPath $metadataPath -Raw | ConvertFrom-Json
-    foreach ($binary in $metadata.stagedBinaries) {
-        $extractedBinary = Join-Path $extractApp "bin\$($binary.name)"
-        $extractedHash = Get-FileHashWithRetry $extractedBinary
-        if ($extractedHash.ToLowerInvariant() -cne $binary.sha256.ToLowerInvariant()) {
-            throw "Extracted binary differs from the approved source bytes: $($binary.name)"
-        }
-    }
-
-    $launcher = Join-Path $extractApp "bin\cuajone_launcher.exe"
-    $executable = Join-Path $extractApp "bin\cuajone_native.exe"
-    Assert-File $launcher "Extracted launcher executable"
-    Assert-File $executable "Extracted runtime executable"
-    foreach ($ownedExecutable in @($launcher, $executable)) {
-        if ($ExpectedSignatureStatus -eq "Signed") {
-            $executableSignatureParameters = @{
-                FilePath = $ownedExecutable
-                SignToolPath = $SignToolPath
-                VerifyOnly = $true
+        Assert-Directory $extractApp "Administrative application image"
+        $expectedPayloadCount = @(Get-ChildItem -LiteralPath $stage -Recurse -File).Count
+        for ($attempt = 0; $attempt -lt 600; $attempt++) {
+            $currentPayloadCount = @(Get-ChildItem -LiteralPath $extractApp -Recurse -File).Count
+            if ($currentPayloadCount -ge $expectedPayloadCount) {
+                break
             }
-            if ($AllowInternalPilotTrust) {
-                $executableSignatureParameters.AllowInternalPilotTrust = $true
-                $executableSignatureParameters.CertificateThumbprint = $CertificateThumbprint
-                $executableSignatureParameters.PilotRootCertificatePath = $PilotRootCertificatePath
-            }
-            & $signatureVerifier @executableSignatureParameters | Out-Null
-        } elseif ((Get-AuthenticodeSignature -LiteralPath $ownedExecutable).Status -ne
-            [System.Management.Automation.SignatureStatus]::NotSigned) {
-            throw "Expected the extracted owned executable to be unsigned: $ownedExecutable"
+            Start-Sleep -Milliseconds 100
         }
-    }
-    $launcherSubsystem = Get-PeSubsystem $launcher
-    $runtimeSubsystem = Get-PeSubsystem $executable
-    if ($launcherSubsystem -ne 2) {
-        throw "Launcher is not a Windows GUI subsystem executable: $launcherSubsystem"
-    }
-    if ($runtimeSubsystem -ne 3) {
-        throw "Runtime is not a Windows console subsystem executable: $runtimeSubsystem"
-    }
+        Assert-NoForbiddenPayloadFiles $extractApp "administrative image"
 
-    $originalPath = $env:PATH
-    $env:PATH = "$(Join-Path $extractApp 'bin');$env:SystemRoot\System32;$env:SystemRoot"
-    try {
-        $helpOutput = & $executable --help 2>&1
-        $helpExitCode = $LASTEXITCODE
-    } finally {
-        $env:PATH = $originalPath
-    }
-    if ($helpExitCode -ne 0 -or ($helpOutput -join "`n") -notmatch 'Cuajone native PPE and fall analytics') {
-        throw "Extracted loader/help acceptance failed with exit code $helpExitCode"
-    }
-    $helpOutput | Set-Content -LiteralPath (Join-Path $runRoot "help-output.txt") -Encoding UTF8
+        $payloadCount = 0
+        foreach ($stagedFile in Get-ChildItem -LiteralPath $stage -Recurse -File) {
+            $relative = [System.IO.Path]::GetRelativePath($stage, $stagedFile.FullName)
+            $extractedFile = Join-Path $extractApp $relative
+            Assert-File $extractedFile "Extracted payload file"
+            $stageHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $stagedFile.FullName).Hash
+            $extractedHash = Get-FileHashWithRetry $extractedFile
+            if ($extractedHash -cne $stageHash) {
+                throw "Administrative extraction changed payload bytes: $relative"
+            }
+            $payloadCount++
+        }
+        $extractedPayloadCount = @(Get-ChildItem -LiteralPath $extractApp -Recurse -File).Count
+        if ($extractedPayloadCount -ne $payloadCount) {
+            throw "Administrative image file count mismatch: stage=$payloadCount extracted=$extractedPayloadCount"
+        }
 
-    $originalPath = $env:PATH
-    $env:PATH = "$(Join-Path $extractApp 'bin');$env:SystemRoot\System32;$env:SystemRoot"
-    try {
-        $probeOutput = & $executable --hardware-probe-json 2>&1
-        $probeExitCode = $LASTEXITCODE
-    } finally {
-        $env:PATH = $originalPath
+        $metadataPath = Join-Path $extractApp "build-metadata.json"
+        $metadata = Get-Content -LiteralPath $metadataPath -Raw | ConvertFrom-Json
+        foreach ($binary in $metadata.stagedBinaries) {
+            $extractedBinary = Join-Path $extractApp "bin\$($binary.name)"
+            $extractedHash = Get-FileHashWithRetry $extractedBinary
+            if ($extractedHash.ToLowerInvariant() -cne $binary.sha256.ToLowerInvariant()) {
+                throw "Extracted binary differs from the approved source bytes: $($binary.name)"
+            }
+        }
+
+        $launcher = Join-Path $extractApp "bin\cuajone_launcher.exe"
+        $executable = Join-Path $extractApp "bin\cuajone_native.exe"
+        Assert-File $launcher "Extracted launcher executable"
+        Assert-File $executable "Extracted runtime executable"
+        foreach ($ownedExecutable in @($launcher, $executable)) {
+            if ($ExpectedSignatureStatus -eq "Signed") {
+                $executableSignatureParameters = @{
+                    FilePath = $ownedExecutable
+                    SignToolPath = $SignToolPath
+                    VerifyOnly = $true
+                }
+                if ($AllowInternalPilotTrust) {
+                    $executableSignatureParameters.AllowInternalPilotTrust = $true
+                    $executableSignatureParameters.CertificateThumbprint = $CertificateThumbprint
+                    $executableSignatureParameters.PilotRootCertificatePath = $PilotRootCertificatePath
+                }
+                & $signatureVerifier @executableSignatureParameters | Out-Null
+            } elseif ((Get-AuthenticodeSignature -LiteralPath $ownedExecutable).Status -ne
+                [System.Management.Automation.SignatureStatus]::NotSigned) {
+                throw "Expected the extracted owned executable to be unsigned: $ownedExecutable"
+            }
+        }
+        $launcherSubsystem = Get-PeSubsystem $launcher
+        $runtimeSubsystem = Get-PeSubsystem $executable
+        if ($launcherSubsystem -ne 2) {
+            throw "Launcher is not a Windows GUI subsystem executable: $launcherSubsystem"
+        }
+        if ($runtimeSubsystem -ne 3) {
+            throw "Runtime is not a Windows console subsystem executable: $runtimeSubsystem"
+        }
+
+        $originalPath = $env:PATH
+        $env:PATH = "$(Join-Path $extractApp 'bin');$env:SystemRoot\System32;$env:SystemRoot"
+        try {
+            $helpOutput = & $executable --help 2>&1
+            $helpExitCode = $LASTEXITCODE
+        } finally {
+            $env:PATH = $originalPath
+        }
+        if ($helpExitCode -ne 0 -or ($helpOutput -join "`n") -notmatch 'Cuajone native PPE and fall analytics') {
+            throw "Extracted loader/help acceptance failed with exit code $helpExitCode"
+        }
+        $helpOutput | Set-Content -LiteralPath (Join-Path $runRoot "help-output.txt") -Encoding UTF8
+
+        $originalPath = $env:PATH
+        $env:PATH = "$(Join-Path $extractApp 'bin');$env:SystemRoot\System32;$env:SystemRoot"
+        try {
+            $probeOutput = & $executable --hardware-probe-json 2>&1
+            $probeExitCode = $LASTEXITCODE
+        } finally {
+            $env:PATH = $originalPath
+        }
+        if ($probeExitCode -notin @(0, 10, 11, 12, 13)) {
+            throw "Extracted hardware probe returned an undocumented exit code: $probeExitCode"
+        }
+        $probeJson = ($probeOutput -join "`n") | ConvertFrom-Json
+        if ($probeJson.schema_version -ne 2 -or
+            $probeJson.minimum_driver_version -ne 12090 -or
+            $probeJson.status -notin @("cuda_ready", "no_nvidia_adapter", "driver_unavailable", "driver_too_old", "probe_error") -or
+            $probeJson.cuda_ready -ne ($probeJson.status -ceq "cuda_ready") -or
+            $probeJson.driver_was_loaded -ne $false) {
+            throw "Extracted hardware probe JSON violates the stable schema"
+        }
+        $probeOutput | Set-Content -LiteralPath (Join-Path $runRoot "hardware-probe.json") -Encoding UTF8
+    } else {
+        $stagedLauncher = Join-Path $stage "bin\cuajone_launcher.exe"
+        $stagedRuntime = Join-Path $stage "bin\cuajone_native.exe"
+        Assert-File $stagedLauncher "Staged launcher executable"
+        Assert-File $stagedRuntime "Staged runtime executable"
+        foreach ($ownedExecutable in @($stagedLauncher, $stagedRuntime)) {
+            if ($ExpectedSignatureStatus -eq "Signed") {
+                $executableSignatureParameters = @{
+                    FilePath = $ownedExecutable
+                    SignToolPath = $SignToolPath
+                    VerifyOnly = $true
+                }
+                if ($AllowInternalPilotTrust) {
+                    $executableSignatureParameters.AllowInternalPilotTrust = $true
+                    $executableSignatureParameters.CertificateThumbprint = $CertificateThumbprint
+                    $executableSignatureParameters.PilotRootCertificatePath = $PilotRootCertificatePath
+                }
+                & $signatureVerifier @executableSignatureParameters | Out-Null
+            } elseif ((Get-AuthenticodeSignature -LiteralPath $ownedExecutable).Status -ne
+                [System.Management.Automation.SignatureStatus]::NotSigned) {
+                throw "Expected the staged owned executable to be unsigned: $ownedExecutable"
+            }
+        }
+        $launcherSubsystem = Get-PeSubsystem $stagedLauncher
+        $runtimeSubsystem = Get-PeSubsystem $stagedRuntime
+        if ($launcherSubsystem -ne 2) {
+            throw "Staged launcher is not a Windows GUI subsystem executable: $launcherSubsystem"
+        }
+        if ($runtimeSubsystem -ne 3) {
+            throw "Staged runtime is not a Windows console subsystem executable: $runtimeSubsystem"
+        }
+
+        $originalPath = $env:PATH
+        $env:PATH = "$(Join-Path $stage 'bin');$env:SystemRoot\System32;$env:SystemRoot"
+        try {
+            $helpOutput = & $stagedRuntime --help 2>&1
+            $helpExitCode = $LASTEXITCODE
+        } finally {
+            $env:PATH = $originalPath
+        }
+        if ($helpExitCode -ne 0 -or ($helpOutput -join "`n") -notmatch 'Cuajone native PPE and fall analytics') {
+            throw "Staged loader/help smoke failed with exit code $helpExitCode"
+        }
+        $helpOutput | Set-Content -LiteralPath (Join-Path $runRoot "help-output.txt") -Encoding UTF8
+        Assert-NoForbiddenPayloadFiles $stage "installer stage (FastPreview)"
     }
-    if ($probeExitCode -notin @(0, 10, 11, 12, 13)) {
-        throw "Extracted hardware probe returned an undocumented exit code: $probeExitCode"
-    }
-    $probeJson = ($probeOutput -join "`n") | ConvertFrom-Json
-    if ($probeJson.schema_version -ne 2 -or
-        $probeJson.minimum_driver_version -ne 12090 -or
-        $probeJson.status -notin @("cuda_ready", "no_nvidia_adapter", "driver_unavailable", "driver_too_old", "probe_error") -or
-        $probeJson.cuda_ready -ne ($probeJson.status -ceq "cuda_ready") -or
-        $probeJson.driver_was_loaded -ne $false) {
-        throw "Extracted hardware probe JSON violates the stable schema"
-    }
-    $probeOutput | Set-Content -LiteralPath (Join-Path $runRoot "hardware-probe.json") -Encoding UTF8
 } finally {
     $env:TEMP = $originalTemp
     $env:TMP = $originalTmp
@@ -810,17 +871,18 @@ $result = [ordered]@{
     repairAndUninstallTables = "passed"
     startMenuAndArpMetadata = "passed"
     deterministicComponents = "passed"
-    sourceCorrespondence = "passed"
+    fastPreview = [bool]$FastPreview
+    sourceCorrespondence = if ($FastPreview) { "asserted-at-staging-fast-preview" } else { "passed" }
     sourceFilesCompared = $sourceFilesCompared
-    administrativeExtractionExitCode = $adminExitCode
-    payloadFilesCompared = $payloadCount
-    thirdPartyBytePreservation = "passed"
+    administrativeExtractionExitCode = if ($FastPreview) { $null } else { $adminExitCode }
+    payloadFilesCompared = if ($FastPreview) { 0 } else { $payloadCount }
+    thirdPartyBytePreservation = if ($FastPreview) { "skipped-fast-preview" } else { "passed" }
     launcherSubsystem = "windows-gui"
     runtimeSubsystem = "windows-console"
     helpExitCode = $helpExitCode
-    hardwareProbeExitCode = $probeExitCode
-    hardwareProbeStatus = $probeJson.status
-    cudaDriverEagerlyLoaded = $probeJson.driver_was_loaded
+    hardwareProbeExitCode = if ($FastPreview) { $null } else { $probeExitCode }
+    hardwareProbeStatus = if ($FastPreview) { "not-run-fast-preview" } else { $probeJson.status }
+    cudaDriverEagerlyLoaded = if ($FastPreview) { $null } else { $probeJson.driver_was_loaded }
     computeSelectionContract = "auto-cuda-cpu-persisted-and-fail-closed"
     liveInstallPerformed = $false
     localMachineCertificateStoresModified = $false

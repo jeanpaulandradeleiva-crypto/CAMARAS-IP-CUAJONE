@@ -16,7 +16,11 @@
 
     <MajorUpgrade DowngradeErrorMessage="A newer version of NexoAI Vision is already installed. Uninstall it before installing this older package."
                   Schedule="afterInstallInitialize" />
+    <?ifdef var.CabinetCompressionLevel ?>
+    <MediaTemplate EmbedCab="yes" CompressionLevel="$(var.CabinetCompressionLevel)" />
+    <?else?>
     <MediaTemplate EmbedCab="yes" CompressionLevel="high" />
+    <?endif?>
 
     <Property Id="INSTALLFOLDER" Secure="yes" />
     <Property Id="PREVIOUS_COMPUTE_MODE">

@@ -148,3 +148,53 @@ function Assert-ProductionParityReceipt(
     }
     $receipt
 }
+
+function Assert-FastIterationFlags {
+    param(
+        [switch]$FastPreview,
+        [switch]$StageOnly,
+        [string]$BuildMode
+    )
+    if ($BuildMode -ne "Preview") {
+        if ($FastPreview) {
+            throw "FastPreview is permitted only for Preview builds; Release always uses full verification and high cabinet compression"
+        }
+        if ($StageOnly) {
+            throw "StageOnly is permitted only for Preview builds; Release requires a full signed and verified MSI build"
+        }
+    }
+}
+
+function Get-CabinetCompressionLevel([bool]$FastPreview) {
+    if ($FastPreview) {
+        return "low"
+    }
+    return "high"
+}
+
+function Get-AcceptanceScope {
+    param(
+        [switch]$FastPreview,
+        [switch]$StageOnly
+    )
+    if ($StageOnly) {
+        return "Staging only; no MSI was produced, so no MSI acceptance run was performed"
+    }
+    if ($FastPreview) {
+        return "FastPreview: MSI database validation, product identity, staged PE subsystem checks, launcher --help smoke, and payload-policy scan only; no administrative extraction, payload byte-compare, hardware probe, or full source re-hash"
+    }
+    return "MSI database, administrative extraction, launcher/runtime PE subsystem, loader, --help, and hardware probe only; no install, engines, cameras, preflight, or inference"
+}
+
+function Get-FastIterationMetadata {
+    param(
+        [switch]$FastPreview,
+        [switch]$StageOnly
+    )
+    [ordered]@{
+        fastPreview = [bool]$FastPreview
+        stageOnly = [bool]$StageOnly
+        cabinetCompressionLevel = Get-CabinetCompressionLevel $FastPreview
+        acceptanceScope = Get-AcceptanceScope -FastPreview:$FastPreview -StageOnly:$StageOnly
+    }
+}

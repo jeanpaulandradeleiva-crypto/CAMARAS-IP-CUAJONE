@@ -14,6 +14,8 @@ param(
     [switch]$AllowUnsignedPreview,
     [switch]$SkipModelBundle,
     [switch]$RefreshModelExport,
+    [switch]$FastPreview,
+    [switch]$StageOnly,
 
     [string]$ToolRoot,
     [string]$WixToolRoot,
@@ -535,6 +537,9 @@ $isDirty = $gitStatus.Count -gt 0
 $isSignedBuild = -not [string]::IsNullOrWhiteSpace($SignCommand)
 $isInternalPilotSigning = $env:CUAJONE_ALLOW_INTERNAL_PILOT_TRUST -ceq "1"
 $productionParityReceipt = $null
+$cabinetCompressionLevel = Get-CabinetCompressionLevel $FastPreview
+
+Assert-FastIterationFlags -FastPreview:$FastPreview -StageOnly:$StageOnly -BuildMode $BuildMode
 
 if ($isInternalPilotSigning -and $BuildMode -ne "Preview") {
     throw "Internal pilot signing is permitted only for Preview builds; Release requires public trust"
@@ -743,14 +748,39 @@ foreach ($path in @($WixBuildDir, $OutputDir, $VerificationRoot)) {
     Ensure-Directory $parent
 }
 Ensure-Directory $SupersededOutputDir
-Reset-Directory $StageDir
+$stageReceiptPath = Join-Path $generatedParent "stage-receipt.json"
+$stageReceipt = $null
+$stageReceiptLookup = $null
+if ($FastPreview -and (Test-Path -LiteralPath $stageReceiptPath -PathType Leaf)) {
+    try {
+        $stageReceipt = Get-Content -LiteralPath $stageReceiptPath -Raw | ConvertFrom-Json
+        if ($null -ne $stageReceipt.stagedFiles) {
+            $stageReceiptLookup = @{}
+            foreach ($stagedEntry in @($stageReceipt.stagedFiles)) {
+                if (-not [string]::IsNullOrWhiteSpace($stagedEntry.stagedRelativePath)) {
+                    $stageReceiptLookup[$stagedEntry.stagedRelativePath] = $stagedEntry
+                }
+            }
+        }
+    } catch {
+        $stageReceipt = $null
+        $stageReceiptLookup = $null
+    }
+}
+if ($FastPreview) {
+    if (-not (Test-Path -LiteralPath $StageDir -PathType Container)) {
+        New-Item -ItemType Directory -Path $StageDir -Force | Out-Null
+    }
+} else {
+    Reset-Directory $StageDir
+}
 Reset-Directory $WixBuildDir
 Ensure-Directory $OutputDir
 Ensure-Directory $VerificationRoot
 
-$stageBin = New-Item -ItemType Directory -Path (Join-Path $StageDir "bin")
-$stageDocs = New-Item -ItemType Directory -Path (Join-Path $StageDir "docs")
-$stageLicenses = New-Item -ItemType Directory -Path (Join-Path $StageDir "licenses")
+$stageBin = New-Item -ItemType Directory -Path (Join-Path $StageDir "bin") -Force
+$stageDocs = New-Item -ItemType Directory -Path (Join-Path $StageDir "docs") -Force
+$stageLicenses = New-Item -ItemType Directory -Path (Join-Path $StageDir "licenses") -Force
 
 $resolved = [ordered]@{}
 $imports = [System.Collections.Generic.List[object]]::new()
@@ -760,6 +790,29 @@ $sourceRoots = [ordered]@{
     repository = $projectRoot
     build = (Join-Path $ToolRoot "build")
     tool = $ToolRoot
+}
+
+$generatedStageRelativePaths = if ($StageOnly) {
+    @(
+        "NexoAIVision.ico"
+        "build-metadata.json"
+        "docs/SOURCE-OFFER.txt"
+        "docs/MODEL-BUNDLE.txt"
+        "licenses/Microsoft-VC-Runtime-REDISTRIBUTION-REFERENCE.txt"
+        "licenses/NVIDIA-TensorRT-LICENSE-REFERENCE.txt"
+        "SHA256SUMS.txt"
+    )
+} else {
+    @(
+        "NexoAIVision.ico"
+        "build-metadata.json"
+        "docs/SOURCE-OFFER.txt"
+        "docs/MODEL-BUNDLE.txt"
+        "docs/sbom.spdx.json"
+        "licenses/Microsoft-VC-Runtime-REDISTRIBUTION-REFERENCE.txt"
+        "licenses/NVIDIA-TensorRT-LICENSE-REFERENCE.txt"
+        "SHA256SUMS.txt"
+    )
 }
 
 function Copy-StagedInput(
@@ -781,23 +834,39 @@ function Copy-StagedInput(
     if (-not $resolvedDestination.StartsWith("$resolvedStage\", [System.StringComparison]::OrdinalIgnoreCase)) {
         throw "Staging destination is outside the stage: $resolvedDestination"
     }
-    $destinationParent = Split-Path -Parent $resolvedDestination
-    if (-not (Test-Path -LiteralPath $destinationParent -PathType Container)) {
-        New-Item -ItemType Directory -Path $destinationParent -Force | Out-Null
-    }
-
-    Copy-Item -LiteralPath $resolvedSource -Destination $resolvedDestination
     $sourceHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $resolvedSource).Hash.ToLowerInvariant()
-    $stagedHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $resolvedDestination).Hash.ToLowerInvariant()
-    if ($stagedHash -cne $sourceHash) {
-        throw "Staging changed source bytes: $resolvedSource"
+    $stagedRelativePath = [System.IO.Path]::GetRelativePath($resolvedStage, $resolvedDestination).Replace('\', '/')
+    $skipCopy = $false
+    if ($null -ne $stageReceiptLookup) {
+        $priorEntry = $stageReceiptLookup[$stagedRelativePath]
+        if ($null -ne $priorEntry -and
+            $priorEntry.stagedSha256 -ceq $sourceHash -and
+            (Test-Path -LiteralPath $resolvedDestination -PathType Leaf)) {
+            $existingHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $resolvedDestination).Hash.ToLowerInvariant()
+            if ($existingHash -ceq $sourceHash) {
+                $skipCopy = $true
+            }
+        }
+    }
+    if ($skipCopy) {
+        $stagedHash = $sourceHash
+    } else {
+        $destinationParent = Split-Path -Parent $resolvedDestination
+        if (-not (Test-Path -LiteralPath $destinationParent -PathType Container)) {
+            New-Item -ItemType Directory -Path $destinationParent -Force | Out-Null
+        }
+        Copy-Item -LiteralPath $resolvedSource -Destination $resolvedDestination
+        $stagedHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $resolvedDestination).Hash.ToLowerInvariant()
+        if ($stagedHash -cne $sourceHash) {
+            throw "Staging changed source bytes: $resolvedSource"
+        }
     }
 
     $stagedSources.Add([ordered]@{
         sourceScope = $SourceScope
         sourcePath = $resolvedSource
         sourceRelativePath = [System.IO.Path]::GetRelativePath($scopeRoot, $resolvedSource).Replace('\', '/')
-        stagedRelativePath = [System.IO.Path]::GetRelativePath($resolvedStage, $resolvedDestination).Replace('\', '/')
+        stagedRelativePath = $stagedRelativePath
         sourceSha256 = $sourceHash
         stagedSha256 = $stagedHash
         bytePreserved = $true
@@ -1043,6 +1112,20 @@ supplied model files before starting the runtime.
 "@ | Set-Content -LiteralPath (Join-Path $stageDocs.FullName "MODEL-BUNDLE.txt") -Encoding UTF8
 }
 
+if ($FastPreview) {
+    $currentStagedPaths = [System.Collections.Generic.HashSet[string]]::new(
+        [System.StringComparer]::OrdinalIgnoreCase)
+    foreach ($stagedEntry in $stagedSources) {
+        $null = $currentStagedPaths.Add([string]$stagedEntry.stagedRelativePath)
+    }
+    foreach ($stagedFile in Get-ChildItem -LiteralPath $StageDir -Recurse -File) {
+        $relativePath = [System.IO.Path]::GetRelativePath($StageDir, $stagedFile.FullName).Replace('\', '/')
+        if (-not $currentStagedPaths.Contains($relativePath) -and $relativePath -notin $generatedStageRelativePaths) {
+            Remove-Item -LiteralPath $stagedFile.FullName -Force
+        }
+    }
+}
+
 @"
 NexoAI Vision source offer and release correspondence
 
@@ -1089,6 +1172,7 @@ https://learn.microsoft.com/visualstudio/releases/2022/redistribution
 This reference is not a replacement for the applicable Visual Studio license terms and does not grant additional rights.
 "@ | Set-Content -LiteralPath (Join-Path $stageLicenses.FullName "Microsoft-VC-Runtime-REDISTRIBUTION-REFERENCE.txt") -Encoding UTF8
 
+if (-not $StageOnly) {
 $sbomPackages = @($resolved.GetEnumerator() | Sort-Object Key | ForEach-Object {
     [ordered]@{
         SPDXID = "SPDXRef-Binary-$((Get-StableHex $_.Key).Substring(0, 16))"
@@ -1148,6 +1232,7 @@ $sbom = [ordered]@{
     )
 }
 $sbom | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath (Join-Path $stageDocs.FullName "sbom.spdx.json") -Encoding UTF8
+}
 
 $iconPath = Join-Path $StageDir "NexoAIVision.ico"
 & $iconGenerator -OutputPath $iconPath
@@ -1203,6 +1288,9 @@ $metadata = [ordered]@{
         "Internal preview; public trust is not implied; real-engine operation not validated"
     }
     buildMode = $BuildMode
+    fastPreview = [bool]$FastPreview
+    stageOnly = [bool]$StageOnly
+    cabinetCompressionLevel = $cabinetCompressionLevel
     sourceRepository = $sourceRepository
     sourceRevision = $SourceRevision
     sourceArchiveUrl = $SourceArchiveUrl
@@ -1270,7 +1358,7 @@ $metadata = [ordered]@{
         "Explicit unsigned internal preview"
     }
     thirdPartyBinariesResigned = $false
-    acceptanceScope = "MSI database, administrative extraction, launcher/runtime PE subsystem, loader, --help, and hardware probe only; no install, engines, cameras, preflight, or inference"
+    acceptanceScope = Get-AcceptanceScope -FastPreview:$FastPreview -StageOnly:$StageOnly
     parityGate = if ($BuildMode -eq "Release") {
         [ordered]@{
             receiptVersion = $productionParityReceipt.receipt_version
@@ -1288,16 +1376,7 @@ $metadata = [ordered]@{
     stagingProvenanceVersion = 1
     sourceRoots = $sourceRoots
     sourceProvenance = @($stagedSources)
-    generatedStagePaths = @(
-        "NexoAIVision.ico"
-        "build-metadata.json"
-        "docs/SOURCE-OFFER.txt"
-        "docs/MODEL-BUNDLE.txt"
-        "docs/sbom.spdx.json"
-        "licenses/Microsoft-VC-Runtime-REDISTRIBUTION-REFERENCE.txt"
-        "licenses/NVIDIA-TensorRT-LICENSE-REFERENCE.txt"
-        "SHA256SUMS.txt"
-    )
+    generatedStagePaths = $generatedStageRelativePaths
     stagedBinaries = @($resolved.GetEnumerator() | ForEach-Object {
         [ordered]@{
             name = $_.Key
@@ -1321,6 +1400,39 @@ $manifestLines = foreach ($file in Get-ChildItem -LiteralPath $StageDir -Recurse
 }
 $manifestLines | Set-Content -LiteralPath $manifestPath -Encoding ASCII
 Assert-NoForbiddenPayloadFiles $StageDir "installer stage"
+
+$stageReceiptDocument = [ordered]@{
+    receiptVersion = 1
+    generatedUtc = [DateTime]::UtcNow.ToString("o")
+    version = $Version
+    fileVersion = $FileVersion
+    buildMode = $BuildMode
+    fastPreview = [bool]$FastPreview
+    stageOnly = [bool]$StageOnly
+    stagedFiles = @($stagedSources | ForEach-Object {
+        [ordered]@{
+            sourceScope = $_.sourceScope
+            sourcePath = $_.sourcePath
+            sourceRelativePath = $_.sourceRelativePath
+            stagedRelativePath = $_.stagedRelativePath
+            stagedSha256 = $_.stagedSha256
+        }
+    })
+}
+$stageReceiptDocument | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath $stageReceiptPath -Encoding UTF8
+
+if ($StageOnly) {
+    Write-Host "Portable layout ready: $(Join-Path $StageDir 'bin\cuajone_launcher.exe')"
+    return [pscustomobject]@{
+        StageOnly = $true
+        FastPreview = $FastPreview
+        Stage = $StageDir
+        Manifest = $manifestPath
+        Receipt = $stageReceiptPath
+        StagedBinaries = @($resolved.Keys)
+        StagedSourceFiles = @($stagedSources).Count
+    }
+}
 
 $licenseText = Get-Content -LiteralPath (Join-Path $projectRoot "LICENSE") -Raw
 $rtfText = $licenseText.Replace('\', '\\').Replace('{', '\{').Replace('}', '\}')
@@ -1384,6 +1496,7 @@ $wixArguments = @("build") + $wixSourceFiles + @(
     "-d", "MsiVersion=$msiVersion",
     "-d", "ArpComments=$arpComments",
     "-d", "LicenseRtf=$licenseRtf",
+    "-d", "CabinetCompressionLevel=$cabinetCompressionLevel",
     "-d", "HardwareProbeCA=$HardwareProbeCustomAction",
     "-ext", "WixToolset.UI.wixext",
     "-ext", "WixToolset.Util.wixext",
@@ -1440,6 +1553,9 @@ $verificationParameters = @{
     SignToolPath = $SignToolPath
     ExpectedSignatureStatus = if ($isSignedBuild) { "Signed" } else { "NotSigned" }
 }
+if ($FastPreview) {
+    $verificationParameters.FastPreview = $true
+}
 if ($isInternalPilotSigning) {
     $verificationParameters.AllowInternalPilotTrust = $true
     $verificationParameters.CertificateThumbprint = $env:CUAJONE_CERTIFICATE_SHA1
@@ -1464,6 +1580,9 @@ $signature = Get-AuthenticodeSignature -LiteralPath $installerPath
     Manifest = $manifestPath
     Sidecar = $sidecarPath
     WixPdb = $wixPdb
+    FastPreview = $FastPreview
+    StageOnly = $StageOnly
+    CabinetCompressionLevel = $cabinetCompressionLevel
     StagedBinaries = @($resolved.Keys)
     Verification = $verification
 }

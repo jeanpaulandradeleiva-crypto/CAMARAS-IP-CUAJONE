@@ -242,6 +242,46 @@ subdirectorio fechado de `installer\superseded`. Al terminar, `output` debe cont
 exactamente el MSI actual y su `.sha256`; `test-installer.ps1` vuelve a comprobar
 ese conjunto y el contenido del sidecar.
 
+### Bucle de desarrollo interno: `-StageOnly` y `-FastPreview`
+
+Para iterar sin esperar el build completo, hay dos modos rápidos. Ninguno aplica a
+`Release`: ambos fallan cerrado si se combinan con `-BuildMode Release`.
+
+| Modo | Qué hace | Cuándo usarlo |
+| --- | --- | --- |
+| `-StageOnly` | Stage completo + `build-metadata.json`, `SHA256SUMS.txt`, `stage-receipt.json` y escaneo de política. No genera MSI, SBOM ni verificación. | Validar el layout portable en segundos, sin WiX ni compresión. |
+| `-FastPreview` | Stage incremental (sin re-copiar ni re-hashear ~1.5 GB), compresión de cabina `low`, SBOM reutilizando hashes ya calculados, verificación reducida. | Probar un cambio de versión/payload cuando ya existe un stage correcto. |
+| Preview completo | Reset de stage, compresión `high`, extracción administrativa, byte-compare y probe. | Aceptación previa a distribución interna. |
+| `Release` | Como el Preview completo, más firma pública, worktree limpio, paridad y archivos fuente. | Única distribución aprobada. |
+
+Modo incremental (`-FastPreview`): el script no borra el stage. Persiste
+`stage-receipt.json` junto a `stage` y, en la siguiente ejecución, salta la copia de
+cada archivo cuya fuente no cambió y cuyo hash staged coincide con el registrado;
+elimina archivos staged que ya no forman parte del build. Lo que sí se copia sigue
+verificándose byte a byte.
+
+Verificación reducida de `-FastPreview`: valida la base de datos MSI, la identidad
+de producto, los subsistemas PE de los binarios staged, el smoke `--help` y la
+política de payload. Omite extracción administrativa, byte-compare y probe. El
+metadato `build-metadata.json` queda marcado con `fastPreview = true` y un
+`acceptanceScope` reducido, para que un build rápido nunca se confunda con un
+Preview completo. La verificación completa de `test-installer.ps1` rechaza un stage
+marcado como fast, y `-FastPreview` exige exactamente ese marcado.
+
+```powershell
+# 1) Layout portable (segundos): sin MSI
+.\installer\native\build-installer.ps1 -BuildMode Preview -AllowUnsignedPreview -StageOnly -Version 0.1.0-internal.22 -FileVersion 0.1.0.22
+
+# 2) Preview rápido (el primer run comprime una vez; el siguiente es incremental)
+.\installer\native\build-installer.ps1 -BuildMode Preview -AllowUnsignedPreview -FastPreview -Version 0.1.0-internal.22 -FileVersion 0.1.0.22
+
+# 3) Preview completo (aceptación)
+.\installer\native\build-installer.ps1 -BuildMode Preview -AllowUnsignedPreview -Version 0.1.0-internal.22 -FileVersion 0.1.0.22
+```
+
+El layout portable de `-StageOnly` queda listo para inspección o para el harness de
+QA que reutiliza `installer\stage\bin`.
+
 ## 8. Controlar la firma
 
 `sign-release.ps1` acepta únicamente `cuajone_launcher.exe`,
@@ -307,6 +347,11 @@ determinista por ruta staged; ese archivo no se versiona.
 La aceptación completa de instalación, reparación, actualización y
 desinstalación debe ejecutarse en una VM piloto enrolada, manteniendo Defender y
 los controles corporativos activos.
+
+Con `-FastPreview` el mismo verificador omite la extracción administrativa y el
+byte-compare (requiere un stage construido con `-FastPreview`): conserva validación
+de base de datos MSI, identidad de producto, subsistemas PE staged, smoke `--help`
+y política de payload.
 
 ## 11. Dependencias y distribución
 
