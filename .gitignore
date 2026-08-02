@@ -39,6 +39,9 @@ __pycache__/
 /parity-receipts/
 /qa-output/
 
+# Training dataset (lives outside the repository)
+/PPE/
+
 # Reports, evidence, and Office temporary files
 /Evidencias/
 *.csv

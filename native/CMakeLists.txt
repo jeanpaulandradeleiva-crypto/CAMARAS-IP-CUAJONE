@@ -397,7 +397,7 @@ if(CUAJONE_BUILD_RUNTIME)
         set(CUAJONE_ONNX_CUDA_POSE_MODEL "" CACHE FILEPATH
             "Verified pose ONNX model used by the opt-in CUDA pipeline integration test")
         set(CUAJONE_ONNX_REAL_PERSON_IMAGE
-            "${CMAKE_CURRENT_SOURCE_DIR}/../PPE/PPE DETECTION.v14i.yolov8/test/images/00113_jpg.rf.0589d64e23e7c5f892540643e794a541.jpg"
+            "${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/person_regression.jpg"
             CACHE FILEPATH "Offline person image used by the native real-model regression")
         foreach(required_file
                 "${CUAJONE_ONNX_CUDA_RUNTIME_DIR}/onnxruntime_providers_cuda.dll"

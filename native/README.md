@@ -126,7 +126,7 @@ backend CUDA y proveedor híbrido
 `ONNX Runtime CUDAExecutionProvider (PPE) + CPUExecutionProvider (pose)`. La prueba
 de pipeline procesa un frame BGR determinístico y valida el resumen, `pose_loaded`
 y la salida canónica. El pipeline procesa la imagen offline conocida
-`PPE/PPE DETECTION.v14i.yolov8/test/images/00113_...jpg` y exige al menos una
+`native/tests/fixtures/person_regression.jpg` y exige al menos una
 persona con 17 keypoints. No descarga modelos ni usa RTSP ni TensorRT.
 
 La división es deliberada: el grafo pose YOLO26 real del stage viola acceso en
