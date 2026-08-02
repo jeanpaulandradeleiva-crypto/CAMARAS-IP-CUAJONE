@@ -7,7 +7,7 @@ nativo y no depende de Python, PyTorch ni Ultralytics.
 `ppe_reportev2.py` es un facade local de desarrollo/QA. Usa
 `cuajone_native.pyd` con modelos ONNX fijos para ejercitar captura RTSP, binding
 nativo, evidencias y reportes compatibles. No es un fallback operativo y no se
-incluye en el MSI. `ppe_reporte.py` es un prototipo obsoleto.
+incluye en el MSI.
 
 ## Producción Windows
 

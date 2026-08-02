@@ -9,7 +9,6 @@ and `cuajone_native.exe`.
 | Area | Current location | Responsibility |
 | --- | --- | --- |
 | Python native harness | `ppe_reportev2.py` | Local development/QA facade for fixed ONNX through `cuajone_native.pyd`; not a production fallback. |
-| Legacy Python | `ppe_reporte.py` | Deprecated prototype; not for operations. |
 | Python QA package | `cuajone_qa/` | Contracts, adapters, demos, parity, typed runtime settings, native binding wrapper, and explicit experimental modules. |
 | Legacy Ultralytics analytics | `cuajone_qa/experimental/legacy_ultralytics.py` | Local compatibility/characterization only; owns the relocated `.pt`/PyTorch/ByteTrack pipeline. |
 | Shared contracts | `contracts/v1/` | JSON schemas, defaults, labels, and valid/invalid fixtures. |
