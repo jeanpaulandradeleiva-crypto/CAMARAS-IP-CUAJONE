@@ -75,6 +75,7 @@ jobs:
 
       - name: Configure and build (cpu-tests preset)
         shell: pwsh
+        working-directory: native
         run: |
           $vswhere = Join-Path ${env:ProgramFiles(x86)} "Microsoft Visual Studio\Installer\vswhere.exe"
           $vsPath = & $vswhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
@@ -94,6 +95,7 @@ jobs:
 
       - name: Run native tests (CTest)
         shell: pwsh
+        working-directory: native
         run: |
           ctest --preset cpu-tests-release --output-on-failure
           exit $LASTEXITCODE
