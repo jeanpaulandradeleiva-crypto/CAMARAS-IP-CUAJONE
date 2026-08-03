@@ -53,8 +53,8 @@ $localToolRoot = Join-Path $projectRoot ".tools\native"
 if ([string]::IsNullOrWhiteSpace($ToolRoot)) { $ToolRoot = $localToolRoot }
 if ([string]::IsNullOrWhiteSpace($WixToolRoot)) { $WixToolRoot = Join-Path $ToolRoot "wix" }
 $releaseDirectory = Join-Path $ToolRoot "build\presets\windows-msvc"
-if ([string]::IsNullOrWhiteSpace($ReleaseExecutable)) { $ReleaseExecutable = Join-Path $releaseDirectory "cuajone_native.exe" }
-if ([string]::IsNullOrWhiteSpace($LauncherExecutable)) { $LauncherExecutable = Join-Path $releaseDirectory "cuajone_launcher.exe" }
+if ([string]::IsNullOrWhiteSpace($ReleaseExecutable)) { $ReleaseExecutable = Join-Path $releaseDirectory "NexoAIVision.exe" }
+if ([string]::IsNullOrWhiteSpace($LauncherExecutable)) { $LauncherExecutable = Join-Path $releaseDirectory "NexoAIVisionLauncher.exe" }
 if ([string]::IsNullOrWhiteSpace($HardwareProbeCustomAction)) { $HardwareProbeCustomAction = Join-Path $releaseDirectory "CuajoneHardwareProbeCA.dll" }
 if ([string]::IsNullOrWhiteSpace($StageDir)) { $StageDir = Join-Path $ToolRoot "installer\stage" }
 if ([string]::IsNullOrWhiteSpace($WixBuildDir)) { $WixBuildDir = Join-Path $ToolRoot "installer\wix-build" }
@@ -458,8 +458,8 @@ function Write-PayloadSource {
         $hex = Get-StableHex $relative
         $componentId = "Component_$($hex.Substring(0, 24))"
         $fileId = switch -CaseSensitive ($relative) {
-            'bin\cuajone_launcher.exe' { 'LauncherExecutable'; break }
-            'bin\cuajone_native.exe' { 'RuntimeExecutable'; break }
+            'bin\NexoAIVisionLauncher.exe' { 'LauncherExecutable'; break }
+            'bin\NexoAIVision.exe' { 'RuntimeExecutable'; break }
             'docs\README.md' { 'DeploymentReadme'; break }
             'NexoAIVision.ico' { 'InstalledProductIcon'; break }
             default { "File_$($hex.Substring(0, 24))" }
@@ -511,11 +511,11 @@ Assert-Directory $WixToolRoot "WiX tool root"
 Assert-File $ReleaseExecutable "Release executable"
 Assert-File $LauncherExecutable "Launcher executable"
 Assert-File $HardwareProbeCustomAction "Hardware probe custom action"
-if ((Split-Path -Leaf $ReleaseExecutable) -cne "cuajone_native.exe") {
-    throw "ReleaseExecutable must identify cuajone_native.exe"
+if ((Split-Path -Leaf $ReleaseExecutable) -cne "NexoAIVision.exe") {
+    throw "ReleaseExecutable must identify NexoAIVision.exe"
 }
-if ((Split-Path -Leaf $LauncherExecutable) -cne "cuajone_launcher.exe") {
-    throw "LauncherExecutable must identify cuajone_launcher.exe"
+if ((Split-Path -Leaf $LauncherExecutable) -cne "NexoAIVisionLauncher.exe") {
+    throw "LauncherExecutable must identify NexoAIVisionLauncher.exe"
 }
 Assert-File $packageSource "WiX package source"
 Assert-File $packageProject "WiX project"
@@ -1235,7 +1235,13 @@ $sbom | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath (Join-Path $stageDocs
 }
 
 $iconPath = Join-Path $StageDir "NexoAIVision.ico"
-& $iconGenerator -OutputPath $iconPath
+$iconSvgPath = Join-Path $scriptRoot "assets\icon.svg"
+$iconResvgPath = Join-Path $ToolRoot "dependencies\resvg-0.47.0\resvg.exe"
+if ((Test-Path -LiteralPath $iconSvgPath -PathType Leaf) -and
+    -not (Test-Path -LiteralPath $iconResvgPath -PathType Leaf)) {
+    throw "resvg CLI is missing for the SVG application icon. Run native/Provision-Resvg.ps1 first"
+}
+& $iconGenerator -OutputPath $iconPath -SvgPath $iconSvgPath -ResvgPath $iconResvgPath
 if ($LASTEXITCODE -ne 0) {
     throw "Icon generation failed"
 }
@@ -1422,7 +1428,7 @@ $stageReceiptDocument = [ordered]@{
 $stageReceiptDocument | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath $stageReceiptPath -Encoding UTF8
 
 if ($StageOnly) {
-    Write-Host "Portable layout ready: $(Join-Path $StageDir 'bin\cuajone_launcher.exe')"
+    Write-Host "Portable layout ready: $(Join-Path $StageDir 'bin\NexoAIVisionLauncher.exe')"
     return [pscustomobject]@{
         StageOnly = $true
         FastPreview = $FastPreview

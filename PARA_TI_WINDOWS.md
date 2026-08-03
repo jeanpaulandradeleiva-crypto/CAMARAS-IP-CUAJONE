@@ -157,13 +157,13 @@ versión de Windows. La comprobación aceptada es:
 4. Cierra el iniciador sin completar credenciales, abrir la fuente o cargar modelos.
 
 No uses `--preflight` como smoke test: puede seleccionar CUDA y deserializar
-engines. **NexoAI Vision - Command Help** y `cuajone_native.exe` quedan para
+engines. **NexoAI Vision - Command Help** y `NexoAIVision.exe` quedan para
 diagnóstico o automatización avanzada, no como ruta normal del operador.
 
 ## CLI avanzado
 
 El runtime de consola permanece instalado en
-`<CARPETA_INSTALACION>\bin\cuajone_native.exe`. Úsalo solo cuando un procedimiento
+`<CARPETA_INSTALACION>\bin\NexoAIVision.exe`. Úsalo solo cuando un procedimiento
 de soporte requiera opciones explícitas, `--help`, el probe JSON o automatización.
 No entregues al usuario normal una línea de comandos con credenciales RTSP.
 
@@ -205,7 +205,7 @@ Windows Installer conserva carpetas mutables que todavía contienen datos.
 | Firma no válida o sin timestamp | No instalar; entregar hash y salida de verificación a seguridad. |
 | Acceso denegado al enrolar | Confirmar PowerShell elevado y autorización; no relajar políticas. |
 | Error `msiexec` | Conservar el log `/L*V` y buscar `Return value 3` con su contexto. |
-| El iniciador no abre | Registrar el error, versión del SO y controles activos; comprobar firma de `cuajone_launcher.exe` y no ejecutar `--preflight`. |
+| El iniciador no abre | Registrar el error, versión del SO y controles activos; comprobar firma de `NexoAIVisionLauncher.exe` y no ejecutar `--preflight`. |
 | Alerta de EDR/Defender | Enviar hash, firma y log al proceso de seguridad; no desactivar ni excluir carpetas. |
 
 ## Entrega a seguridad

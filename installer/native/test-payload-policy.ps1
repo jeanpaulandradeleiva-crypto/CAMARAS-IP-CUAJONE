@@ -26,8 +26,8 @@ if (Test-Path -LiteralPath $TestRoot) {
 New-Item -ItemType Directory -Path $TestRoot | Out-Null
 try {
     $allowedPaths = @(
-        "bin\cuajone_launcher.exe",
-        "bin\cuajone_native.exe",
+        "bin\NexoAIVisionLauncher.exe",
+        "bin\NexoAIVision.exe",
         "bin\opencv_world4120.dll",
         "docs\README.md",
         "contracts\v1\event.schema.json",

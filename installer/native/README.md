@@ -2,7 +2,7 @@
 
 Esta es la referencia de ingeniería para construir, firmar y validar el MSI x64,
 la única distribución de producción aprobada. La ejecución normal continúa desde
-NexoAI Vision hacia `cuajone_native.exe`; no existe fallback Python.
+NexoAI Vision hacia `NexoAIVision.exe`; no existe fallback Python.
 Para el piloto operativo usa primero el
 [runbook breve Para TI](../../PARA_TI_WINDOWS.md). La persona usuaria debe seguir
 la [guía simple de instalación](../../INSTALACION_WINDOWS.md).
@@ -20,7 +20,7 @@ la [guía simple de instalación](../../INSTALACION_WINDOWS.md).
 ## 1. Confirmar el alcance
 
 El MSI está construido con WiX Toolset. Instala el iniciador gráfico
-`cuajone_launcher.exe`, el runtime de consola `cuajone_native.exe`, las DLL runtime
+`NexoAIVisionLauncher.exe`, el runtime de consola `NexoAIVision.exe`, las DLL runtime
 demostradas, licencias, avisos, hashes y procedencia. Por defecto incluye el bundle
 opcional de modelos ONNX para EPP y pose; no incluye credenciales, SDK, configuración
 de cámaras ni datos operativos.
@@ -232,7 +232,7 @@ recibo vence después de siete días. Un recibo sintético no atraviesa ese gate
 
 El MSI, su `.sha256`, staging, SBOM SPDX 2.3, temporales y evidencia quedan bajo
 `.tools\native\installer`. El script firma primero
-`cuajone_native.exe`, `cuajone_launcher.exe` y `CuajoneHardwareProbeCA.dll`,
+`NexoAIVision.exe`, `NexoAIVisionLauncher.exe` y `CuajoneHardwareProbeCA.dll`,
 construye/firma el MSI y realiza extracción administrativa en D. Ambos ejecutables
 son raíces independientes del recorrido de imports PE. Nunca vuelve a firmar DLL
 de terceros.
@@ -284,8 +284,8 @@ QA que reutiliza `installer\stage\bin`.
 
 ## 8. Controlar la firma
 
-`sign-release.ps1` acepta únicamente `cuajone_launcher.exe`,
-`cuajone_native.exe`, `CuajoneHardwareProbeCA.dll` y archivos `.msi`. Usa SignTool
+`sign-release.ps1` acepta únicamente `NexoAIVisionLauncher.exe`,
+`NexoAIVision.exe`, `CuajoneHardwareProbeCA.dll` y archivos `.msi`. Usa SignTool
 con digest SHA-256, timestamp RFC 3161 y verificación Authenticode. No acepta PFX,
 contraseñas ni claves exportadas.
 

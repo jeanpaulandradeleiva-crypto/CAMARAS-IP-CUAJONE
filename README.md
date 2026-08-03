@@ -1,7 +1,7 @@
 # Analítica de seguridad para cámaras IP de Cuajone
 
 La ruta oficial de producción en Windows es el **MSI aprobado -> NexoAI Vision
-launcher -> `cuajone_native.exe`**. El producto instalado ejecuta el runtime C++
+launcher -> `NexoAIVision.exe`**. El producto instalado ejecuta el runtime C++
 nativo y no depende de Python, PyTorch ni Ultralytics.
 
 `ppe_reportev2.py` es un facade local de desarrollo/QA. Usa
@@ -16,7 +16,7 @@ incluye en el MSI.
 3. Abre **NexoAI Vision** desde Inicio.
 4. Guarda los perfiles RTSP mediante el launcher, que usa Windows Credential
    Manager por usuario.
-5. Valida e inicia `cuajone_native.exe` desde el mismo launcher.
+5. Valida e inicia `NexoAIVision.exe` desde el mismo launcher.
 
 La preparación de confianza, verificación y mantenimiento corresponde a TI y se
 documenta en [Para TI](PARA_TI_WINDOWS.md). La referencia de ingeniería del MSI

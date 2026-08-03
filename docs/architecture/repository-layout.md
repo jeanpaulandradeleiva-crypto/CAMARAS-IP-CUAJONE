@@ -2,7 +2,7 @@
 
 This document records the current repository and distribution boundaries. The
 authoritative Windows production route is the approved MSI, NexoAI Vision launcher,
-and `cuajone_native.exe`.
+and `NexoAIVision.exe`.
 
 ## Current layout
 
@@ -25,11 +25,11 @@ the Python QA facade, local configuration template, and operational assets.
 
 | Entrypoint | Boundary |
 | --- | --- |
-| NexoAI Vision launcher -> `cuajone_native.exe` | Authoritative Windows production path installed by the approved MSI. |
+| NexoAI Vision launcher -> `NexoAIVision.exe` | Authoritative Windows production path installed by the approved MSI. |
 | `python ppe_reportev2.py` | Local `.pyd` + fixed ONNX development/QA harness. |
 | `cuajone-qa` / `python -m cuajone_qa` | Python development and QA CLI. |
-| `cuajone_launcher.exe` | NexoAI Vision GUI launcher built from `native/src/launcher/launcher.cpp`. |
-| `cuajone_native.exe` | Authoritative native runtime built from `native/src/app/main.cpp`. |
+| `NexoAIVisionLauncher.exe` | NexoAI Vision GUI launcher built from `native/src/launcher/launcher.cpp`. |
+| `NexoAIVision.exe` | Authoritative native runtime built from `native/src/app/main.cpp`. |
 | `installer/native/build-installer.ps1` | Installer build orchestration; not an application runtime entrypoint. |
 
 ## Distribution boundaries

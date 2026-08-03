@@ -15,7 +15,7 @@ struct OnnxSession::Impl {
         const std::filesystem::path& model_path,
         ModelRole expected_role,
         const OnnxSessionOptions& options)
-        : environment(ORT_LOGGING_LEVEL_WARNING, "cuajone_native"),
+        : environment(ORT_LOGGING_LEVEL_WARNING, "NexoAIVision"),
           session_options(),
           session(nullptr),
           verified_model(verifyOnnxModel(model_path, expected_role)) {

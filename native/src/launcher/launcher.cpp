@@ -31,6 +31,17 @@ using namespace cuajone::launcher;
 constexpr wchar_t kWindowClass[] = L"NexoAIVisionLauncherWindow";
 constexpr wchar_t kProductName[] = L"NexoAI Vision";
 constexpr wchar_t kLegacyProductName[] = L"Cuajone PPE Monitor";
+// Runtime executable produced by the CMake target; keep in sync with CUAJONE_PRODUCT_EXE.
+constexpr wchar_t kRuntimeExecutable[] = L"NexoAIVision.exe";
+
+std::string runtimeExecutableName() {
+    // The runtime executable name is ASCII-only; no locale conversion needed.
+    std::string name;
+    for (wchar_t ch : kRuntimeExecutable) {
+        name.push_back(static_cast<char>(ch));
+    }
+    return name;
+}
 constexpr wchar_t kBundledPpeLabels[] = L"Gloves,Hard_hat,Mask,Person,Safety_boots,Vest";
 constexpr UINT kProcessFinished = WM_APP + 1;
 constexpr ULONGLONG kGracefulStopMilliseconds = 30000;
@@ -826,7 +837,7 @@ std::filesystem::path siblingRuntime() {
         throw std::runtime_error("Could not resolve the launcher executable path");
     }
     module_path.resize(length);
-    return std::filesystem::path(module_path).parent_path() / L"cuajone_native.exe";
+    return std::filesystem::path(module_path).parent_path() / kRuntimeExecutable;
 }
 
 std::filesystem::path nextLogPath(const LauncherWindow& state) {
@@ -875,7 +886,7 @@ void launchRuntime(LauncherWindow& state, bool preflight) {
     const std::filesystem::path runtime = siblingRuntime();
     std::error_code file_error;
     if (!std::filesystem::is_regular_file(runtime, file_error) || file_error) {
-        throw std::runtime_error("Sibling cuajone_native.exe was not found");
+        throw std::runtime_error("Sibling " + runtimeExecutableName() + " was not found");
     }
 
     std::filesystem::create_directories(settings.output);
@@ -953,7 +964,7 @@ void launchRuntime(LauncherWindow& state, bool preflight) {
         CloseHandle(pipe_read);
         CloseHandle(log);
         CloseHandle(job);
-        throw std::runtime_error("CreateProcessW failed for cuajone_native.exe");
+        throw std::runtime_error("CreateProcessW failed for " + runtimeExecutableName());
     }
     if (!AssignProcessToJobObject(job, process.hProcess)) {
         TerminateProcess(process.hProcess, 1);
@@ -962,7 +973,7 @@ void launchRuntime(LauncherWindow& state, bool preflight) {
         CloseHandle(pipe_read);
         CloseHandle(log);
         CloseHandle(job);
-        throw std::runtime_error("Could not assign cuajone_native.exe to its Job Object");
+        throw std::runtime_error("Could not assign " + runtimeExecutableName() + " to its Job Object");
     }
     if (ResumeThread(process.hThread) == static_cast<DWORD>(-1)) {
         TerminateJobObject(job, 1);
@@ -971,7 +982,7 @@ void launchRuntime(LauncherWindow& state, bool preflight) {
         CloseHandle(pipe_read);
         CloseHandle(log);
         CloseHandle(job);
-        throw std::runtime_error("Could not resume cuajone_native.exe");
+        throw std::runtime_error("Could not resume " + runtimeExecutableName());
     }
     CloseHandle(process.hThread);
 

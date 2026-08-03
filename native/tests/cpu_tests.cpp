@@ -58,7 +58,7 @@ public:
         const std::vector<unsigned char>& bytes,
         std::string_view extension = ".engine") {
         path_ = std::filesystem::temp_directory_path()
-            / ("cuajone_native_" + std::to_string(++sequence_) + std::string(extension));
+            / ("nexoai_vision_" + std::to_string(++sequence_) + std::string(extension));
         std::ofstream output(path_, std::ios::binary);
         output.write(reinterpret_cast<const char*>(bytes.data()), static_cast<std::streamsize>(bytes.size()));
     }
@@ -311,7 +311,7 @@ void testCliUrlsAndInvariantDefense() {
         return parseCommandLine(static_cast<int>(argv.size()), argv.data());
     };
     const std::vector<std::string> base{
-        "cuajone_native", "--source", "video.mp4", "--ppe-engine", "ppe.engine",
+        "NexoAIVision", "--source", "video.mp4", "--ppe-engine", "ppe.engine",
         "--pose-engine", "pose.engine", "--output", "out",
     };
     auto valid = base;
@@ -348,7 +348,7 @@ void testCliUrlsAndInvariantDefense() {
     invalid_capacity.insert(invalid_capacity.end(), {"--tracker-max-tracks", "0"});
     requireThrows([&] { parse(invalid_capacity); }, "CLI accepted zero tracker capacity");
     const std::vector<std::string> ppe_only{
-        "cuajone_native", "--mode", "ppe-only", "--source", "video.mp4",
+        "NexoAIVision", "--mode", "ppe-only", "--source", "video.mp4",
         "--ppe-engine", "ppe.engine", "--output", "out",
     };
     require(parse(ppe_only).analytics_mode == AnalyticsMode::PpeOnly,

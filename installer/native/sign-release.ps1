@@ -136,8 +136,8 @@ $target = (Resolve-Path -LiteralPath $FilePath).Path
 $extension = [System.IO.Path]::GetExtension($target).ToLowerInvariant()
 $leafName = Split-Path -Leaf $target
 if ($extension -cne ".msi" -and
-    $leafName -notin @("cuajone_launcher.exe", "cuajone_native.exe", "CuajoneHardwareProbeCA.dll")) {
-    throw "Only cuajone_launcher.exe, cuajone_native.exe, CuajoneHardwareProbeCA.dll, and MSI files may be signed: $target"
+    $leafName -notin @("NexoAIVisionLauncher.exe", "NexoAIVision.exe", "CuajoneHardwareProbeCA.dll")) {
+    throw "Only NexoAIVisionLauncher.exe, NexoAIVision.exe, CuajoneHardwareProbeCA.dll, and MSI files may be signed: $target"
 }
 
 if ($AllowInternalPilotTrust -and [string]::IsNullOrWhiteSpace($PilotRootCertificatePath)) {

@@ -295,7 +295,7 @@ RuntimeConfig parseCommandLine(int argc, char** argv) {
 
 void printHelp(std::ostream& output) {
     output <<
-        "Cuajone native PPE and fall analytics\n\n"
+        "NexoAI Vision PPE and fall analytics\n\n"
         "Required:\n"
         "  --source <rtsp-or-file>       RTSP URL, video, or image\n"
         "  --output <directory>         Evidence and append-only CSV directory\n\n"

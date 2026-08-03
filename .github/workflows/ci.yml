@@ -27,11 +27,15 @@ jobs:
             .tools/native/dependencies
             .tools/native/onnxruntime-win-x64-1.25.0
             .tools/native/opencv
-          key: native-deps-${{ runner.os }}-v1
+          key: native-deps-${{ runner.os }}-v2
 
       - name: Provision tracking dependencies (ByteTrack-Eigen + Eigen)
         shell: pwsh
         run: pwsh -NoProfile -File native/Provision-TrackingDependencies.ps1
+
+      - name: Provision resvg
+        shell: pwsh
+        run: pwsh -NoProfile -File native/Provision-Resvg.ps1
 
       - name: Download ONNX Runtime 1.25.0 CPU
         shell: pwsh

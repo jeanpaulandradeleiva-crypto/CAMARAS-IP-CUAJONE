@@ -218,9 +218,9 @@ void testWindowsQuoting() {
     require(quoteWindowsArgument(L"C:\\path with space\\")
             == L"\"C:\\path with space\\\\\"",
         "Trailing backslash was not doubled before the closing quote");
-    require(buildWindowsCommandLine({L"C:\\Program Files\\Cuajone\\cuajone_native.exe",
+    require(buildWindowsCommandLine({L"C:\\Program Files\\Cuajone\\NexoAIVision.exe",
                                      L"--source", L"clip \"A\".mp4"})
-            == L"\"C:\\Program Files\\Cuajone\\cuajone_native.exe\" --source \"clip \\\"A\\\".mp4\"",
+            == L"\"C:\\Program Files\\Cuajone\\NexoAIVision.exe\" --source \"clip \\\"A\\\".mp4\"",
         "Command line assembly is not CreateProcess-compatible");
 }
 

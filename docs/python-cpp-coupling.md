@@ -1,7 +1,7 @@
 # Acoplamiento Python/C++ para desarrollo y QA
 
 El acoplamiento usa contratos JSON v1 y un binding `pybind11` opcional. La ruta de
-producción es MSI aprobado -> NexoAI Vision launcher -> `cuajone_native.exe`; no
+producción es MSI aprobado -> NexoAI Vision launcher -> `NexoAIVision.exe`; no
 depende de Python. La paridad demostrada en el repositorio es sintética y la
 paridad de modelos requiere artefactos y material autorizado externos.
 
@@ -16,7 +16,7 @@ paridad de modelos requiere artefactos y material autorizado externos.
 
 | Componente | Propósito | Se incluye en el MSI |
 | --- | --- | --- |
-| `cuajone_native.exe` | Runtime Windows con TensorRT y ONNX Runtime CPU/CUDA híbrido | Sí |
+| `NexoAIVision.exe` | Runtime Windows con TensorRT y ONNX Runtime CPU/CUDA híbrido | Sí |
 | NexoAI Vision launcher | Inicio y perfiles RTSP seguros de producción | Sí |
 | `cuajone_native.pyd` | Binding de desarrollo/QA | No |
 | `ppe_reportev2.py` | Harness local del `.pyd` con ONNX fijo, captura y reportes | No |

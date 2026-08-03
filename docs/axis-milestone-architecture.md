@@ -26,7 +26,7 @@ integration endpoint.
 ### Verified Repository Facts
 
 - The approved Windows production path is the MSI-installed NexoAI Vision launcher
-  and `cuajone_native.exe`; Python is not part of that deployment.
+  and `NexoAIVision.exe`; Python is not part of that deployment.
 - The local `ppe_reportev2.py` QA harness uses `cuajone_native.pyd` and fixed ONNX.
   Its `LatestFrameCapture` owns one decoder and one replaceable latest frame. There is
   no frame queue and no intentional accumulation of stale video.

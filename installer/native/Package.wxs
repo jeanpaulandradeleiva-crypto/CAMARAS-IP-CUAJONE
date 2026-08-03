@@ -55,7 +55,7 @@
     <Property Id="ARPURLUPDATEINFO" Value="https://github.com/jeanpaulandradeleiva-crypto/CAMARAS-IP-CUAJONE/releases" />
     <Property Id="ARPPRODUCTICON" Value="ProductIcon" />
     <Icon Id="ProductIcon" SourceFile="$(var.StageDir)\NexoAIVision.ico" />
-    <Icon Id="LauncherIcon.exe" SourceFile="$(var.StageDir)\bin\cuajone_launcher.exe" />
+    <Icon Id="LauncherIcon.exe" SourceFile="$(var.StageDir)\bin\NexoAIVisionLauncher.exe" />
 
     <Launch Condition="Installed OR COMPUTE_MODE=&quot;auto&quot; OR COMPUTE_MODE=&quot;cuda&quot; OR COMPUTE_MODE=&quot;cpu&quot;"
             Message="COMPUTE_MODE must be auto, cuda, or cpu." />

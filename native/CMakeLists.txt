@@ -2,7 +2,7 @@
 
 cmake_minimum_required(VERSION 3.25)
 
-project(cuajone_native LANGUAGES CXX)
+project(NexoAIVision LANGUAGES CXX)
 
 option(CUAJONE_BUILD_RUNTIME "Build the Windows native runtime" ON)
 option(CUAJONE_BUILD_TESTS "Build pure CPU unit tests" ON)
@@ -16,17 +16,37 @@ set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
+# Product executable names. Keep in sync with installer/native scripts and
+# native/src/launcher/launcher.cpp (kRuntimeExecutable).
+set(CUAJONE_PRODUCT_EXE "NexoAIVision")
+set(CUAJONE_PRODUCT_LAUNCHER_EXE "NexoAIVisionLauncher")
+
+set(CUAJONE_RESVG_EXE
+    "${CMAKE_CURRENT_SOURCE_DIR}/../.tools/native/dependencies/resvg-0.47.0/resvg.exe"
+    CACHE FILEPATH "Verified resvg 0.47.0 CLI used to rasterize the product SVG icon")
+
 if(WIN32 AND (CUAJONE_BUILD_LAUNCHER OR CUAJONE_BUILD_RUNTIME))
     set(CUAJONE_PRODUCT_ICON "${CMAKE_CURRENT_BINARY_DIR}/CuajonePPEMonitor.ico")
     set(CUAJONE_PRODUCT_RESOURCE "${CMAKE_CURRENT_BINARY_DIR}/product_icon.rc")
+    set(CUAJONE_PRODUCT_SVG "${CMAKE_CURRENT_SOURCE_DIR}/../installer/native/assets/icon.svg")
+    if(EXISTS "${CUAJONE_PRODUCT_SVG}" AND NOT EXISTS "${CUAJONE_RESVG_EXE}")
+        message(FATAL_ERROR
+            "resvg CLI is missing for SVG icon generation. Run native/Provision-Resvg.ps1 first")
+    endif()
     add_custom_command(
         OUTPUT "${CUAJONE_PRODUCT_ICON}"
         COMMAND powershell -NoProfile -ExecutionPolicy Bypass -File
             "${CMAKE_CURRENT_SOURCE_DIR}/../installer/native/generate-icon.ps1"
             -OutputPath "${CUAJONE_PRODUCT_ICON}"
-        DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/../installer/native/generate-icon.ps1"
+            -SvgPath "${CUAJONE_PRODUCT_SVG}"
+            -ResvgPath "${CUAJONE_RESVG_EXE}"
+        DEPENDS
+            "${CMAKE_CURRENT_SOURCE_DIR}/../installer/native/generate-icon.ps1"
+            "${CUAJONE_PRODUCT_SVG}"
         VERBATIM)
     configure_file(resources/launcher.rc.in "${CUAJONE_PRODUCT_RESOURCE}" @ONLY)
+    set_source_files_properties("${CUAJONE_PRODUCT_RESOURCE}" PROPERTIES
+        OBJECT_DEPENDS "${CUAJONE_PRODUCT_ICON}")
     add_custom_target(cuajone_product_icon DEPENDS "${CUAJONE_PRODUCT_ICON}")
 endif()
 
@@ -52,6 +72,8 @@ if(CUAJONE_BUILD_LAUNCHER)
         if(MSVC)
             target_compile_options(cuajone_launcher PRIVATE /W4 /permissive- /EHsc /utf-8)
         endif()
+        set_target_properties(cuajone_launcher PROPERTIES
+            OUTPUT_NAME "${CUAJONE_PRODUCT_LAUNCHER_EXE}")
     endif()
 endif()
 
@@ -335,6 +357,8 @@ if(CUAJONE_BUILD_RUNTIME)
     add_dependencies(cuajone_native cuajone_product_icon)
     target_link_libraries(cuajone_native PRIVATE cuajone_runtime)
     target_compile_options(cuajone_native PRIVATE /W4 /permissive- /EHsc /utf-8)
+    set_target_properties(cuajone_native PROPERTIES
+        OUTPUT_NAME "${CUAJONE_PRODUCT_EXE}")
     add_custom_command(TARGET cuajone_native POST_BUILD
         COMMAND ${CMAKE_COMMAND} -E copy_if_different
             $<TARGET_FILE:cuajone_onnxruntime>

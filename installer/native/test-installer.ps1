@@ -171,8 +171,8 @@ if ($sidecarLine -cne $expectedSidecar) {
 
 $stageMetadataPath = Join-Path $stage "build-metadata.json"
 Assert-File $stageMetadataPath "Staged build metadata"
-$stagedLauncher = Join-Path $stage "bin\cuajone_launcher.exe"
-$stagedRuntime = Join-Path $stage "bin\cuajone_native.exe"
+$stagedLauncher = Join-Path $stage "bin\NexoAIVisionLauncher.exe"
+$stagedRuntime = Join-Path $stage "bin\NexoAIVision.exe"
 Assert-File $stagedLauncher "Staged launcher executable"
 Assert-File $stagedRuntime "Staged runtime executable"
 $stageMetadata = Get-Content -LiteralPath $stageMetadataPath -Raw | ConvertFrom-Json
@@ -184,13 +184,13 @@ if ($stageMetadata.onnxRuntime.version -cne "1.25.0" -or
     $stageMetadata.onnxRuntime.executionProvider -cne "CPUExecutionProvider") {
     throw "Staged build metadata does not pin the approved ONNX Runtime CPU package"
 }
-if ((Split-Path -Leaf $stageMetadata.launcherExecutable) -cne "cuajone_launcher.exe" -or
+if ((Split-Path -Leaf $stageMetadata.launcherExecutable) -cne "NexoAIVisionLauncher.exe" -or
     $stageMetadata.launcherExecutableSha256 -cne (Get-FileHash -Algorithm SHA256 -LiteralPath $stagedLauncher).Hash.ToLowerInvariant() -or
-    (Split-Path -Leaf $stageMetadata.releaseExecutable) -cne "cuajone_native.exe" -or
+    (Split-Path -Leaf $stageMetadata.releaseExecutable) -cne "NexoAIVision.exe" -or
     $stageMetadata.releaseExecutableSha256 -cne (Get-FileHash -Algorithm SHA256 -LiteralPath $stagedRuntime).Hash.ToLowerInvariant()) {
     throw "Staged build metadata does not identify both owned executables and their hashes"
 }
-foreach ($ownedExecutableName in @("cuajone_launcher.exe", "cuajone_native.exe")) {
+foreach ($ownedExecutableName in @("NexoAIVisionLauncher.exe", "NexoAIVision.exe")) {
     if (@($stageMetadata.stagedBinaries | Where-Object {
         $_.name -ceq $ownedExecutableName
     }).Count -ne 1) {
@@ -575,7 +575,7 @@ try {
         }
 
         $fileRows = Get-MsiRows $database 'SELECT `File`, `Component_`, `FileName` FROM `File`' 3
-        foreach ($requiredExecutable in @("cuajone_launcher.exe", "cuajone_native.exe")) {
+        foreach ($requiredExecutable in @("NexoAIVisionLauncher.exe", "NexoAIVision.exe")) {
             if (@($fileRows | Where-Object {
                 ($_.Columns[2] -split '\|')[-1] -ceq $requiredExecutable
             }).Count -ne 1) {
@@ -740,8 +740,8 @@ try {
             }
         }
 
-        $launcher = Join-Path $extractApp "bin\cuajone_launcher.exe"
-        $executable = Join-Path $extractApp "bin\cuajone_native.exe"
+        $launcher = Join-Path $extractApp "bin\NexoAIVisionLauncher.exe"
+        $executable = Join-Path $extractApp "bin\NexoAIVision.exe"
         Assert-File $launcher "Extracted launcher executable"
         Assert-File $executable "Extracted runtime executable"
         foreach ($ownedExecutable in @($launcher, $executable)) {
@@ -779,7 +779,7 @@ try {
         } finally {
             $env:PATH = $originalPath
         }
-        if ($helpExitCode -ne 0 -or ($helpOutput -join "`n") -notmatch 'Cuajone native PPE and fall analytics') {
+        if ($helpExitCode -ne 0 -or ($helpOutput -join "`n") -notmatch 'NexoAI Vision PPE and fall analytics') {
             throw "Extracted loader/help acceptance failed with exit code $helpExitCode"
         }
         $helpOutput | Set-Content -LiteralPath (Join-Path $runRoot "help-output.txt") -Encoding UTF8
@@ -805,8 +805,8 @@ try {
         }
         $probeOutput | Set-Content -LiteralPath (Join-Path $runRoot "hardware-probe.json") -Encoding UTF8
     } else {
-        $stagedLauncher = Join-Path $stage "bin\cuajone_launcher.exe"
-        $stagedRuntime = Join-Path $stage "bin\cuajone_native.exe"
+        $stagedLauncher = Join-Path $stage "bin\NexoAIVisionLauncher.exe"
+        $stagedRuntime = Join-Path $stage "bin\NexoAIVision.exe"
         Assert-File $stagedLauncher "Staged launcher executable"
         Assert-File $stagedRuntime "Staged runtime executable"
         foreach ($ownedExecutable in @($stagedLauncher, $stagedRuntime)) {
@@ -844,7 +844,7 @@ try {
         } finally {
             $env:PATH = $originalPath
         }
-        if ($helpExitCode -ne 0 -or ($helpOutput -join "`n") -notmatch 'Cuajone native PPE and fall analytics') {
+        if ($helpExitCode -ne 0 -or ($helpOutput -join "`n") -notmatch 'NexoAI Vision PPE and fall analytics') {
             throw "Staged loader/help smoke failed with exit code $helpExitCode"
         }
         $helpOutput | Set-Content -LiteralPath (Join-Path $runRoot "help-output.txt") -Encoding UTF8

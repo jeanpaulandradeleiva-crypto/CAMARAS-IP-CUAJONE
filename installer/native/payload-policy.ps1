@@ -5,8 +5,8 @@ Set-StrictMode -Version Latest
 function Get-ForbiddenPayloadFiles([string]$Root) {
     # Development inputs may exist in the repository but must never cross into MSI staging.
     $allowedExecutablePaths = @(
-        'bin\cuajone_launcher.exe',
-        'bin\cuajone_native.exe'
+        'bin\NexoAIVisionLauncher.exe',
+        'bin\NexoAIVision.exe'
     )
     $allowedModelPaths = @(
         'bin\models\ppe.engine',

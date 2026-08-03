@@ -1,6 +1,6 @@
 # Contrato v1 de eventos y evidencias del operador
 
-La salida autoritativa de producción es la generada por `cuajone_native.exe` desde
+La salida autoritativa de producción es la generada por `NexoAIVision.exe` desde
 el MSI. El harness Python de QA conserva los mismos nombres y columnas para que las
 herramientas offline puedan consumir el CSV sin mantener otro esquema.
 

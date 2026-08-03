@@ -6,9 +6,9 @@ CPU. Los engines TensorRT opcionales sí usan CUDA para ambos modelos, sin Pytho
 PyTorch ni Ultralytics durante la ejecución. `Auto` prefiere CUDA solo cuando
 hardware, driver y artefactos están listos; si no, usa ONNX CPU.
 La ruta oficial de producción es el MSI aprobado -> NexoAI Vision launcher ->
-`cuajone_native.exe`. `ppe_reportev2.py` y `cuajone_native.pyd` son exclusivamente
+`NexoAIVision.exe`. `ppe_reportev2.py` y `cuajone_native.pyd` son exclusivamente
 un harness local de desarrollo/QA y no constituyen un fallback operativo.
-El target WIN32 separado `cuajone_launcher.exe` ofrece la interfaz gráfica y no
+El target WIN32 separado `NexoAIVisionLauncher.exe` ofrece la interfaz gráfica y no
 enlaza `cuajone_runtime`, OpenCV, ONNX Runtime, CUDA ni TensorRT.
 
 > Toolchain local: las herramientas y SDK viven bajo `.tools\native`, carpeta
@@ -170,7 +170,7 @@ esto evita que Windows resuelva por error otra versión instalada en `System32`.
 
 ## Launcher gráfico
 
-`cuajone_launcher.exe` y `cuajone_native.exe` deben permanecer en la misma carpeta.
+`NexoAIVisionLauncher.exe` y `NexoAIVision.exe` deben permanecer en la misma carpeta.
 El launcher resuelve el runtime hermano mediante la ruta absoluta de su propio
 módulo y usa `CreateProcessW`; no busca ejecutables mediante `PATH`. La interfaz
 expone la URL RTSP de la cámara, carpeta de salida, modo `PPE only`/`PPE + fall`,
@@ -219,7 +219,7 @@ apagado cooperativo.
 Consulta el hardware sin modelos, cámaras ni TensorRT:
 
 ```powershell
-cuajone_native.exe --hardware-probe-json
+NexoAIVision.exe --hardware-probe-json
 ```
 
 Los exit codes estables son `0` listo, `10` sin adaptador NVIDIA, `11` driver no
@@ -238,7 +238,7 @@ compatible; un índice explícito inexistente o inferior a SM 7.5 falla cerrado.
 Ejemplo sin secretos, usando un video local:
 
 ```powershell
-build\windows-msvc\Release\cuajone_native.exe `
+build\windows-msvc\Release\NexoAIVision.exe `
   --preflight `
   --compute cuda `
   --source C:\video-autorizado\turno.mp4 `
@@ -290,7 +290,7 @@ por defecto usa solamente el host; los diagnósticos reemplazan el userinfo por
 Consulta todas las opciones con:
 
 ```powershell
-build\windows-msvc\Release\cuajone_native.exe --help
+build\windows-msvc\Release\NexoAIVision.exe --help
 ```
 
 Opciones principales de calibración: `--ppe-conf`, `--pose-conf`, `--nms-iou`,
