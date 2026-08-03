@@ -1,0 +1,2 @@
+# Patch files must stay LF so `git apply --no-index` works on Windows and CI
+*.patch text eol=lf
