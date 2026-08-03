@@ -16,7 +16,6 @@ jobs:
     runs-on: windows-latest
     env:
       ONNXRUNTIME_ROOT: ${{ github.workspace }}\.tools\native\onnxruntime-win-x64-1.25.0
-      OpenCV_DIR: ${{ github.workspace }}\.tools\native\opencv\opencv\build\x64\vc16\lib
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -51,22 +50,28 @@ jobs:
           }
           Expand-Archive -LiteralPath $zip -DestinationPath (Split-Path $env:ONNXRUNTIME_ROOT) -Force
 
-      - name: Download OpenCV 4.12.0
+      - name: Download and locate OpenCV 4.12.0
         shell: pwsh
         run: |
-          if (Test-Path "$env:OpenCV_DIR\OpenCVConfig.cmake") {
-            Write-Host "OpenCV cache hit"
-            exit 0
+          $dest = Split-Path $env:ONNXRUNTIME_ROOT
+          $findConfig = {
+            Get-ChildItem -LiteralPath $dest -Recurse -Filter OpenCVConfig.cmake -ErrorAction SilentlyContinue |
+              Where-Object { $_.FullName -match '\\x64\\vc16\\lib(\\|$)' } |
+              Select-Object -First 1
           }
-          $exe = Join-Path $env:RUNNER_TEMP "opencv-4.12.0-windows.exe"
-          if (-not (Test-Path $exe)) {
-            Invoke-WebRequest -Uri "https://github.com/opencv/opencv/releases/download/4.12.0/opencv-4.12.0-windows.exe" -OutFile $exe
+          $config = & $findConfig
+          if (-not $config) {
+            $exe = Join-Path $env:RUNNER_TEMP "opencv-4.12.0-windows.exe"
+            if (-not (Test-Path $exe)) {
+              Invoke-WebRequest -Uri "https://github.com/opencv/opencv/releases/download/4.12.0/opencv-4.12.0-windows.exe" -OutFile $exe
+            }
+            & "C:\Program Files\7-Zip\7z.exe" x $exe "-o$dest" -aoa -y
+            if ($LASTEXITCODE -ne 0) { throw "OpenCV extraction failed (7-Zip exit $LASTEXITCODE)" }
+            $config = & $findConfig
           }
-          & "C:\Program Files\7-Zip\7z.exe" x $exe "-o$(Split-Path $env:ONNXRUNTIME_ROOT)" -aoa -y
-          if ($LASTEXITCODE -ne 0) { throw "OpenCV extraction failed (7-Zip exit $LASTEXITCODE)" }
-          if (-not (Test-Path "$env:OpenCV_DIR\OpenCVConfig.cmake")) {
-            throw "OpenCV extracted but OpenCV_DIR target not found"
-          }
+          if (-not $config) { throw "OpenCVConfig.cmake not found under $dest" }
+          Write-Host "OpenCV_DIR=$($config.DirectoryName)"
+          "OpenCV_DIR=$($config.DirectoryName)" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
 
       - name: Configure and build (cpu-tests preset)
         shell: pwsh
