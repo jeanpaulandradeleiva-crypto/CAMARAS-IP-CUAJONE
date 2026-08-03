@@ -1,0 +1,122 @@
+name: CI
+
+on:
+  push:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  native:
+    name: Native build + CTest (CPU)
+    runs-on: windows-latest
+    env:
+      ONNXRUNTIME_ROOT: ${{ github.workspace }}\.tools\native\onnxruntime-win-x64-1.25.0
+      OpenCV_DIR: ${{ github.workspace }}\.tools\native\opencv\opencv\build\x64\vc16\lib
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Cache native dependencies
+        uses: actions/cache@v4
+        with:
+          path: |
+            .tools/native/dependencies
+            .tools/native/onnxruntime-win-x64-1.25.0
+            .tools/native/opencv
+          key: native-deps-${{ runner.os }}-v1
+
+      - name: Provision tracking dependencies (ByteTrack-Eigen + Eigen)
+        shell: pwsh
+        run: pwsh -NoProfile -File native/Provision-TrackingDependencies.ps1
+
+      - name: Download ONNX Runtime 1.25.0 CPU
+        shell: pwsh
+        run: |
+          if (Test-Path "$env:ONNXRUNTIME_ROOT\include\onnxruntime_cxx_api.h") {
+            Write-Host "ONNX Runtime cache hit"
+            exit 0
+          }
+          $url = "https://github.com/microsoft/onnxruntime/releases/download/v1.25.0/onnxruntime-win-x64-1.25.0.zip"
+          $expected = "da753f762bf2400e7191ec594086b186a7051d5af8dc886f6e2020c2403df738"
+          $zip = Join-Path $env:RUNNER_TEMP "onnxruntime-win-x64-1.25.0.zip"
+          Invoke-WebRequest -Uri $url -OutFile $zip
+          $actual = (Get-FileHash -Algorithm SHA256 -LiteralPath $zip).Hash.ToLowerInvariant()
+          if ($actual -ne $expected) {
+            throw "ONNX Runtime archive SHA-256 mismatch: expected $expected, got $actual"
+          }
+          Expand-Archive -LiteralPath $zip -DestinationPath (Split-Path $env:ONNXRUNTIME_ROOT) -Force
+
+      - name: Download OpenCV 4.12.0
+        shell: pwsh
+        run: |
+          if (Test-Path "$env:OpenCV_DIR\OpenCVConfig.cmake") {
+            Write-Host "OpenCV cache hit"
+            exit 0
+          }
+          $exe = Join-Path $env:RUNNER_TEMP "opencv-4.12.0-windows.exe"
+          if (-not (Test-Path $exe)) {
+            Invoke-WebRequest -Uri "https://github.com/opencv/opencv/releases/download/4.12.0/opencv-4.12.0-windows.exe" -OutFile $exe
+          }
+          & "C:\Program Files\7-Zip\7z.exe" x $exe "-o$(Split-Path $env:ONNXRUNTIME_ROOT)" -aoa -y
+          if ($LASTEXITCODE -ne 0) { throw "OpenCV extraction failed (7-Zip exit $LASTEXITCODE)" }
+          if (-not (Test-Path "$env:OpenCV_DIR\OpenCVConfig.cmake")) {
+            throw "OpenCV extracted but OpenCV_DIR target not found"
+          }
+
+      - name: Configure and build (cpu-tests preset)
+        shell: pwsh
+        run: |
+          $vswhere = Join-Path ${env:ProgramFiles(x86)} "Microsoft Visual Studio\Installer\vswhere.exe"
+          $vsPath = & $vswhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+          if ($LASTEXITCODE -ne 0 -or -not $vsPath) {
+            throw "Visual Studio 2022 with VC tools not found"
+          }
+          $devCmd = Join-Path $vsPath "Common7\Tools\VsDevCmd.bat"
+          cmd /c "`"$devCmd`" -arch=amd64 -host_arch=amd64 && set" | ForEach-Object {
+            if ($_ -match '^([^=]+)=(.*)$') {
+              [System.Environment]::SetEnvironmentVariable($matches[1], $matches[2])
+            }
+          }
+          cmake --preset cpu-tests
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          cmake --build --preset cpu-tests-release
+          exit $LASTEXITCODE
+
+      - name: Run native tests (CTest)
+        shell: pwsh
+        run: |
+          ctest --preset cpu-tests-release --output-on-failure
+          exit $LASTEXITCODE
+
+  python:
+    name: Python tests (pytest)
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+
+      - name: Install Python 3.12
+        run: uv python install 3.12
+
+      - name: Sync locked dependencies
+        run: uv sync --locked
+
+      - name: Verify lockfile consistency
+        run: uv lock --check
+
+      - name: Run pytest
+        run: uv run python -m pytest -q
+
+      - name: CLI smoke test
+        run: uv run python ppe_reportev2.py --help
