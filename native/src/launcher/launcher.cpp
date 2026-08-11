@@ -4,6 +4,7 @@
 
 #include <windows.h>
 #include <commctrl.h>
+#include <dwmapi.h>
 #include <shellapi.h>
 #include <shlobj.h>
 #include <shobjidl.h>
@@ -11,6 +12,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <cmath>
 #include <cwctype>
 #include <cwchar>
 #include <filesystem>
@@ -27,10 +29,11 @@
 namespace {
 
 using namespace cuajone::launcher;
+using cuajone::kAllowedImageSizes;
+using cuajone::kPpeOutputLabels;
 
 constexpr wchar_t kWindowClass[] = L"NexoAIVisionLauncherWindow";
 constexpr wchar_t kProductName[] = L"NexoAI Vision";
-constexpr wchar_t kLegacyProductName[] = L"Cuajone PPE Monitor";
 // Runtime executable produced by the CMake target; keep in sync with CUAJONE_PRODUCT_EXE.
 constexpr wchar_t kRuntimeExecutable[] = L"NexoAIVision.exe";
 
@@ -42,38 +45,27 @@ std::string runtimeExecutableName() {
     }
     return name;
 }
-constexpr wchar_t kBundledPpeLabels[] = L"Gloves,Person,Safety_boots,Vest,respirador,tapaorejas,Hard_hat,lentes_protectores";
 constexpr UINT kProcessFinished = WM_APP + 1;
 constexpr ULONGLONG kGracefulStopMilliseconds = 30000;
-constexpr COLORREF kWindowColor = RGB(246, 248, 252);
-constexpr COLORREF kInputColor = RGB(255, 255, 255);
-constexpr COLORREF kTextColor = RGB(31, 41, 55);
-constexpr COLORREF kMutedTextColor = RGB(75, 85, 99);
-constexpr COLORREF kPrimaryColor = RGB(22, 91, 170);
-constexpr COLORREF kPrimaryPressedColor = RGB(17, 72, 136);
 
+struct LauncherWindow;
 std::filesystem::path siblingRuntime();
+void persistPreferences(LauncherWindow& state);
 
 enum ControlId : int {
     SourceEdit = 100,
     SourceLabelEdit,
-    LanguageCombo,
+    LanguageButton,
+    ThemeButton,
     LoadEnvButton,
     OpenLogButton,
     OutputEdit,
     OutputBrowse,
     AnalyticsCombo,
     ComputeCombo,
-    PpeEngineEdit,
-    PpeEngineBrowse,
-    PoseEngineEdit,
-    PoseEngineBrowse,
-    PpeOnnxEdit,
-    PpeOnnxBrowse,
-    PoseOnnxEdit,
-    PoseOnnxBrowse,
-    LabelsEdit,
-    ShowCheck,
+    ImageSizeCombo,
+    PpeThresholdBase = 200,
+    ShowCheck = 300,
     ValidateButton,
     StartButton,
     StopButton,
@@ -100,14 +92,12 @@ struct LauncherWindow {
     HWND load_camera{};
     HWND delete_camera{};
     HWND language{};
+    HWND theme_button{};
     HWND output{};
     HWND analytics{};
     HWND compute{};
-    HWND ppe_engine{};
-    HWND pose_engine{};
-    HWND ppe_onnx{};
-    HWND pose_onnx{};
-    HWND labels{};
+    HWND image_size{};
+    std::array<HWND, kPpeOutputLabels.size()> ppe_thresholds{};
     HWND show{};
     HWND validate{};
     HWND start{};
@@ -123,6 +113,9 @@ struct LauncherWindow {
     HBRUSH input_brush{};
     HBRUSH status_brush{};
     std::filesystem::path program_data;
+    std::filesystem::path managed_model_root;
+    std::filesystem::path preferences_path;
+    OperatorPreferences preferences;
     HANDLE process{};
     HANDLE job{};
     DWORD process_id{};
@@ -132,7 +125,35 @@ struct LauncherWindow {
     std::atomic<ULONGLONG> stop_deadline{};
     bool close_requested{};
     bool spanish{};
+    bool dark{};
 };
+
+struct Palette {
+    COLORREF window;
+    COLORREF input;
+    COLORREF text;
+    COLORREF muted;
+    COLORREF primary;
+    COLORREF primary_pressed;
+    COLORREF status;
+    COLORREF border;
+    COLORREF disabled;
+};
+
+Palette palette(const LauncherWindow& state) {
+    if (state.dark) {
+        return {
+            RGB(17, 24, 39), RGB(31, 41, 55), RGB(243, 244, 246), RGB(209, 213, 219),
+            RGB(59, 130, 246), RGB(37, 99, 235), RGB(30, 58, 96), RGB(75, 85, 99),
+            RGB(55, 65, 81),
+        };
+    }
+    return {
+        RGB(246, 248, 252), RGB(255, 255, 255), RGB(31, 41, 55), RGB(75, 85, 99),
+        RGB(22, 91, 170), RGB(17, 72, 136), RGB(232, 240, 254), RGB(203, 213, 225),
+        RGB(229, 231, 235),
+    };
+}
 
 std::wstring editText(HWND control) {
     const int length = GetWindowTextLengthW(control);
@@ -179,6 +200,14 @@ void refreshLanguage(LauncherWindow& state) {
     if (current_status == L"Ready" || current_status == L"Listo") {
         setStatus(state, state.spanish ? L"Listo" : L"Ready");
     }
+    SetWindowTextW(
+        state.language,
+        state.spanish ? L"Cambiar idioma a inglés" : L"Switch language to Spanish");
+    SetWindowTextW(
+        state.theme_button,
+        state.dark
+            ? (state.spanish ? L"Cambiar a tema claro" : L"Switch to light theme")
+            : (state.spanish ? L"Cambiar a tema oscuro" : L"Switch to dark theme"));
 }
 
 std::wstring trim(std::wstring value) {
@@ -405,15 +434,16 @@ HWND createBrowseButton(LauncherWindow& state, int id, int y) {
         778, y, 92, 25, id);
 }
 
-void drawButton(const DRAWITEMSTRUCT& item) {
+void drawButton(const LauncherWindow& state, const DRAWITEMSTRUCT& item) {
+    const Palette colors = palette(state);
     const bool disabled = (item.itemState & ODS_DISABLED) != 0;
     const bool pressed = (item.itemState & (ODS_SELECTED | ODS_HOTLIGHT)) != 0;
     const int id = static_cast<int>(item.CtlID);
     const bool primary = id == StartButton;
-    const COLORREF fill = disabled ? RGB(229, 231, 235)
-        : primary ? (pressed ? kPrimaryPressedColor : kPrimaryColor)
-        : (pressed ? RGB(219, 234, 254) : RGB(255, 255, 255));
-    const COLORREF border = disabled ? RGB(209, 213, 219) : primary ? fill : RGB(203, 213, 225);
+    const COLORREF fill = disabled ? colors.disabled
+        : primary ? (pressed ? colors.primary_pressed : colors.primary)
+        : (pressed ? colors.status : colors.input);
+    const COLORREF border = disabled ? colors.border : primary ? fill : colors.border;
     HBRUSH brush = CreateSolidBrush(fill);
     HPEN pen = CreatePen(PS_SOLID, 1, border);
     HGDIOBJ old_brush = SelectObject(item.hDC, brush);
@@ -424,11 +454,61 @@ void drawButton(const DRAWITEMSTRUCT& item) {
     DeleteObject(pen);
     DeleteObject(brush);
 
+    SetBkMode(item.hDC, TRANSPARENT);
+    SetTextColor(item.hDC, disabled ? RGB(156, 163, 175) : primary ? RGB(255, 255, 255) : colors.text);
+    RECT content = item.rcItem;
+    if (id == LanguageButton) {
+        const int center_x = (content.left + content.right) / 2;
+        const int center_y = (content.top + content.bottom) / 2;
+        Ellipse(item.hDC, center_x - 8, center_y - 8, center_x + 8, center_y + 8);
+        MoveToEx(item.hDC, center_x - 8, center_y, nullptr);
+        LineTo(item.hDC, center_x + 8, center_y);
+        Arc(item.hDC, center_x - 4, center_y - 8, center_x + 4, center_y + 8,
+            center_x, center_y - 8, center_x, center_y + 8);
+        return;
+    }
+    if (id == ThemeButton) {
+        const int center_x = (content.left + content.right) / 2;
+        const int center_y = (content.top + content.bottom) / 2;
+        if (state.dark) {
+            HBRUSH moon = CreateSolidBrush(colors.text);
+            HGDIOBJ old = SelectObject(item.hDC, moon);
+            Ellipse(item.hDC, center_x - 7, center_y - 8, center_x + 8, center_y + 7);
+            SelectObject(item.hDC, old);
+            DeleteObject(moon);
+            HBRUSH cutout = CreateSolidBrush(fill);
+            old = SelectObject(item.hDC, cutout);
+            Ellipse(item.hDC, center_x - 1, center_y - 9, center_x + 9, center_y + 1);
+            SelectObject(item.hDC, old);
+            DeleteObject(cutout);
+        } else {
+            Ellipse(item.hDC, center_x - 5, center_y - 5, center_x + 5, center_y + 5);
+            for (int offset : {-10, 10}) {
+                MoveToEx(item.hDC, center_x + offset, center_y, nullptr);
+                LineTo(item.hDC, center_x + (offset > 0 ? 7 : -7), center_y);
+                MoveToEx(item.hDC, center_x, center_y + offset, nullptr);
+                LineTo(item.hDC, center_x, center_y + (offset > 0 ? 7 : -7));
+            }
+        }
+        return;
+    }
     wchar_t text[128]{};
     GetWindowTextW(item.hwndItem, text, static_cast<int>(std::size(text)));
-    SetBkMode(item.hDC, TRANSPARENT);
-    SetTextColor(item.hDC, disabled ? RGB(156, 163, 175) : primary ? RGB(255, 255, 255) : kTextColor);
-    DrawTextW(item.hDC, text, -1, const_cast<RECT*>(&item.rcItem), DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+    if (id == ShowCheck) {
+        RECT box{content.left + 4, content.top + 4, content.left + 20, content.top + 20};
+        HBRUSH box_brush = CreateSolidBrush(colors.border);
+        FrameRect(item.hDC, &box, box_brush);
+        DeleteObject(box_brush);
+        if (SendMessageW(item.hwndItem, BM_GETCHECK, 0, 0) == BST_CHECKED) {
+            MoveToEx(item.hDC, box.left + 3, box.top + 8, nullptr);
+            LineTo(item.hDC, box.left + 7, box.bottom - 3);
+            LineTo(item.hDC, box.right - 2, box.top + 3);
+        }
+        content.left += 27;
+        DrawTextW(item.hDC, text, -1, &content, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+        return;
+    }
+    DrawTextW(item.hDC, text, -1, &content, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
 }
 
 std::filesystem::path knownProgramData() {
@@ -442,41 +522,76 @@ std::filesystem::path knownProgramData() {
     return path / kProductName / L"runtime";
 }
 
-std::filesystem::path legacyProgramData() {
+std::filesystem::path knownLocalAppData() {
     PWSTR raw_path = nullptr;
-    const HRESULT result = SHGetKnownFolderPath(FOLDERID_ProgramData, KF_FLAG_DEFAULT, nullptr, &raw_path);
+    const HRESULT result = SHGetKnownFolderPath(FOLDERID_LocalAppData, KF_FLAG_DEFAULT, nullptr, &raw_path);
     if (FAILED(result) || raw_path == nullptr) {
-        throw std::runtime_error("SHGetKnownFolderPath(FOLDERID_ProgramData) failed");
+        throw std::runtime_error("SHGetKnownFolderPath(FOLDERID_LocalAppData) failed");
     }
     std::filesystem::path path(raw_path);
     CoTaskMemFree(raw_path);
-    return path / kLegacyProductName / L"runtime";
-}
-
-bool hasModelBundleAt(const std::filesystem::path& root) {
-    std::error_code error;
-    const auto models = root / L"models";
-    return std::filesystem::is_regular_file(models / L"ppe.engine", error)
-        || std::filesystem::is_regular_file(models / L"pose.engine", error)
-        || std::filesystem::is_regular_file(models / L"ppe.onnx", error)
-        || std::filesystem::is_regular_file(models / L"pose.onnx", error);
+    return path / kProductName / L"operator-settings-v1.txt";
 }
 
 std::filesystem::path preferredModelRoot() {
-    const std::filesystem::path install_root = siblingRuntime().parent_path();
-    const std::filesystem::path install_models = install_root / L"models";
-    const std::filesystem::path program_data_models = knownProgramData() / L"models";
-    const std::filesystem::path legacy_program_data_models = legacyProgramData() / L"models";
-    if (hasModelBundleAt(install_root)) {
-        return install_models;
+    return siblingRuntime().parent_path() / L"models";
+}
+
+void replaceBrush(HBRUSH& brush, COLORREF color) {
+    if (brush != nullptr) DeleteObject(brush);
+    brush = CreateSolidBrush(color);
+}
+
+void applyTheme(LauncherWindow& state) {
+    const Palette colors = palette(state);
+    replaceBrush(state.window_brush, colors.window);
+    replaceBrush(state.input_brush, colors.input);
+    replaceBrush(state.status_brush, colors.status);
+    const COLORREF caption = colors.window;
+    const COLORREF caption_text = colors.text;
+    DwmSetWindowAttribute(
+        state.window, DWMWA_CAPTION_COLOR, &caption, sizeof(caption));
+    DwmSetWindowAttribute(
+        state.window, DWMWA_TEXT_COLOR, &caption_text, sizeof(caption_text));
+    RedrawWindow(state.window, nullptr, nullptr,
+        RDW_INVALIDATE | RDW_ERASE | RDW_ALLCHILDREN | RDW_FRAME);
+}
+
+void addTooltip(LauncherWindow& state, HWND control, const wchar_t* text) {
+    HWND tooltip = CreateWindowExW(
+        WS_EX_TOPMOST, TOOLTIPS_CLASSW, nullptr,
+        WS_POPUP | TTS_ALWAYSTIP | TTS_NOPREFIX,
+        CW_USEDEFAULT, CW_USEDEFAULT, CW_USEDEFAULT, CW_USEDEFAULT,
+        state.window, nullptr, GetModuleHandleW(nullptr), nullptr);
+    if (tooltip == nullptr) throw std::runtime_error("Could not create launcher tooltip");
+    TOOLINFOW info{sizeof(info)};
+    info.uFlags = TTF_IDISHWND | TTF_SUBCLASS;
+    info.hwnd = state.window;
+    info.uId = reinterpret_cast<UINT_PTR>(control);
+    info.lpszText = const_cast<LPWSTR>(text);
+    SendMessageW(tooltip, TTM_ADDTOOLW, 0, reinterpret_cast<LPARAM>(&info));
+}
+
+HWND createClosedCombo(
+    LauncherWindow& state,
+    int id,
+    int x,
+    int y,
+    int width) {
+    return createControl(
+        state, 0, WC_COMBOBOXW, L"", WS_TABSTOP | CBS_DROPDOWNLIST,
+        x, y, width, 300, id);
+}
+
+void populateThresholdCombo(HWND combo, float selected) {
+    for (int hundredths = 0; hundredths <= 100; ++hundredths) {
+        wchar_t value[8]{};
+        swprintf_s(value, L"%d.%02d", hundredths / 100, hundredths % 100);
+        SendMessageW(combo, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(value));
     }
-    if (hasModelBundleAt(program_data_models.parent_path())) {
-        return program_data_models;
-    }
-    if (hasModelBundleAt(legacy_program_data_models.parent_path())) {
-        return legacy_program_data_models;
-    }
-    return install_models;
+    const int selection = std::clamp(
+        static_cast<int>(std::lround(selected * 100.0F)), 0, 100);
+    SendMessageW(combo, CB_SETCURSEL, selection, 0);
 }
 
 void createControls(LauncherWindow& state) {
@@ -486,9 +601,9 @@ void createControls(LauncherWindow& state) {
         OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, DEFAULT_PITCH, L"Segoe UI");
     state.button_font = CreateFontW(-15, 0, 0, 0, FW_SEMIBOLD, FALSE, FALSE, FALSE, DEFAULT_CHARSET,
         OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, DEFAULT_PITCH, L"Segoe UI");
-    state.window_brush = CreateSolidBrush(kWindowColor);
-    state.input_brush = CreateSolidBrush(kInputColor);
-    state.status_brush = CreateSolidBrush(RGB(232, 240, 254));
+    state.spanish = state.preferences.language == UiLanguage::Spanish;
+    state.dark = state.preferences.theme == ThemeMode::Dark;
+    applyTheme(state);
     constexpr int label_x = 16;
     constexpr int edit_x = 146;
     constexpr int edit_width = 620;
@@ -499,6 +614,14 @@ void createControls(LauncherWindow& state) {
     const HWND subtitle = createControl(
         state, 0, L"STATIC", L"Camera analytics control center", SS_LEFT, 18, 46, 400, 20, 0);
     addLocalizedText(state, subtitle, L"Camera analytics control center", L"Centro de control de analítica de cámaras");
+    state.language = createControl(
+        state, 0, L"BUTTON", L"Switch language to Spanish", WS_TABSTOP | BS_OWNERDRAW,
+        810, 18, 34, 30, LanguageButton);
+    state.theme_button = createControl(
+        state, 0, L"BUTTON", L"Switch to dark theme", WS_TABSTOP | BS_OWNERDRAW,
+        852, 18, 34, 30, ThemeButton);
+    addTooltip(state, state.language, L"Language / Idioma");
+    addTooltip(state, state.theme_button, L"Light or dark theme / Tema claro u oscuro");
 
     addLocalizedText(
         state, createLabel(state, L"RTSP camera", label_x, row_y, 120),
@@ -510,17 +633,8 @@ void createControls(LauncherWindow& state) {
         state, createLabel(state, L"Camera ID", label_x, row_y + 36, 120),
         L"Camera ID", L"ID de cámara");
     state.source_label = createEdit(state, SourceLabelEdit, edit_x, row_y + 36, 430);
-    addLocalizedText(
-        state, createLabel(state, L"Language", 590, row_y + 36, 72),
-        L"Language", L"Idioma");
-    state.language = createControl(
-        state, 0, WC_COMBOBOXW, L"", WS_TABSTOP | CBS_DROPDOWNLIST,
-        664, row_y + 36, 104, 200, LanguageCombo);
-    SendMessageW(state.language, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(L"English"));
-    SendMessageW(state.language, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(L"Español"));
-    SendMessageW(state.language, CB_SETCURSEL, 0, 0);
     const HWND load_env = createControl(
-        state, 0, L"BUTTON", L"Load .env...", WS_TABSTOP | BS_PUSHBUTTON,
+        state, 0, L"BUTTON", L"Load .env...", WS_TABSTOP | BS_OWNERDRAW,
         778, row_y + 36, 92, 25, LoadEnvButton);
     addLocalizedText(state, load_env, L"Load .env...", L"Cargar .env...");
 
@@ -531,15 +645,15 @@ void createControls(LauncherWindow& state) {
         state, 0, WC_COMBOBOXW, L"", WS_TABSTOP | CBS_DROPDOWNLIST,
         edit_x, row_y + 72, 430, 200, SavedCameraCombo);
     state.save_camera = createControl(
-        state, 0, L"BUTTON", L"Save", WS_TABSTOP | BS_PUSHBUTTON,
+        state, 0, L"BUTTON", L"Save", WS_TABSTOP | BS_OWNERDRAW,
         586, row_y + 72, 80, 25, SaveCameraButton);
     addLocalizedText(state, state.save_camera, L"Save", L"Guardar");
     state.load_camera = createControl(
-        state, 0, L"BUTTON", L"Load", WS_TABSTOP | BS_PUSHBUTTON,
+        state, 0, L"BUTTON", L"Load", WS_TABSTOP | BS_OWNERDRAW,
         674, row_y + 72, 80, 25, LoadCameraButton);
     addLocalizedText(state, state.load_camera, L"Load", L"Cargar");
     state.delete_camera = createControl(
-        state, 0, L"BUTTON", L"Delete", WS_TABSTOP | BS_PUSHBUTTON,
+        state, 0, L"BUTTON", L"Delete", WS_TABSTOP | BS_OWNERDRAW,
         762, row_y + 72, 108, 25, DeleteCameraButton);
     addLocalizedText(state, state.delete_camera, L"Delete", L"Eliminar");
 
@@ -569,96 +683,89 @@ void createControls(LauncherWindow& state) {
     SendMessageW(state.compute, CB_SETCURSEL, 0, 0);
 
     addLocalizedText(
-        state, createLabel(state, L"PPE engine", label_x, row_y + 182, 120),
-        L"PPE engine", L"Motor EPP");
-    state.ppe_engine = createEdit(state, PpeEngineEdit, edit_x, row_y + 182, edit_width);
-    addLocalizedText(state, createBrowseButton(state, PpeEngineBrowse, row_y + 182), L"Browse...", L"Explorar...");
+        state, createLabel(state, L"Inference size", 684, row_y + 146, 92),
+        L"Inference size", L"Tamaño de inferencia");
+    state.image_size = createClosedCombo(state, ImageSizeCombo, 778, row_y + 144, 92);
+    for (const int image_size : kAllowedImageSizes) {
+        const std::wstring value = std::to_wstring(image_size);
+        SendMessageW(state.image_size, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(value.c_str()));
+    }
+    const auto image_position = std::ranges::find(kAllowedImageSizes, state.preferences.image_size);
+    SendMessageW(state.image_size, CB_SETCURSEL,
+        image_position == kAllowedImageSizes.end() ? 0 : image_position - kAllowedImageSizes.begin(), 0);
 
+    const HWND threshold_heading = createLabel(
+        state, L"PPE class confidence (0.00-1.00)", label_x, row_y + 184, 320);
     addLocalizedText(
-        state, createLabel(state, L"Pose engine", label_x, row_y + 218, 120),
-        L"Pose engine", L"Motor de pose");
-    state.pose_engine = createEdit(state, PoseEngineEdit, edit_x, row_y + 218, edit_width);
-    addLocalizedText(state, createBrowseButton(state, PoseEngineBrowse, row_y + 218), L"Browse...", L"Explorar...");
-
-    addLocalizedText(
-        state, createLabel(state, L"PPE ONNX", label_x, row_y + 254, 120),
-        L"PPE ONNX", L"ONNX EPP");
-    state.ppe_onnx = createEdit(state, PpeOnnxEdit, edit_x, row_y + 254, edit_width);
-    addLocalizedText(state, createBrowseButton(state, PpeOnnxBrowse, row_y + 254), L"Browse...", L"Explorar...");
-
-    addLocalizedText(
-        state, createLabel(state, L"Pose ONNX", label_x, row_y + 290, 120),
-        L"Pose ONNX", L"ONNX de pose");
-    state.pose_onnx = createEdit(state, PoseOnnxEdit, edit_x, row_y + 290, edit_width);
-    addLocalizedText(state, createBrowseButton(state, PoseOnnxBrowse, row_y + 290), L"Browse...", L"Explorar...");
-
-    addLocalizedText(
-        state, createLabel(state, L"PPE labels", label_x, row_y + 326, 120),
-        L"PPE labels", L"Etiquetas EPP");
-    state.labels = createEdit(state, LabelsEdit, edit_x, row_y + 326, edit_width);
+        state, threshold_heading,
+        L"PPE class confidence (0.00-1.00)", L"Confianza por clase EPP (0.00-1.00)");
+    constexpr std::array<int, 8> threshold_x{146, 146, 146, 146, 650, 650, 650, 650};
+    constexpr std::array<int, 8> label_positions{16, 16, 16, 16, 440, 440, 440, 440};
+    for (std::size_t index = 0; index < kPpeOutputLabels.size(); ++index) {
+        const int row = static_cast<int>(index % 4);
+        const int y = row_y + 214 + row * 34;
+        const int text_length = MultiByteToWideChar(
+            CP_UTF8, MB_ERR_INVALID_CHARS, kPpeOutputLabels[index].data(),
+            static_cast<int>(kPpeOutputLabels[index].size()), nullptr, 0);
+        std::wstring label(static_cast<std::size_t>(text_length), L'\0');
+        MultiByteToWideChar(
+            CP_UTF8, MB_ERR_INVALID_CHARS, kPpeOutputLabels[index].data(),
+            static_cast<int>(kPpeOutputLabels[index].size()), label.data(), text_length);
+        createLabel(state, label.c_str(), label_positions[index], y, 190);
+        state.ppe_thresholds[index] = createClosedCombo(
+            state, PpeThresholdBase + static_cast<int>(index), threshold_x[index], y, 100);
+        populateThresholdCombo(
+            state.ppe_thresholds[index], state.preferences.ppe_class_confidences[index]);
+    }
 
     state.show = createControl(
         state, 0, L"BUTTON", L"Show annotated video window",
-        WS_TABSTOP | BS_AUTOCHECKBOX, edit_x, row_y + 362, 340, 24, ShowCheck);
+        WS_TABSTOP | BS_OWNERDRAW, edit_x, row_y + 358, 340, 24, ShowCheck);
     addLocalizedText(
         state, state.show, L"Show annotated video window", L"Mostrar ventana de video anotada");
 
     state.validate = createControl(
         state, 0, L"BUTTON", L"Validate", WS_TABSTOP | BS_OWNERDRAW,
-        edit_x, row_y + 402, 110, 32, ValidateButton);
+        edit_x, row_y + 396, 110, 32, ValidateButton);
     addLocalizedText(state, state.validate, L"Validate", L"Validar");
     state.start = createControl(
         state, 0, L"BUTTON", L"Start", WS_TABSTOP | BS_OWNERDRAW,
-        270, row_y + 402, 110, 32, StartButton);
+        270, row_y + 396, 110, 32, StartButton);
     addLocalizedText(state, state.start, L"Start", L"Iniciar");
     state.stop = createControl(
         state, 0, L"BUTTON", L"Stop", WS_TABSTOP | BS_OWNERDRAW,
-        394, row_y + 402, 110, 32, StopButton);
+        394, row_y + 396, 110, 32, StopButton);
     addLocalizedText(state, state.stop, L"Stop", L"Detener");
     EnableWindow(state.stop, FALSE);
 
     addLocalizedText(
-        state, createLabel(state, L"Status", label_x, row_y + 454, 120),
+        state, createLabel(state, L"Status", label_x, row_y + 448, 120),
         L"Status", L"Estado");
     state.status = createControl(
         state, WS_EX_CLIENTEDGE, L"STATIC", L"Ready", SS_LEFT | SS_CENTERIMAGE,
-        edit_x, row_y + 450, 724, 32, StatusText);
+        edit_x, row_y + 444, 724, 32, StatusText);
     addLocalizedText(
-        state, createLabel(state, L"Log path", label_x, row_y + 498, 120),
+        state, createLabel(state, L"Log path", label_x, row_y + 492, 120),
         L"Log path", L"Ruta del log");
-    state.log_path = createEdit(state, LogPathEdit, edit_x, row_y + 494, 620, true);
+    state.log_path = createEdit(state, LogPathEdit, edit_x, row_y + 488, 620, true);
     const HWND open_log = createControl(
-        state, 0, L"BUTTON", L"Open log", WS_TABSTOP | BS_PUSHBUTTON,
-        778, row_y + 494, 92, 25, OpenLogButton);
+        state, 0, L"BUTTON", L"Open log", WS_TABSTOP | BS_OWNERDRAW,
+        778, row_y + 488, 92, 25, OpenLogButton);
     addLocalizedText(state, open_log, L"Open log", L"Abrir log");
 
     state.program_data = knownProgramData();
-    const auto models = preferredModelRoot();
+    state.managed_model_root = preferredModelRoot();
     setText(state.output, state.program_data / L"output");
-    setText(state.ppe_engine, models / L"ppe.engine");
-    setText(state.pose_engine, models / L"pose.engine");
-    setText(state.ppe_onnx, models / L"ppe.onnx");
-    setText(state.pose_onnx, models / L"pose.onnx");
-    SetWindowTextW(state.labels, kBundledPpeLabels);
     SetWindowTextW(state.source_label, L"CAM_CUAJONE_01");
     setText(state.log_path, state.program_data / L"logs");
     refreshSavedCameraProfiles(state);
 
-    std::error_code models_error;
-    const auto install_models = siblingRuntime().parent_path() / L"models";
-    const auto program_data_models = state.program_data / L"models";
-    const bool any_model_installed = std::filesystem::is_regular_file(install_models / L"ppe.engine", models_error)
-        || std::filesystem::is_regular_file(install_models / L"pose.engine", models_error)
-        || std::filesystem::is_regular_file(install_models / L"ppe.onnx", models_error)
-        || std::filesystem::is_regular_file(install_models / L"pose.onnx", models_error)
-        || std::filesystem::is_regular_file(program_data_models / L"ppe.engine", models_error)
-        || std::filesystem::is_regular_file(program_data_models / L"pose.engine", models_error)
-        || std::filesystem::is_regular_file(program_data_models / L"ppe.onnx", models_error)
-        || std::filesystem::is_regular_file(program_data_models / L"pose.onnx", models_error);
-    if (!any_model_installed) {
+    if (!resolveManagedModelSet(state.managed_model_root, true).onnx_complete) {
         setStatus(
             state,
-            L"No AI models are installed yet. Browse to ppe.engine / pose.engine or ppe.onnx / pose.onnx under the app folder or ProgramData.");
+            state.spanish
+                ? L"El conjunto obligatorio de modelos administrados está incompleto en la carpeta de la aplicación."
+                : L"The mandatory managed model set is incomplete at the application models folder.");
     }
     refreshLanguage(state);
 }
@@ -690,14 +797,6 @@ std::filesystem::path pickFile(HWND owner, const COMDLG_FILTERSPEC* filters, UIN
     return path;
 }
 
-std::wstring lowerExtension(const std::filesystem::path& path) {
-    std::wstring extension = path.extension().wstring();
-    std::transform(extension.begin(), extension.end(), extension.begin(), [](wchar_t character) {
-        return static_cast<wchar_t>(std::towlower(character));
-    });
-    return extension;
-}
-
 void loadEnv(LauncherWindow& state) {
     static constexpr COMDLG_FILTERSPEC filters[] = {
         {L"Environment file", L"*.env;*.txt"}, {L"All files", L"*.*"},
@@ -722,19 +821,35 @@ void loadEnv(LauncherWindow& state) {
         SendMessageW(state.show, BM_SETCHECK,
             (*show == L"1" || upper(*show) == L"TRUE") ? BST_CHECKED : BST_UNCHECKED, 0);
     }
+    if (const auto confidence = envValue(values, L"PPE_CONF")) {
+        wchar_t* end = nullptr;
+        const float parsed = std::wcstof(confidence->c_str(), &end);
+        if (end != confidence->c_str() + confidence->size() || !std::isfinite(parsed)
+            || parsed < 0.0F || parsed > 1.0F) {
+            throw std::invalid_argument("PPE_CONF must be finite and in [0, 1]");
+        }
+        const int selection = static_cast<int>(std::lround(parsed * 100.0F));
+        for (HWND threshold : state.ppe_thresholds) {
+            SendMessageW(threshold, CB_SETCURSEL, selection, 0);
+        }
+    }
+    const auto ppe_imgsz = envValue(values, L"PPE_IMGSZ");
+    const auto pose_imgsz = envValue(values, L"POSE_IMGSZ");
+    if (ppe_imgsz || pose_imgsz) {
+        if (ppe_imgsz && pose_imgsz && *ppe_imgsz != *pose_imgsz) {
+            throw std::invalid_argument("PPE_IMGSZ and POSE_IMGSZ must match");
+        }
+        const std::wstring& configured = ppe_imgsz ? *ppe_imgsz : *pose_imgsz;
+        wchar_t* end = nullptr;
+        const long parsed = std::wcstol(configured.c_str(), &end, 10);
+        const auto found = std::ranges::find(kAllowedImageSizes, static_cast<int>(parsed));
+        if (end != configured.c_str() + configured.size() || found == kAllowedImageSizes.end()) {
+            throw std::invalid_argument("PPE_IMGSZ/POSE_IMGSZ must be 640, 768, 960, or 1280");
+        }
+        SendMessageW(state.image_size, CB_SETCURSEL, found - kAllowedImageSizes.begin(), 0);
+    }
 
     std::vector<std::wstring> ignored;
-    const auto applyModel = [&](std::wstring_view key, HWND onnx, HWND engine) {
-        const auto configured = envValue(values, key);
-        if (!configured) return;
-        const std::filesystem::path model = resolveEnvPath(env_path, *configured);
-        if (lowerExtension(model) == L".onnx") SetWindowTextW(onnx, model.c_str());
-        else if (lowerExtension(model) == L".engine") SetWindowTextW(engine, model.c_str());
-        else ignored.emplace_back(std::wstring(key) + L" (native runtime requires .onnx or .engine)");
-    };
-    applyModel(L"PPE_MODEL_PATH", state.ppe_onnx, state.ppe_engine);
-    applyModel(L"POSE_MODEL_PATH", state.pose_onnx, state.pose_engine);
-
     state.runtime_options.clear();
     const auto append = [&](std::wstring_view key, std::wstring_view option) {
         if (const auto value = envValue(values, key)) {
@@ -743,7 +858,6 @@ void loadEnv(LauncherWindow& state) {
     };
     append(L"TARGET_INFERENCE_FPS", L"--target-fps");
     append(L"POSE_CONF", L"--pose-conf");
-    append(L"PPE_CONF", L"--ppe-conf");
     append(L"IOU_THRESHOLD", L"--nms-iou");
     append(L"EPP_WINDOW", L"--ppe-window");
     append(L"EPP_MIN_SAMPLES", L"--ppe-min-samples");
@@ -772,15 +886,20 @@ void loadEnv(LauncherWindow& state) {
 
     for (const std::wstring_view key : {
              L"YOLO_TRACKER", L"USE_FP16", L"SHOW_TEMPORARY_TRACK_ID",
-             L"EXCEL_EXPORT_EVERY_EVENTS", L"POSE_IMGSZ", L"PPE_IMGSZ",
-             L"RTSP_SOCKET_TIMEOUT_S"}) {
+             L"EXCEL_EXPORT_EVERY_EVENTS",
+             L"PPE_MODEL_PATH", L"POSE_MODEL_PATH", L"RTSP_SOCKET_TIMEOUT_S"}) {
         if (envValue(values, key)) ignored.emplace_back(key);
     }
     if (ignored.empty()) {
-        setStatus(state, L"Loaded .env settings");
+        setStatus(state, state.spanish ? L"Configuración .env cargada" : L"Loaded .env settings");
     } else {
-        setStatus(state, L"Loaded .env; Python-only settings were ignored");
+        setStatus(
+            state,
+            state.spanish
+                ? L".env cargado; se ignoraron opciones exclusivas de Python"
+                : L"Loaded .env; Python-only settings were ignored");
     }
+    persistPreferences(state);
 }
 
 std::filesystem::path pickFolder(HWND owner) {
@@ -818,15 +937,33 @@ LauncherSettings readSettings(const LauncherWindow& state) {
     const LRESULT compute = SendMessageW(state.compute, CB_GETCURSEL, 0, 0);
     settings.compute_mode = compute == 1
         ? ComputeMode::Cuda : (compute == 2 ? ComputeMode::Cpu : ComputeMode::Auto);
-    settings.ppe_engine = editText(state.ppe_engine);
-    settings.pose_engine = editText(state.pose_engine);
-    settings.ppe_onnx = editText(state.ppe_onnx);
-    settings.pose_onnx = editText(state.pose_onnx);
-    settings.ppe_labels = editText(state.labels);
+    settings.managed_model_root = state.managed_model_root;
     settings.source_label = editText(state.source_label);
     settings.runtime_options = state.runtime_options;
+    const LRESULT image_selection = SendMessageW(state.image_size, CB_GETCURSEL, 0, 0);
+    if (image_selection == CB_ERR
+        || static_cast<std::size_t>(image_selection) >= kAllowedImageSizes.size()) {
+        throw std::invalid_argument("Select a supported inference size");
+    }
+    settings.image_size = kAllowedImageSizes[static_cast<std::size_t>(image_selection)];
+    for (std::size_t index = 0; index < settings.ppe_class_confidences.size(); ++index) {
+        const LRESULT selection = SendMessageW(state.ppe_thresholds[index], CB_GETCURSEL, 0, 0);
+        if (selection == CB_ERR || selection < 0 || selection > 100) {
+            throw std::invalid_argument("Select all eight PPE class confidence thresholds");
+        }
+        settings.ppe_class_confidences[index] = static_cast<float>(selection) / 100.0F;
+    }
     settings.show_window = SendMessageW(state.show, BM_GETCHECK, 0, 0) == BST_CHECKED;
     return settings;
+}
+
+void persistPreferences(LauncherWindow& state) {
+    const LauncherSettings current = readSettings(state);
+    state.preferences.language = state.spanish ? UiLanguage::Spanish : UiLanguage::English;
+    state.preferences.theme = state.dark ? ThemeMode::Dark : ThemeMode::Light;
+    state.preferences.image_size = current.image_size;
+    state.preferences.ppe_class_confidences = current.ppe_class_confidences;
+    saveOperatorPreferencesAtomic(state.preferences_path, state.preferences);
 }
 
 std::filesystem::path siblingRuntime() {
@@ -1040,7 +1177,11 @@ void launchRuntime(LauncherWindow& state, bool preflight) {
         throw;
     }
     setRunning(state, true);
-    setStatus(state, preflight ? L"Validating configuration..." : L"Runtime is running");
+    setStatus(
+        state,
+        preflight
+            ? (state.spanish ? L"Validando configuración..." : L"Validating configuration...")
+            : (state.spanish ? L"El runtime está en ejecución" : L"Runtime is running"));
 }
 
 void requestStop(LauncherWindow& state) {
@@ -1052,8 +1193,12 @@ void requestStop(LauncherWindow& state) {
     setStatus(
         state,
         signaled
-            ? L"Stopping gracefully; forced termination follows after 30 seconds"
-            : L"CTRL_BREAK delivery failed; forced termination follows after 30 seconds");
+            ? (state.spanish
+                ? L"Deteniendo de forma segura; se forzará después de 30 segundos"
+                : L"Stopping gracefully; forced termination follows after 30 seconds")
+            : (state.spanish
+                ? L"Falló CTRL_BREAK; se forzará la detención después de 30 segundos"
+                : L"CTRL_BREAK delivery failed; forced termination follows after 30 seconds"));
 }
 
 void finishProcess(LauncherWindow& state, DWORD exit_code, bool preflight) {
@@ -1063,14 +1208,24 @@ void finishProcess(LauncherWindow& state, DWORD exit_code, bool preflight) {
     closeProcessHandles(state);
     setRunning(state, false);
     if (stopped) {
-        setStatus(state, L"Runtime stopped (exit code " + std::to_wstring(exit_code) + L")");
+        setStatus(
+            state,
+            (state.spanish ? L"Runtime detenido (código de salida " : L"Runtime stopped (exit code ")
+                + std::to_wstring(exit_code) + L")");
     } else if (exit_code == 0) {
-        setStatus(state, preflight ? L"Validation passed" : L"Runtime completed successfully");
+        setStatus(
+            state,
+            preflight
+                ? (state.spanish ? L"Validación aprobada" : L"Validation passed")
+                : (state.spanish ? L"Runtime completado correctamente" : L"Runtime completed successfully"));
     } else {
         setStatus(
             state,
-            (preflight ? L"Validation failed (exit code " : L"Runtime failed (exit code ")
-                + std::to_wstring(exit_code) + L"); see log");
+            (preflight
+                ? (state.spanish ? L"Falló la validación (código de salida " : L"Validation failed (exit code ")
+                : (state.spanish ? L"Falló el runtime (código de salida " : L"Runtime failed (exit code "))
+                + std::to_wstring(exit_code)
+                + (state.spanish ? L"); consulta el log" : L"); see log"));
     }
     state.stop_requested.store(false, std::memory_order_relaxed);
     if (state.close_requested) DestroyWindow(state.window);
@@ -1079,35 +1234,14 @@ void finishProcess(LauncherWindow& state, DWORD exit_code, bool preflight) {
 void showError(LauncherWindow& state, const std::exception& error) {
     const std::string narrow(error.what());
     const std::wstring message(narrow.begin(), narrow.end());
-    setStatus(state, L"Configuration error");
+    setStatus(state, state.spanish ? L"Error de configuración" : L"Configuration error");
     MessageBoxW(state.window, message.c_str(), kProductName, MB_OK | MB_ICONERROR);
 }
 
 void browseInto(LauncherWindow& state, int id) {
-    static constexpr COMDLG_FILTERSPEC engine_filters[] = {
-        {L"TensorRT engine", L"*.engine"}, {L"All files", L"*.*"},
-    };
-    static constexpr COMDLG_FILTERSPEC onnx_filters[] = {
-        {L"ONNX model", L"*.onnx"}, {L"All files", L"*.*"},
-    };
     if (id == OutputBrowse) {
         const auto path = pickFolder(state.window);
         if (!path.empty()) setText(state.output, path);
-        return;
-    }
-    HWND destination = nullptr;
-    const COMDLG_FILTERSPEC* filters = engine_filters;
-    UINT filter_count = static_cast<UINT>(std::size(engine_filters));
-    if (id == PpeEngineBrowse || id == PoseEngineBrowse) {
-        destination = id == PpeEngineBrowse ? state.ppe_engine : state.pose_engine;
-    } else if (id == PpeOnnxBrowse || id == PoseOnnxBrowse) {
-        destination = id == PpeOnnxBrowse ? state.ppe_onnx : state.pose_onnx;
-        filters = onnx_filters;
-        filter_count = static_cast<UINT>(std::size(onnx_filters));
-    }
-    if (destination != nullptr) {
-        const auto path = pickFile(state.window, filters, filter_count);
-        if (!path.empty()) setText(destination, path);
     }
 }
 
@@ -1140,27 +1274,32 @@ LRESULT CALLBACK windowProcedure(HWND window, UINT message, WPARAM wparam, LPARA
                 return 1;
             }
             case WM_CTLCOLOREDIT:
-            case WM_CTLCOLORLISTBOX:
-                SetTextColor(reinterpret_cast<HDC>(wparam), kTextColor);
-                SetBkColor(reinterpret_cast<HDC>(wparam), kInputColor);
+            case WM_CTLCOLORLISTBOX: {
+                const Palette colors = palette(*state);
+                SetTextColor(reinterpret_cast<HDC>(wparam), colors.text);
+                SetBkColor(reinterpret_cast<HDC>(wparam), colors.input);
                 return reinterpret_cast<LRESULT>(state->input_brush);
+            }
             case WM_CTLCOLORSTATIC:
+                {
+                const Palette colors = palette(*state);
                 if (reinterpret_cast<HWND>(lparam) == state->status) {
-                    SetTextColor(reinterpret_cast<HDC>(wparam), kPrimaryColor);
-                    SetBkColor(reinterpret_cast<HDC>(wparam), RGB(232, 240, 254));
+                    SetTextColor(reinterpret_cast<HDC>(wparam), state->dark ? colors.text : colors.primary);
+                    SetBkColor(reinterpret_cast<HDC>(wparam), colors.status);
                     return reinterpret_cast<LRESULT>(state->status_brush);
                 }
-                SetTextColor(reinterpret_cast<HDC>(wparam), kMutedTextColor);
+                SetTextColor(reinterpret_cast<HDC>(wparam), colors.muted);
                 SetBkMode(reinterpret_cast<HDC>(wparam), TRANSPARENT);
                 return reinterpret_cast<LRESULT>(state->window_brush);
+                }
             case WM_CTLCOLORBTN:
-                SetTextColor(reinterpret_cast<HDC>(wparam), kTextColor);
+                SetTextColor(reinterpret_cast<HDC>(wparam), palette(*state).text);
                 SetBkMode(reinterpret_cast<HDC>(wparam), TRANSPARENT);
                 return reinterpret_cast<LRESULT>(state->window_brush);
             case WM_DRAWITEM:
                 if (const auto* item = reinterpret_cast<const DRAWITEMSTRUCT*>(lparam);
                     item->CtlType == ODT_BUTTON) {
-                    drawButton(*item);
+                    drawButton(*state, *item);
                     return TRUE;
                 }
                 break;
@@ -1182,15 +1321,33 @@ LRESULT CALLBACK windowProcedure(HWND window, UINT message, WPARAM wparam, LPARA
                 else if (id == SaveCameraButton) saveSavedCameraProfile(*state);
                 else if (id == LoadCameraButton) loadSavedCameraProfile(*state);
                 else if (id == DeleteCameraButton) deleteSavedCameraProfile(*state);
-                else if (id == LanguageCombo && HIWORD(wparam) == CBN_SELCHANGE) {
-                    state->spanish = SendMessageW(state->language, CB_GETCURSEL, 0, 0) == 1;
+                else if (id == LanguageButton) {
+                    state->spanish = !state->spanish;
                     refreshLanguage(*state);
+                    persistPreferences(*state);
+                }
+                else if (id == ThemeButton) {
+                    state->dark = !state->dark;
+                    applyTheme(*state);
+                    refreshLanguage(*state);
+                    persistPreferences(*state);
                 }
                 else if (id == LoadEnvButton) loadEnv(*state);
-                else if (id == OutputBrowse
-                    || id == PpeEngineBrowse || id == PoseEngineBrowse
-                    || id == PpeOnnxBrowse || id == PoseOnnxBrowse) {
+                else if (id == OutputBrowse) {
                     browseInto(*state, id);
+                }
+                else if (id == ShowCheck) {
+                    const LRESULT checked = SendMessageW(state->show, BM_GETCHECK, 0, 0);
+                    SendMessageW(
+                        state->show, BM_SETCHECK,
+                        checked == BST_CHECKED ? BST_UNCHECKED : BST_CHECKED, 0);
+                    InvalidateRect(state->show, nullptr, TRUE);
+                }
+                else if ((id == ImageSizeCombo
+                    || (id >= PpeThresholdBase
+                        && id < PpeThresholdBase + static_cast<int>(kPpeOutputLabels.size())))
+                    && HIWORD(wparam) == CBN_SELCHANGE) {
+                    persistPreferences(*state);
                 }
                 return 0;
             }
@@ -1238,7 +1395,8 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show_command) {
         if (console != nullptr) ShowWindow(console, SW_HIDE);
         SetConsoleCtrlHandler(nullptr, TRUE);
     }
-    INITCOMMONCONTROLSEX common_controls{sizeof(common_controls), ICC_STANDARD_CLASSES};
+    INITCOMMONCONTROLSEX common_controls{
+        sizeof(common_controls), ICC_STANDARD_CLASSES | ICC_WIN95_CLASSES};
     InitCommonControlsEx(&common_controls);
 
     WNDCLASSEXW window_class{};
@@ -1258,6 +1416,12 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show_command) {
     }
 
     LauncherWindow state;
+    try {
+        state.preferences_path = knownLocalAppData();
+        state.preferences = loadOperatorPreferences(state.preferences_path);
+    } catch (const std::exception&) {
+        state.preferences = {};
+    }
     HWND window = CreateWindowExW(
         0, kWindowClass, kProductName,
         WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX,

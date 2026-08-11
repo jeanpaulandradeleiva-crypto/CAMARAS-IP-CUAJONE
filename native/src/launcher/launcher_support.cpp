@@ -5,7 +5,14 @@
 #define NOMINMAX
 
 #include <algorithm>
+#include <array>
+#include <charconv>
+#include <cmath>
 #include <cwctype>
+#include <fstream>
+#include <iomanip>
+#include <map>
+#include <sstream>
 #include <windows.h>
 #include <stdexcept>
 
@@ -28,6 +35,20 @@ bool regularFileWithExtension(
         return static_cast<wchar_t>(std::towlower(character));
     });
     return extension == expected_extension;
+}
+
+std::wstring wideFromUtf8(std::string_view value) {
+    if (value.empty()) return {};
+    const int required = MultiByteToWideChar(
+        CP_UTF8, MB_ERR_INVALID_CHARS, value.data(), static_cast<int>(value.size()), nullptr, 0);
+    if (required <= 0) throw std::invalid_argument("Preferences are not valid UTF-8");
+    std::wstring result(static_cast<std::size_t>(required), L'\0');
+    if (MultiByteToWideChar(
+            CP_UTF8, MB_ERR_INVALID_CHARS, value.data(), static_cast<int>(value.size()),
+            result.data(), required) <= 0) {
+        throw std::invalid_argument("Preferences are not valid UTF-8");
+    }
+    return result;
 }
 
 bool isRtspSource(std::wstring_view source) {
@@ -119,6 +140,24 @@ std::filesystem::path adjacentOnnxManifest(const std::filesystem::path& model) {
     return result;
 }
 
+ManagedModelSet resolveManagedModelSet(
+    const std::filesystem::path& root,
+    bool pose_required) {
+    ManagedModelSet result;
+    result.root = root;
+    result.ppe_engine = root / L"ppe.engine";
+    result.pose_engine = root / L"pose.engine";
+    result.ppe_onnx = root / L"ppe.onnx";
+    result.pose_onnx = root / L"pose.onnx";
+    result.tensor_rt_complete = regularFileWithExtension(result.ppe_engine, L".engine")
+        && (!pose_required || regularFileWithExtension(result.pose_engine, L".engine"));
+    result.onnx_complete = regularFileWithExtension(result.ppe_onnx, L".onnx")
+        && regularFile(adjacentOnnxManifest(result.ppe_onnx))
+        && (!pose_required || (regularFileWithExtension(result.pose_onnx, L".onnx")
+            && regularFile(adjacentOnnxManifest(result.pose_onnx))));
+    return result;
+}
+
 LaunchPlan buildLaunchPlan(const LauncherSettings& settings, bool preflight) {
     if (settings.source.empty()) {
         throw std::invalid_argument("RTSP camera URL is required");
@@ -133,35 +172,41 @@ LaunchPlan buildLaunchPlan(const LauncherSettings& settings, bool preflight) {
         throw std::invalid_argument("Output path must be a folder");
     }
 
+    validateImageSize(settings.image_size);
+    validatePpeClassConfidences(settings.ppe_class_confidences);
+    if (settings.managed_model_root.empty()) {
+        throw std::invalid_argument("Managed model location is required");
+    }
+    for (const auto& [option, value] : settings.runtime_options) {
+        static_cast<void>(value);
+        if (option == L"--ppe-engine" || option == L"--pose-engine"
+            || option == L"--ppe-onnx" || option == L"--pose-onnx"
+            || option == L"--ppe-labels") {
+            throw std::invalid_argument("Model paths and labels cannot be supplied through launcher options");
+        }
+    }
+
     const bool needs_pose = settings.analytics_mode == AnalyticsMode::PpeFall;
-    const bool tensor_rt_candidate = regularFileWithExtension(settings.ppe_engine, L".engine")
-        && (!needs_pose || regularFileWithExtension(settings.pose_engine, L".engine"));
-    const bool cpu_candidate = regularFileWithExtension(settings.ppe_onnx, L".onnx")
-        && regularFile(adjacentOnnxManifest(settings.ppe_onnx))
-        && hasNonWhitespace(settings.ppe_labels)
-        && (!needs_pose || (regularFileWithExtension(settings.pose_onnx, L".onnx")
-            && regularFile(adjacentOnnxManifest(settings.pose_onnx))));
+    const ManagedModelSet models = resolveManagedModelSet(settings.managed_model_root, needs_pose);
+    const bool tensor_rt_candidate = models.tensor_rt_complete;
+    const bool cpu_candidate = models.onnx_complete;
 
     const bool cuda_candidate = tensor_rt_candidate || cpu_candidate;
     if (settings.compute_mode == ComputeMode::Cuda && !cuda_candidate) {
-        std::wstring message = needs_pose
-            ? L"CUDA requires PPE and pose ONNX models with adjacent manifests, or TensorRT .engine files. Browse to valid models under "
-            : L"CUDA requires a PPE ONNX model with its adjacent manifest, or a TensorRT .engine file. Browse to a valid model under ";
-        message += settings.ppe_onnx.parent_path().wstring();
+        std::wstring message = L"The complete managed CUDA model set is missing at ";
+        message += settings.managed_model_root.wstring();
         throw std::invalid_argument(
             utf8FromWide(message));
     }
     if (settings.compute_mode == ComputeMode::Cpu && !cpu_candidate) {
-        std::wstring message = needs_pose
-            ? L"CPU requires PPE and pose ONNX files, adjacent manifests, and PPE labels. The bundled ONNX model set is missing or incomplete; browse to valid .onnx files under "
-            : L"CPU requires a PPE ONNX file, its adjacent manifest, and PPE labels. The bundled ONNX model is missing or incomplete; browse to a valid .onnx file under ";
-        message += settings.ppe_onnx.parent_path().wstring();
+        std::wstring message = L"The complete managed ONNX model set is missing at ";
+        message += settings.managed_model_root.wstring();
         throw std::invalid_argument(
             utf8FromWide(message));
     }
     if (settings.compute_mode == ComputeMode::Auto && !cuda_candidate && !cpu_candidate) {
-        std::wstring message = L"Auto requires a complete CUDA candidate or a complete CPU candidate. No usable bundled model set was found; browse to .engine or .onnx files under ";
-        message += settings.ppe_engine.parent_path().wstring();
+        std::wstring message = L"No complete managed model set was found at ";
+        message += settings.managed_model_root.wstring();
         throw std::invalid_argument(
             utf8FromWide(message));
     }
@@ -185,21 +230,29 @@ LaunchPlan buildLaunchPlan(const LauncherSettings& settings, bool preflight) {
         case ComputeMode::Cuda: result.arguments.emplace_back(L"cuda"); break;
         case ComputeMode::Cpu: result.arguments.emplace_back(L"cpu"); break;
     }
+    result.arguments.emplace_back(L"--imgsz");
+    result.arguments.push_back(std::to_wstring(settings.image_size));
+    for (std::size_t index = 0; index < kPpeOutputLabels.size(); ++index) {
+        result.arguments.emplace_back(L"--ppe-class-conf");
+        std::wostringstream value;
+        value << wideFromUtf8(kPpeOutputLabels[index]) << L'=' << std::fixed
+              << std::setprecision(2) << settings.ppe_class_confidences[index];
+        result.arguments.push_back(value.str());
+    }
 
     const bool include_tensor_rt = tensor_rt_candidate && settings.compute_mode != ComputeMode::Cpu;
     const bool include_onnx = cpu_candidate;
     if (include_tensor_rt) {
-        appendOption(result.arguments, L"--ppe-engine", settings.ppe_engine);
-        if (needs_pose) appendOption(result.arguments, L"--pose-engine", settings.pose_engine);
+        appendOption(result.arguments, L"--ppe-engine", models.ppe_engine);
+        if (needs_pose) appendOption(result.arguments, L"--pose-engine", models.pose_engine);
     }
     if (include_onnx) {
-        appendOption(result.arguments, L"--ppe-onnx", settings.ppe_onnx);
-        if (needs_pose) appendOption(result.arguments, L"--pose-onnx", settings.pose_onnx);
+        appendOption(result.arguments, L"--ppe-onnx", models.ppe_onnx);
+        if (needs_pose) appendOption(result.arguments, L"--pose-onnx", models.pose_onnx);
     }
-    if (hasNonWhitespace(settings.ppe_labels)) {
-        result.arguments.emplace_back(L"--ppe-labels");
-        result.arguments.push_back(settings.ppe_labels);
-    }
+    result.arguments.emplace_back(L"--ppe-labels");
+    result.arguments.emplace_back(
+        L"Gloves,Person,Safety_boots,Vest,respirador,tapaorejas,Hard_hat,lentes_protectores");
     for (const auto& [option, value] : settings.runtime_options) {
         if (!option.empty() && hasNonWhitespace(value)) {
             result.arguments.push_back(option);
@@ -208,6 +261,134 @@ LaunchPlan buildLaunchPlan(const LauncherSettings& settings, bool preflight) {
     }
     if (settings.show_window) result.arguments.emplace_back(L"--show");
     return result;
+}
+
+OperatorPreferences parseOperatorPreferences(std::string_view text) {
+    std::map<std::string, std::string> values;
+    std::istringstream input{std::string(text)};
+    std::string line;
+    while (std::getline(input, line)) {
+        if (!line.empty() && line.back() == '\r') line.pop_back();
+        if (line.empty()) continue;
+        const auto separator = line.find('=');
+        if (separator == std::string::npos || separator == 0
+            || !values.emplace(line.substr(0, separator), line.substr(separator + 1)).second) {
+            throw std::invalid_argument("Preferences contain an invalid or duplicate entry");
+        }
+    }
+    if (values.size() != 5 || !values.contains("schema_version")
+        || !values.contains("language") || !values.contains("theme")
+        || !values.contains("imgsz") || !values.contains("ppe_class_conf")) {
+        throw std::invalid_argument("Preferences contain missing or unsupported entries");
+    }
+    OperatorPreferences result;
+    if (values.at("schema_version") != "1") {
+        throw std::invalid_argument("Unsupported preferences schema_version");
+    }
+    if (values.at("language") == "en") result.language = UiLanguage::English;
+    else if (values.at("language") == "es") result.language = UiLanguage::Spanish;
+    else throw std::invalid_argument("Preferences language must be en or es");
+    if (values.at("theme") == "light") result.theme = ThemeMode::Light;
+    else if (values.at("theme") == "dark") result.theme = ThemeMode::Dark;
+    else throw std::invalid_argument("Preferences theme must be light or dark");
+    const auto& image_text = values.at("imgsz");
+    const auto image_result = std::from_chars(
+        image_text.data(), image_text.data() + image_text.size(), result.image_size);
+    if (image_result.ec != std::errc{} || image_result.ptr != image_text.data() + image_text.size()) {
+        throw std::invalid_argument("Preferences imgsz is invalid");
+    }
+    validateImageSize(result.image_size);
+
+    std::istringstream thresholds(values.at("ppe_class_conf"));
+    std::string entry;
+    std::size_t index = 0;
+    while (std::getline(thresholds, entry, ',')) {
+        if (index >= kPpeOutputLabels.size()) {
+            throw std::invalid_argument("Preferences contain too many PPE thresholds");
+        }
+        const auto separator = entry.find(':');
+        if (separator == std::string::npos
+            || entry.substr(0, separator) != kPpeOutputLabels[index]) {
+            throw std::invalid_argument("Preferences PPE threshold order is invalid");
+        }
+        const std::string_view number(entry.data() + separator + 1, entry.size() - separator - 1);
+        const auto parsed = std::from_chars(
+            number.data(), number.data() + number.size(), result.ppe_class_confidences[index]);
+        if (parsed.ec != std::errc{} || parsed.ptr != number.data() + number.size()) {
+            throw std::invalid_argument("Preferences PPE threshold value is invalid");
+        }
+        ++index;
+    }
+    if (index != kPpeOutputLabels.size()) {
+        throw std::invalid_argument("Preferences require exactly eight PPE thresholds");
+    }
+    validatePpeClassConfidences(result.ppe_class_confidences);
+    return result;
+}
+
+std::string serializeOperatorPreferences(const OperatorPreferences& preferences) {
+    if (preferences.schema_version != 1) {
+        throw std::invalid_argument("Unsupported preferences schema_version");
+    }
+    validateImageSize(preferences.image_size);
+    validatePpeClassConfidences(preferences.ppe_class_confidences);
+    std::ostringstream output;
+    output << "schema_version=1\n"
+           << "language=" << (preferences.language == UiLanguage::Spanish ? "es" : "en") << '\n'
+           << "theme=" << (preferences.theme == ThemeMode::Dark ? "dark" : "light") << '\n'
+           << "imgsz=" << preferences.image_size << '\n'
+           << "ppe_class_conf=";
+    for (std::size_t index = 0; index < kPpeOutputLabels.size(); ++index) {
+        if (index != 0) output << ',';
+        output << kPpeOutputLabels[index] << ':' << std::fixed << std::setprecision(2)
+               << preferences.ppe_class_confidences[index];
+    }
+    output << '\n';
+    return output.str();
+}
+
+OperatorPreferences loadOperatorPreferences(const std::filesystem::path& path) noexcept {
+    try {
+        std::ifstream input(path, std::ios::binary);
+        if (!input) return {};
+        const std::string text{
+            std::istreambuf_iterator<char>(input), std::istreambuf_iterator<char>()};
+        if (text.size() > 16U * 1024U) return {};
+        return parseOperatorPreferences(text);
+    } catch (...) {
+        return {};
+    }
+}
+
+void saveOperatorPreferencesAtomic(
+    const std::filesystem::path& path,
+    const OperatorPreferences& preferences) {
+    const std::string text = serializeOperatorPreferences(preferences);
+    std::filesystem::create_directories(path.parent_path());
+    std::filesystem::path temporary = path;
+    temporary += L".tmp";
+    {
+        std::ofstream output(temporary, std::ios::binary | std::ios::trunc);
+        output.write(text.data(), static_cast<std::streamsize>(text.size()));
+        output.flush();
+        if (!output) throw std::runtime_error("Could not write operator preferences");
+    }
+    if (!MoveFileExW(
+            temporary.c_str(), path.c_str(),
+            MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {
+        std::error_code ignored;
+        std::filesystem::remove(temporary, ignored);
+        throw std::runtime_error("Could not atomically replace operator preferences");
+    }
+}
+
+std::vector<std::string_view> visibleLauncherControlKeys() {
+    return {
+        "source", "source_label", "saved_camera", "output", "analytics", "compute",
+        "imgsz", "Gloves", "Person", "Safety_boots", "Vest", "respirador",
+        "tapaorejas", "Hard_hat", "lentes_protectores", "show", "language_icon",
+        "theme_icon", "validate", "start", "stop", "status", "log_path",
+    };
 }
 
 std::wstring quoteWindowsArgument(std::wstring_view argument) {

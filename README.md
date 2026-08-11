@@ -5,7 +5,7 @@ launcher -> `NexoAIVision.exe`**. El producto instalado ejecuta el runtime C++
 nativo y no depende de Python, PyTorch ni Ultralytics.
 
 `ppe_reportev2.py` es un facade local de desarrollo/QA. Usa
-`cuajone_native.pyd` con modelos ONNX fijos para ejercitar captura RTSP, binding
+`cuajone_native.pyd` con modelos ONNX dinámicos acotados para ejercitar captura RTSP, binding
 nativo, evidencias y reportes compatibles. No es un fallback operativo y no se
 incluye en el MSI.
 
@@ -17,6 +17,11 @@ incluye en el MSI.
 4. Guarda los perfiles RTSP mediante el launcher, que usa Windows Credential
    Manager por usuario.
 5. Valida e inicia `NexoAIVision.exe` desde el mismo launcher.
+
+El launcher usa exclusivamente el bundle administrado instalado. Permite elegir
+`imgsz` 640/768/960/1280 y una confianza para cada una de las ocho clases de salida;
+idioma, tema y esos valores se guardan por usuario. Las rutas de modelos y sus
+labels no son configuración del operador.
 
 La preparación de confianza, verificación y mantenimiento corresponde a TI y se
 documenta en [Para TI](PARA_TI_WINDOWS.md). La referencia de ingeniería del MSI
@@ -42,8 +47,10 @@ facade Python no carga modelos `.pt`, PyTorch ni Ultralytics. El backend nativo
 enlaza ByteTrack-Eigen estaticamente sin importar paquetes Python.
 
 El exportador local genera `models/ppe.onnx`, `models/pose.onnx` y sus manifests.
-El detector EPP usa salida raw `[1,12,8400]`; pose conserva el contrato de exportación
-de Ultralytics. `models/` es generado y permanece fuera de Git.
+El detector EPP usa salida raw `[1,12,N]`, donde
+`N=(S/8)^2+(S/16)^2+(S/32)^2`; pose conserva `[1,300,57]`. La entrada acepta solo
+los cuatro tamaños cuadrados aprobados con batch 1. `models/` es generado y
+permanece fuera de Git.
 
 La configuración mínima de QA es:
 

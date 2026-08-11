@@ -4,6 +4,7 @@
 
 #include "cuajone/analytics_pipeline.hpp"
 #include "cuajone/compute.hpp"
+#include "cuajone/inference_settings.hpp"
 
 #include <opencv2/core/mat.hpp>
 
@@ -30,7 +31,11 @@ struct EnginePipelineConfig {
     std::array<int, 2> pose_keypoint_shape{17, 3};
     bool allow_nonperson_pose_class{};
     std::optional<int> device;
+    int image_size{kDefaultImageSize};
     float ppe_confidence{0.30F};
+    std::array<float, kPpeOutputLabels.size()> ppe_class_confidences{
+        0.30F, 0.30F, 0.30F, 0.30F, 0.30F, 0.30F, 0.30F, 0.30F,
+    };
     float pose_confidence{0.35F};
     float nms_iou{0.45F};
     std::size_t maximum_detections{300};
@@ -48,6 +53,7 @@ struct EnginePipelineSummary {
     bool ppe_metadata_prefix{};
     bool pose_loaded{};
     bool pose_metadata_prefix{};
+    int image_size{kDefaultImageSize};
 };
 
 class NativeEnginePipeline {

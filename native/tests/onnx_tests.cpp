@@ -116,7 +116,7 @@ void testPpeManifestBindsSemanticOrder() {
         {6, "Hard_hat"}, {7, "lentes_protectores"}};
     config.analytics.mode = AnalyticsMode::PpeOnly;
     requireThrows([&] { NativeEnginePipeline pipeline(config); },
-        "manifest labels", "Wrong PPE manifest label order was accepted");
+        "always-all-seven-v2", "Wrong PPE manifest label order was accepted");
 }
 
 void testExternalDataAndCustomOperatorsRejected() {
@@ -159,6 +159,52 @@ void testManifestResourceLimits() {
         "resource limit", "Oversized ONNX output contract was accepted");
 }
 
+std::string dynamicManifest(std::string_view role = "ppe") {
+    const std::string ppe = role == "ppe"
+        ? R"(,"label_contract":"always-all-seven-v2","labels":["Gloves","Person","Safety_boots","Vest","respirador","tapaorejas","Hard_hat","lentes_protectores"] )"
+        : "";
+    const std::string output_shape = role == "ppe"
+        ? R"([1,12,"predictions"])" : "[1,300,57]";
+    return R"({"schema_version":2,"artifact_type":"onnx","role":")"
+        + std::string(role)
+        + R"(","model_file":"model.onnx","model_sha256":")"
+        + std::string(64, '0')
+        + R"(","model_size_bytes":1,"external_data":false,"custom_operators":false,)"
+          R"("input":{"name":"images","element_type":"float32","shape":[1,3,"height","width"]},)"
+          R"("output":{"name":"output0","element_type":"float32","shape":)"
+        + output_shape
+        + R"(},"provenance":{"source_uri":"urn:cuajone:test","exporter":"tests","license":"AGPL-3.0-only"})"
+        + ppe
+        + R"(,"dynamic_shape":{"batch":1,"channels":3,"allowed_image_sizes":[640,768,960,1280],"minimum_image_size":640,"optimum_image_size":640,"maximum_image_size":1280}})";
+}
+
+void testDynamicManifestContract() {
+    const OnnxModelManifest ppe = parseOnnxModelManifest(dynamicManifest());
+    require(ppe.dynamicShapes() && ppe.allowed_image_sizes == std::vector<int>({640, 768, 960, 1280})
+            && ppe.input.shape == std::vector<std::int64_t>({1, 3, -1, -1})
+            && ppe.output.shape == std::vector<std::int64_t>({1, 12, -1}),
+        "Bounded dynamic PPE manifest was not accepted exactly");
+    const OnnxModelManifest pose = parseOnnxModelManifest(dynamicManifest("pose"));
+    require(pose.dynamicShapes() && pose.output.shape == std::vector<std::int64_t>({1, 300, 57}),
+        "Bounded dynamic pose manifest was not accepted");
+
+    std::string unsupported = dynamicManifest();
+    const std::string allowed = "[640,768,960,1280]";
+    const auto allowed_position = unsupported.find(allowed);
+    require(allowed_position != std::string::npos, "Dynamic allowed size fixture was not found");
+    unsupported.replace(allowed_position, allowed.size(), "[640,800,960,1280]");
+    requireThrows([&] { static_cast<void>(parseOnnxModelManifest(unsupported)); },
+        "allowed_image_sizes", "Unsupported dynamic image size was accepted");
+
+    std::string unbounded = dynamicManifest();
+    const std::string bounded_output = "[1,12,\"predictions\"]";
+    const auto output_position = unbounded.find(bounded_output);
+    require(output_position != std::string::npos, "Dynamic output fixture was not found");
+    unbounded.replace(output_position, bounded_output.size(), "[1,12,999999]");
+    requireThrows([&] { static_cast<void>(parseOnnxModelManifest(unbounded)); },
+        "approved bounded role schema", "Unapproved dynamic output formula was accepted");
+}
+
 }  // namespace
 
 int main() {
@@ -168,6 +214,7 @@ int main() {
         {"PPE manifest semantic order", testPpeManifestBindsSemanticOrder},
         {"external data and custom operators", testExternalDataAndCustomOperatorsRejected},
         {"manifest resource limits", testManifestResourceLimits},
+        {"bounded dynamic manifest contract", testDynamicManifestContract},
     };
     int failures = 0;
     for (const auto& [name, test] : tests) {

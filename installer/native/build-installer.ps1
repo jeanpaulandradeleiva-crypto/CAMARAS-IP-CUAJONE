@@ -12,7 +12,6 @@ param(
     [string]$BuildMode = "Release",
 
     [switch]$AllowUnsignedPreview,
-    [switch]$SkipModelBundle,
     [switch]$RefreshModelExport,
     [switch]$FastPreview,
     [switch]$StageOnly,
@@ -156,9 +155,9 @@ if task == "detect":
     head = model.model.model[-1]
     if hasattr(head, "end2end"):
         head.end2end = False
-    model.export(format="onnx", imgsz=640, end2end=False)
+    model.export(format="onnx", imgsz=640, dynamic=True, nms=False, end2end=False)
 else:
-    model.export(format="onnx", imgsz=640)
+    model.export(format="onnx", imgsz=640, dynamic=True, nms=False)
 '@
     $output = @(& $PythonPath -c $python $SourceModel $Task 2>&1)
     if ($LASTEXITCODE -ne 0) {
@@ -199,27 +198,65 @@ import json
 import sys
 
 import onnx
+import numpy as np
+import onnxruntime as ort
 
 model_path, role, source_model = sys.argv[1:]
 model = onnx.load(model_path, load_external_data=False)
 
-def tensor_contract(values):
+# dynamic=True also makes batch symbolic. Bind the public contract to batch one;
+# only the two spatial axes and derived prediction count remain dynamic.
+for value_info in (model.graph.input[0], model.graph.output[0]):
+    batch = value_info.type.tensor_type.shape.dim[0]
+    batch.ClearField("dim_param")
+    batch.dim_value = 1
+onnx.checker.check_model(model)
+onnx.save(model, model_path)
+model = onnx.load(model_path, load_external_data=False)
+
+def tensor_contract(values, symbolic_names):
     if len(values) != 1:
         raise RuntimeError("exported ONNX model must expose exactly one input and one output")
     tensor = values[0].type.tensor_type
     if tensor.elem_type != onnx.TensorProto.FLOAT:
         raise RuntimeError("exported ONNX tensors must use float32")
+    if len(tensor.shape.dim) != len(symbolic_names):
+        raise RuntimeError("exported ONNX tensor has an unexpected rank")
     shape = []
-    for dimension in tensor.shape.dim:
-        if not dimension.HasField("dim_value") or dimension.dim_value <= 0:
-            raise RuntimeError("exported ONNX tensors must use fixed positive dimensions")
-        shape.append(dimension.dim_value)
+    for dimension, symbolic_name in zip(tensor.shape.dim, symbolic_names):
+        if dimension.HasField("dim_value") and dimension.dim_value > 0:
+            shape.append(dimension.dim_value)
+        elif dimension.HasField("dim_param") and dimension.dim_param:
+            shape.append(symbolic_name)
+        else:
+            raise RuntimeError("exported ONNX tensor has an unbound dimension")
     return {"name": values[0].name, "element_type": "float32", "shape": shape}
+
+input_contract = tensor_contract(model.graph.input, ("batch", "channels", "height", "width"))
+output_contract = tensor_contract(model.graph.output, ("batch", "channels", "predictions"))
+if input_contract["shape"] != [1, 3, "height", "width"]:
+    raise RuntimeError("exported ONNX input must be dynamic [1,3,height,width]")
+expected_output_shape = [1, 12, "predictions"] if role == "ppe" else [1, 300, 57]
+if output_contract["shape"] != expected_output_shape:
+    raise RuntimeError("exported ONNX output must use the approved bounded role schema")
+
+session = ort.InferenceSession(model_path, providers=["CPUExecutionProvider"])
+for image_size in (640, 768, 960, 1280):
+    output = session.run(
+        [output_contract["name"]],
+        {input_contract["name"]: np.zeros((1, 3, image_size, image_size), dtype=np.float32)},
+    )[0]
+    predictions = sum((image_size // stride) ** 2 for stride in (8, 16, 32))
+    expected_shape = (1, 12, predictions) if role == "ppe" else (1, 300, 57)
+    if output.dtype != np.float32 or tuple(output.shape) != expected_shape:
+        raise RuntimeError(f"exported ONNX failed dynamic validation at imgsz {image_size}")
+    if output.size > 16 * 1024 * 1024:
+        raise RuntimeError("exported ONNX output exceeds the runtime element bound")
 
 with open(model_path, "rb") as stream:
     model_bytes = stream.read()
 manifest = {
-    "schema_version": 1,
+    "schema_version": 2,
     "artifact_type": "onnx",
     "role": role,
     "model_file": model_path.rsplit("\\", 1)[-1].rsplit("/", 1)[-1],
@@ -227,8 +264,16 @@ manifest = {
     "model_size_bytes": len(model_bytes),
     "external_data": False,
     "custom_operators": False,
-    "input": tensor_contract(model.graph.input),
-    "output": tensor_contract(model.graph.output),
+    "input": input_contract,
+    "output": output_contract,
+    "dynamic_shape": {
+        "batch": 1,
+        "channels": 3,
+        "allowed_image_sizes": [640, 768, 960, 1280],
+        "minimum_image_size": 640,
+        "optimum_image_size": 640,
+        "maximum_image_size": 1280,
+    },
     "provenance": {
         "source_uri": "urn:cuajone:bundled-model:" + source_model,
         "exporter": "ultralytics-onnx-export",
@@ -288,8 +333,8 @@ function Get-OrExportOnnxModel(
     Ensure-Directory $CacheRoot
     $sourceSha256 = (Get-FileHash -Algorithm SHA256 -LiteralPath $SourceModel).Hash.ToLowerInvariant()
     $exporterVersion = Get-UltralyticsVersion $PythonPath
-    $exportMode = if ($Task -ceq "detect") { "raw-detect-end2end-false-v1" } else { "ultralytics-default-v1" }
-    $recipe = "recipe_version=3;role=$Role;task=$Task;export_mode=$exportMode;imgsz=640;source_sha256=$sourceSha256;ultralytics=$exporterVersion"
+    $exportMode = if ($Task -ceq "detect") { "raw-detect-dynamic-end2end-false-v2" } else { "raw-pose-dynamic-v2" }
+    $recipe = "recipe_version=4;role=$Role;task=$Task;export_mode=$exportMode;allowed_imgsz=640,768,960,1280;source_sha256=$sourceSha256;ultralytics=$exporterVersion"
     $cacheDirectory = Join-Path $CacheRoot (Get-StringSha256 $recipe)
     $onnxPath = Join-Path $cacheDirectory "$Role.onnx"
     $manifestPath = "$onnxPath.manifest.json"
@@ -1043,7 +1088,7 @@ $ffmpegSourceAvailability = if ($BuildMode -eq "Release") {
 } else {
     "NOT PUBLISHED FOR THIS INTERNAL PREVIEW. External distribution is blocked."
 }
-$includeModelBundle = -not $SkipModelBundle
+$includeModelBundle = $true
 $hasModels = $false
 $ppeEngineSha256 = $null
 $poseEngineSha256 = $null
@@ -1121,17 +1166,6 @@ Pose source SHA-256: $($poseOnnxResult.sourceSha256)
 Pose ONNX: $($poseOnnxResult.onnx)
 Pose ONNX SHA-256: $($poseOnnxResult.onnxSha256)
 Pose ONNX manifest SHA-256: $($poseManifest.sha256)
-"@ | Set-Content -LiteralPath (Join-Path $stageDocs.FullName "MODEL-BUNDLE.txt") -Encoding UTF8
-} else {
-    @"
-NexoAI Vision model bundle
-
-Build mode: $BuildMode
-Bundle included: no
-
-The MSI was built without AI models. The launcher will use bundled ONNX or TensorRT
-models when present under INSTALLFOLDER\bin\models; otherwise browse to externally
-supplied model files before starting the runtime.
 "@ | Set-Content -LiteralPath (Join-Path $stageDocs.FullName "MODEL-BUNDLE.txt") -Encoding UTF8
 }
 
@@ -1366,15 +1400,6 @@ $metadata = [ordered]@{
                 artifactSha256 = $poseOnnxResult.onnxSha256
                 manifest = "bin/models/pose.onnx.manifest.json"
                 manifestSha256 = $poseManifest.sha256
-            }
-        }
-    } else {
-        [ordered]@{
-            included = $false
-            reason = if ($SkipModelBundle) {
-                "Model bundle was explicitly skipped"
-            } else {
-                "No model bundle was requested"
             }
         }
     }

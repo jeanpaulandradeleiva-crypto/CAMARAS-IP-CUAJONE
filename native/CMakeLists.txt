@@ -66,7 +66,7 @@ if(CUAJONE_BUILD_LAUNCHER)
         add_executable(cuajone_launcher WIN32 src/launcher/launcher.cpp "${CUAJONE_PRODUCT_RESOURCE}")
         add_dependencies(cuajone_launcher cuajone_product_icon)
         target_link_libraries(cuajone_launcher PRIVATE
-            cuajone_launcher_support advapi32 comctl32 ole32 shell32)
+            cuajone_launcher_support advapi32 comctl32 dwmapi ole32 shell32)
         target_compile_definitions(cuajone_launcher PRIVATE
             UNICODE _UNICODE NOMINMAX WIN32_LEAN_AND_MEAN)
         if(MSVC)

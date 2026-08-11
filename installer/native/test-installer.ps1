@@ -443,7 +443,7 @@ try {
             $directoryMap.APPLICATIONDATAFOLDER.DefaultDir -notmatch '(^|\|)NexoAI Vision$') {
             throw "Mutable application data is not rooted under CommonAppDataFolder\NexoAI Vision"
         }
-        foreach ($directoryId in @("MODELSFOLDER", "CONFIGFOLDER", "OUTPUTFOLDER", "LOGSFOLDER")) {
+        foreach ($directoryId in @("CONFIGFOLDER", "OUTPUTFOLDER", "LOGSFOLDER")) {
             if (-not $directoryMap.ContainsKey($directoryId) -or
                 $directoryMap[$directoryId].Parent -cne "RUNTIMEFOLDER") {
                 throw "Mutable runtime directory is missing from ProgramData: $directoryId"
@@ -621,14 +621,14 @@ try {
             throw "Least-privilege runtime ACL declarations are missing"
         }
         $secureObjectRows = Get-MsiRows $database 'SELECT `SecureObject`, `Table`, `User`, `Permission`, `Component_` FROM `Wix4SecureObject`' 5
-        $expectedSecureObjects = @("MODELSFOLDER", "CONFIGFOLDER", "OUTPUTFOLDER", "LOGSFOLDER")
+        $expectedSecureObjects = @("CONFIGFOLDER", "OUTPUTFOLDER", "LOGSFOLDER")
         if ($secureObjectRows.Count -ne $expectedSecureObjects.Count -or
             @($secureObjectRows | Where-Object {
                 $_.Columns[0] -notin $expectedSecureObjects -or
                 $_.Columns[1] -cne "CreateFolder" -or
                 $_.Columns[2] -cne "Users"
             }).Count -ne 0) {
-            throw "Runtime ACL rows do not grant the locale-independent Users account on the four data directories"
+            throw "Runtime ACL rows do not grant the locale-independent Users account on the three mutable data directories"
         }
         $customActionRows = Get-MsiRows $database 'SELECT `Action`, `Type`, `Source`, `Target` FROM `CustomAction`' 4
         $approvedCustomActions = @(

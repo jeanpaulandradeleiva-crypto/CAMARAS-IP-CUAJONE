@@ -2,6 +2,9 @@
 
 #pragma once
 
+#include "cuajone/inference_settings.hpp"
+
+#include <array>
 #include <filesystem>
 #include <utility>
 #include <string>
@@ -21,18 +24,48 @@ enum class ComputeMode {
     Cpu,
 };
 
+enum class UiLanguage {
+    English,
+    Spanish,
+};
+
+enum class ThemeMode {
+    Light,
+    Dark,
+};
+
+struct OperatorPreferences {
+    std::size_t schema_version{1};
+    UiLanguage language{UiLanguage::English};
+    ThemeMode theme{ThemeMode::Light};
+    int image_size{kDefaultImageSize};
+    std::array<float, kPpeOutputLabels.size()> ppe_class_confidences{
+        0.30F, 0.30F, 0.30F, 0.30F, 0.30F, 0.30F, 0.30F, 0.30F,
+    };
+};
+
+struct ManagedModelSet {
+    std::filesystem::path root;
+    std::filesystem::path ppe_engine;
+    std::filesystem::path pose_engine;
+    std::filesystem::path ppe_onnx;
+    std::filesystem::path pose_onnx;
+    bool tensor_rt_complete{};
+    bool onnx_complete{};
+};
+
 struct LauncherSettings {
     std::wstring source;
     std::filesystem::path output;
     AnalyticsMode analytics_mode{AnalyticsMode::PpeFall};
     ComputeMode compute_mode{ComputeMode::Auto};
-    std::filesystem::path ppe_engine;
-    std::filesystem::path pose_engine;
-    std::filesystem::path ppe_onnx;
-    std::filesystem::path pose_onnx;
-    std::wstring ppe_labels;
+    std::filesystem::path managed_model_root;
     std::wstring source_label;
     std::vector<std::pair<std::wstring, std::wstring>> runtime_options;
+    int image_size{kDefaultImageSize};
+    std::array<float, kPpeOutputLabels.size()> ppe_class_confidences{
+        0.30F, 0.30F, 0.30F, 0.30F, 0.30F, 0.30F, 0.30F, 0.30F,
+    };
     bool show_window{};
 };
 
@@ -43,7 +76,17 @@ struct LaunchPlan {
 };
 
 std::filesystem::path adjacentOnnxManifest(const std::filesystem::path& model);
+ManagedModelSet resolveManagedModelSet(
+    const std::filesystem::path& root,
+    bool pose_required);
 LaunchPlan buildLaunchPlan(const LauncherSettings& settings, bool preflight);
+OperatorPreferences parseOperatorPreferences(std::string_view text);
+std::string serializeOperatorPreferences(const OperatorPreferences& preferences);
+OperatorPreferences loadOperatorPreferences(const std::filesystem::path& path) noexcept;
+void saveOperatorPreferencesAtomic(
+    const std::filesystem::path& path,
+    const OperatorPreferences& preferences);
+std::vector<std::string_view> visibleLauncherControlKeys();
 std::wstring quoteWindowsArgument(std::wstring_view argument);
 std::wstring buildWindowsCommandLine(const std::vector<std::wstring>& arguments);
 std::string redactRtspCredentials(std::string_view text);

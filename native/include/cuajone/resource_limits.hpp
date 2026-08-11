@@ -17,7 +17,7 @@ inline constexpr std::size_t kMaximumOnnxModelBytes = 256U * 1024U * 1024U;
 inline constexpr std::size_t kMaximumTensorRtEngineBytes = 1024ULL * 1024ULL * 1024ULL;
 inline constexpr std::size_t kMaximumTensorRank = 8;
 inline constexpr std::int64_t kMaximumTensorDimension = 1'000'000;
-inline constexpr int kMaximumImageDimension = 4096;
+inline constexpr int kMaximumImageDimension = 1280;
 inline constexpr std::size_t kMaximumInputElements =
     3ULL * kMaximumImageDimension * kMaximumImageDimension;
 inline constexpr std::size_t kMaximumOutputElements = 16U * 1024U * 1024U;

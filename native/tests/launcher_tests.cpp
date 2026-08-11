@@ -66,19 +66,21 @@ LauncherSettings baseSettings(const TemporaryTree& tree) {
     LauncherSettings settings;
     settings.source = L"rtsp://camera.example:554/axis-media/media.amp";
     settings.output = tree.root() / L"output";
-    settings.ppe_labels = L"Person,Hard_hat,Vest";
+    settings.managed_model_root = tree.root();
     return settings;
 }
 
 void addTensorRtModels(LauncherSettings& settings, const TemporaryTree& tree) {
-    settings.ppe_engine = tree.makeFile(L"ppe.engine");
-    settings.pose_engine = tree.makeFile(L"pose.engine");
+    static_cast<void>(settings);
+    tree.makeFile(L"ppe.engine");
+    tree.makeFile(L"pose.engine");
 }
 
 void addOnnxModels(LauncherSettings& settings, const TemporaryTree& tree) {
-    settings.ppe_onnx = tree.makeFile(L"ppe.onnx");
+    static_cast<void>(settings);
+    tree.makeFile(L"ppe.onnx");
     tree.makeFile(L"ppe.onnx.manifest.json");
-    settings.pose_onnx = tree.makeFile(L"pose.onnx");
+    tree.makeFile(L"pose.onnx");
     tree.makeFile(L"pose.onnx.manifest.json");
 }
 
@@ -108,8 +110,8 @@ void testModelMatrixAndArguments() {
     requireThrows([&] { buildLaunchPlan(settings, false); },
         "Auto accepted no model candidate");
 
-    settings.ppe_engine = tree.makeFile(L"ppe.plan");
-    settings.pose_engine = tree.makeFile(L"pose.plan");
+    tree.makeFile(L"ppe.plan");
+    tree.makeFile(L"pose.plan");
     requireThrows([&] { buildLaunchPlan(settings, false); },
         "Auto accepted CUDA files with unsupported extensions");
 
@@ -144,8 +146,8 @@ void testModelMatrixAndArguments() {
             && !contains(cpu.arguments, L"--ppe-engine"),
         "CPU plan emitted the wrong model family");
 
-    settings.ppe_engine.clear();
-    settings.pose_engine.clear();
+    std::filesystem::remove(tree.root() / L"ppe.engine");
+    std::filesystem::remove(tree.root() / L"pose.engine");
     settings.compute_mode = ComputeMode::Cuda;
     const auto cuda_onnx = buildLaunchPlan(settings, false);
     require(cuda_onnx.has_cuda_candidate && contains(cuda_onnx.arguments, L"--ppe-onnx")
@@ -153,11 +155,12 @@ void testModelMatrixAndArguments() {
             && !contains(cuda_onnx.arguments, L"--ppe-engine"),
         "CUDA plan rejected the validated ONNX model family");
 
-    settings.ppe_onnx = tree.makeFile(L"ppe.pb");
+    tree.makeFile(L"ppe.pb");
     tree.makeFile(L"ppe.pb.manifest.json");
+    std::filesystem::remove(tree.root() / L"ppe.onnx");
     requireThrows([&] { buildLaunchPlan(settings, false); },
         "CPU accepted a model with a non-ONNX extension");
-    settings.ppe_onnx = tree.root() / L"ppe.onnx";
+    tree.makeFile(L"ppe.onnx");
 
     addTensorRtModels(settings, tree);
     settings.compute_mode = ComputeMode::Auto;
@@ -167,21 +170,18 @@ void testModelMatrixAndArguments() {
             && contains(both.arguments, L"--ppe-onnx"),
         "Auto did not emit both complete candidates");
 
-    std::filesystem::remove(adjacentOnnxManifest(settings.pose_onnx));
+    std::filesystem::remove(tree.root() / L"pose.onnx.manifest.json");
     settings.compute_mode = ComputeMode::Cpu;
     requireThrows([&] { buildLaunchPlan(settings, false); },
         "CPU accepted a missing adjacent pose manifest");
     tree.makeFile(L"pose.onnx.manifest.json");
-    settings.ppe_labels = L"   ";
-    requireThrows([&] { buildLaunchPlan(settings, false); },
-        "CPU accepted missing PPE labels");
 }
 
 void testPpeOnlyOmitsPoseArguments() {
     TemporaryTree tree;
     auto settings = baseSettings(tree);
     settings.analytics_mode = AnalyticsMode::PpeOnly;
-    settings.ppe_engine = tree.makeFile(L"ppe-only.engine");
+    tree.makeFile(L"ppe.engine");
     settings.compute_mode = ComputeMode::Cuda;
     const auto cuda = buildLaunchPlan(settings, false);
     require(cuda.has_cuda_candidate && contains(cuda.arguments, L"ppe-only")
@@ -189,8 +189,8 @@ void testPpeOnlyOmitsPoseArguments() {
             && !contains(cuda.arguments, L"--pose-engine"),
         "PPE-only CUDA plan required or emitted a pose engine");
 
-    settings.ppe_onnx = tree.makeFile(L"ppe-only.onnx");
-    tree.makeFile(L"ppe-only.onnx.manifest.json");
+    tree.makeFile(L"ppe.onnx");
+    tree.makeFile(L"ppe.onnx.manifest.json");
     settings.compute_mode = ComputeMode::Cpu;
     const auto cpu = buildLaunchPlan(settings, false);
     require(cpu.has_cpu_candidate && contains(cpu.arguments, L"--ppe-onnx")
@@ -206,6 +206,69 @@ void testPpeOnlyOmitsPoseArguments() {
             && !contains(automatic.arguments, L"--pose-engine")
             && !contains(automatic.arguments, L"--pose-onnx"),
         "PPE-only Auto plan did not preserve both candidates or leaked pose arguments");
+}
+
+void testOperationalSettingsAndArguments() {
+    TemporaryTree tree;
+    auto settings = baseSettings(tree);
+    addOnnxModels(settings, tree);
+    settings.compute_mode = ComputeMode::Cpu;
+    settings.image_size = 960;
+    settings.ppe_class_confidences = {
+        0.01F, 0.12F, 0.23F, 0.34F, 0.45F, 0.56F, 0.67F, 0.78F,
+    };
+    const auto plan = buildLaunchPlan(settings, false);
+    require(contains(plan.arguments, L"--imgsz") && contains(plan.arguments, L"960"),
+        "Launcher did not emit the selected imgsz");
+    require(std::count(plan.arguments.begin(), plan.arguments.end(), L"--ppe-class-conf") == 8,
+        "Launcher did not emit exactly eight PPE class thresholds");
+    require(contains(plan.arguments, L"Gloves=0.01")
+            && contains(plan.arguments, L"lentes_protectores=0.78"),
+        "Launcher class threshold order or formatting changed");
+
+    settings.image_size = 800;
+    requireThrows([&] { buildLaunchPlan(settings, false); },
+        "Launcher accepted an unsupported imgsz");
+    settings.image_size = 640;
+    settings.runtime_options.emplace_back(L"--ppe-onnx", L"unmanaged.onnx");
+    requireThrows([&] { buildLaunchPlan(settings, false); },
+        "Launcher accepted a model-path UI option");
+}
+
+void testPreferencesPersistenceAndUiContract() {
+    TemporaryTree tree;
+    const auto path = tree.root() / L"settings" / L"operator-settings-v1.txt";
+    OperatorPreferences preferences;
+    preferences.language = UiLanguage::Spanish;
+    preferences.theme = ThemeMode::Dark;
+    preferences.image_size = 1280;
+    preferences.ppe_class_confidences[0] = 0.11F;
+    preferences.ppe_class_confidences[7] = 0.88F;
+    saveOperatorPreferencesAtomic(path, preferences);
+    const auto loaded = loadOperatorPreferences(path);
+    require(loaded.language == UiLanguage::Spanish && loaded.theme == ThemeMode::Dark
+            && loaded.image_size == 1280
+            && loaded.ppe_class_confidences[0] == 0.11F
+            && loaded.ppe_class_confidences[7] == 0.88F,
+        "Operator preferences did not roundtrip");
+    std::ofstream(path, std::ios::binary | std::ios::trunc) << "corrupt";
+    const auto fallback = loadOperatorPreferences(path);
+    require(fallback.language == UiLanguage::English && fallback.theme == ThemeMode::Light
+            && fallback.image_size == 640 && fallback.ppe_class_confidences[0] == 0.30F,
+        "Corrupt preferences did not fail closed to defaults");
+
+    const auto controls = visibleLauncherControlKeys();
+    for (const std::string_view required : {
+             "imgsz", "Gloves", "Person", "Safety_boots", "Vest", "respirador",
+             "tapaorejas", "Hard_hat", "lentes_protectores", "language_icon", "theme_icon"}) {
+        require(std::ranges::find(controls, required) != controls.end(),
+            "Required launcher control is missing from the UI contract");
+    }
+    for (const std::string_view forbidden : {
+             "ppe_engine", "pose_engine", "ppe_onnx", "pose_onnx", "ppe_labels"}) {
+        require(std::ranges::find(controls, forbidden) == controls.end(),
+            "Model-path control leaked into the UI contract");
+    }
 }
 
 void testWindowsQuoting() {
@@ -260,6 +323,8 @@ int main() {
         {"RTSP camera source requirement", testRtspCameraSourceIsRequired},
         {"launcher model matrix and arguments", testModelMatrixAndArguments},
         {"PPE-only pose omission", testPpeOnlyOmitsPoseArguments},
+        {"operational settings and arguments", testOperationalSettingsAndArguments},
+        {"preferences persistence and UI contract", testPreferencesPersistenceAndUiContract},
         {"Windows command-line quoting", testWindowsQuoting},
         {"RTSP credential redaction", testCredentialRedaction},
         {"saved camera profile names", testSavedCameraProfileNames},

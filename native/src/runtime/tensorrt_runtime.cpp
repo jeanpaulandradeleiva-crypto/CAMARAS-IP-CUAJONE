@@ -163,6 +163,11 @@ TensorRtSession::TensorRtSession(
             input_dimensions.d[index] = selected_dimensions[static_cast<std::size_t>(index)];
         } else if (input_dimensions.d[index] <= 0) {
             throw std::runtime_error("YOLO input contains an invalid dimension; only -1 may be dynamic");
+        } else if (preferred_image_size && index >= 2
+            && input_dimensions.d[index] != selected_dimensions[static_cast<std::size_t>(index)]) {
+            throw std::runtime_error(
+                "TensorRT engine/profile does not support the selected imgsz; select the engine's "
+                "fixed size or install an engine with a compatible optimization profile");
         }
     }
     if (input_dimensions.d[0] != 1 || input_dimensions.d[1] != 3

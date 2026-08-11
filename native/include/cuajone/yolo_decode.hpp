@@ -65,6 +65,13 @@ YoloSchema validatePoseSchema(
 std::vector<Detection> decodeDetections(
     const TensorView& tensor,
     std::size_t class_count,
+    std::span<const float> class_confidence_thresholds,
+    float iou_threshold,
+    const LetterboxTransform& transform,
+    DecodeLimits limits = {});
+std::vector<Detection> decodeDetections(
+    const TensorView& tensor,
+    std::size_t class_count,
     float confidence_threshold,
     float iou_threshold,
     const LetterboxTransform& transform,

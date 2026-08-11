@@ -13,7 +13,7 @@ la [guía simple de instalación](../../INSTALACION_WINDOWS.md).
 2. Prepara la confianza privada del piloto, si corresponde.
 3. Verifica los hashes, los certificados y la firma antes de instalar.
 4. Instala con interfaz o en modo silencioso y conserva el registro MSI.
-5. Comprueba que el iniciador gráfico abre, sin configurar cámaras ni modelos.
+5. Comprueba que el iniciador gráfico abre sin configurar cámaras ni abrir fuentes.
 6. Usa Windows Installer para reparar, actualizar, desinstalar o volver a una
    versión anterior.
 
@@ -21,8 +21,8 @@ la [guía simple de instalación](../../INSTALACION_WINDOWS.md).
 
 El MSI está construido con WiX Toolset. Instala el iniciador gráfico
 `NexoAIVisionLauncher.exe`, el runtime de consola `NexoAIVision.exe`, las DLL runtime
-demostradas, licencias, avisos, hashes y procedencia. Por defecto incluye el bundle
-opcional de modelos ONNX para EPP y pose; no incluye credenciales, SDK, configuración
+demostradas, licencias, avisos, hashes y procedencia. Incluye obligatoriamente el bundle
+de modelos ONNX dinámicos para EPP y pose; no incluye credenciales, SDK, configuración
 de cámaras ni datos operativos.
 
 También falla cerrado si staging o extracción contienen Python, `.py`, `.pyc`,
@@ -107,7 +107,6 @@ C:\Program Files\NexoAI Vision
 se mantienen en estas carpetas, aunque se elija otro destino:
 
 ```text
-C:\ProgramData\NexoAI Vision\runtime\models
 C:\ProgramData\NexoAI Vision\runtime\config
 C:\ProgramData\NexoAI Vision\runtime\output
 C:\ProgramData\NexoAI Vision\runtime\logs
@@ -119,14 +118,14 @@ La carpeta `output` usa el
 runtime MSI. El MSI no genera `Reporte_Eventos_Seguridad_v2.xlsx`; dicho archivo es
 solo una exportación local/offline del harness Python de QA.
 
-Los usuarios estándar reciben permisos de modificación solo en esas cuatro
+Los usuarios estándar reciben permisos de modificación solo en esas tres
 carpetas. Los binarios conservan los permisos endurecidos heredados de
 `Program Files`. La instalación crea el acceso principal **NexoAI Vision**
 para el iniciador y conserva **Command Help** y **README** en el menú Inicio.
 
 Al actualizar desde Cuajone PPE Monitor, el MSI no mueve ni elimina
 `C:\ProgramData\Cuajone PPE Monitor`. NexoAI Vision escribe los datos nuevos en su
-propia carpeta y el iniciador conserva lectura de modelos desde la ruta heredada.
+propia carpeta; el iniciador no carga modelos desde la ruta heredada.
 El valor `ComputeMode` se busca primero en `HKLM\SOFTWARE\NexoAI Vision` y después
 en la clave heredada; una instalación nueva escribe solo la clave NexoAI Vision.
 
@@ -166,8 +165,9 @@ falla, entrega el archivo indicado por `/L*V` al equipo responsable.
 ## 5. Comprobar sin cámara
 
 Desde el menú Inicio, abre **NexoAI Vision**. La prueba operativa es correcta
-si aparece el formulario; ciérralo sin completar una fuente ni seleccionar
-modelos. El acceso **NexoAI Vision - Command Help** se conserva para soporte
+si aparece el formulario; confirma `imgsz`, ocho confianzas, idioma y tema, y
+ciérralo sin completar una fuente. No deben existir selectores de rutas de modelos.
+El acceso **NexoAI Vision - Command Help** se conserva para soporte
 avanzado y ejecuta únicamente `--help`.
 
 No uses `--preflight` como comprobación básica, porque selecciona CUDA y puede

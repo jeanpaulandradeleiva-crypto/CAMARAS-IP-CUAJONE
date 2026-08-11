@@ -274,6 +274,19 @@ void validateDecodeOptions(
     }
 }
 
+void validateClassConfidenceThresholds(
+    std::span<const float> thresholds,
+    std::size_t class_count) {
+    if (thresholds.size() != class_count) {
+        throw std::invalid_argument("PPE confidence threshold count must match the class count");
+    }
+    if (std::ranges::any_of(thresholds, [](float value) {
+            return !std::isfinite(value) || value < 0.0F || value > 1.0F;
+        })) {
+        throw std::invalid_argument("PPE confidence thresholds must be finite and in [0, 1]");
+    }
+}
+
 template <typename DetectionType>
 std::vector<DetectionType> nms(
     std::vector<DetectionType> detections,
@@ -333,18 +346,20 @@ YoloSchema validatePoseSchema(
 std::vector<Detection> decodeDetections(
     const TensorView& tensor,
     std::size_t class_count,
-    float confidence_threshold,
+    std::span<const float> class_confidence_thresholds,
     float iou_threshold,
     const LetterboxTransform& transform,
     DecodeLimits limits) {
-    validateDecodeOptions(confidence_threshold, iou_threshold, transform, limits);
+    validateClassConfidenceThresholds(class_confidence_thresholds, class_count);
+    validateDecodeOptions(0.0F, iou_threshold, transform, limits);
     const YoloSchema schema = validateDetectSchema(tensor.shape, class_count);
     const PredictionAccessor values(tensor, schema);
     BoundedCandidates<Detection> candidates(limits.max_nms_candidates);
     for (std::size_t prediction = 0; prediction < schema.predictions; ++prediction) {
         const auto raw_box = rawBox(values, prediction);
         const auto confidence = confidenceFor(values, schema, prediction);
-        if (!raw_box || !confidence || confidence->value < confidence_threshold
+        if (!raw_box || !confidence
+            || confidence->value < class_confidence_thresholds[static_cast<std::size_t>(confidence->class_id)]
             || raw_box->width <= 0.0F || raw_box->height <= 0.0F) continue;
         const Box box = modelBox(*raw_box);
         const Detection candidate{box, confidence->value, confidence->class_id};
@@ -359,6 +374,22 @@ std::vector<Detection> decodeDetections(
         return !hasFinitePositiveArea(detection.box);
     });
     return detections;
+}
+
+std::vector<Detection> decodeDetections(
+    const TensorView& tensor,
+    std::size_t class_count,
+    float confidence_threshold,
+    float iou_threshold,
+    const LetterboxTransform& transform,
+    DecodeLimits limits) {
+    if (!std::isfinite(confidence_threshold) || confidence_threshold < 0.0F
+        || confidence_threshold > 1.0F) {
+        throw std::invalid_argument("YOLO confidence threshold must be finite and in [0, 1]");
+    }
+    return decodeDetections(
+        tensor, class_count, std::vector<float>(class_count, confidence_threshold),
+        iou_threshold, transform, limits);
 }
 
 std::vector<PoseDetection> decodePoses(

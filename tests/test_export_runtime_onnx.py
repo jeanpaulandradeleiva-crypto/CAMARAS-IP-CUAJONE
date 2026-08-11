@@ -44,3 +44,20 @@ def test_detect_export_is_raw_and_pose_keeps_ultralytics_default() -> None:
     assert "end2end" not in pose_options
     assert detect_options["nms"] is False
     assert pose_options["nms"] is False
+    assert detect_options["dynamic"] is True
+    assert pose_options["dynamic"] is True
+    assert detect_options["device"] == "cpu"
+    assert pose_options["device"] == "cpu"
+
+
+def test_dynamic_contract_uses_exact_bounded_sizes() -> None:
+    module = importlib.import_module(MODULE_NAME)
+
+    assert module.MANIFEST_VERSION == 2
+    assert module.ALLOWED_IMAGE_SIZES == (640, 768, 960, 1280)
+    assert [module._prediction_count(size) for size in module.ALLOWED_IMAGE_SIZES] == [
+        8400,
+        12096,
+        18900,
+        33600,
+    ]

@@ -3,6 +3,7 @@
 #pragma once
 
 #include "cuajone/inference_session.hpp"
+#include "cuajone/inference_settings.hpp"
 #include "cuajone/model_manifest.hpp"
 
 #include <filesystem>
@@ -26,7 +27,8 @@ public:
     OnnxSession(
         const std::filesystem::path& model_path,
         ModelRole expected_role,
-        OnnxSessionOptions options = {});
+        OnnxSessionOptions options = {},
+        std::optional<int> image_size = std::nullopt);
     ~OnnxSession() override;
     OnnxSession(const OnnxSession&) = delete;
     OnnxSession& operator=(const OnnxSession&) = delete;

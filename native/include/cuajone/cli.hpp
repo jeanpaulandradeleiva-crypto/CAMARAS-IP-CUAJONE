@@ -4,6 +4,7 @@
 
 #include "cuajone/fall_analytics.hpp"
 #include "cuajone/compute.hpp"
+#include "cuajone/inference_settings.hpp"
 #include "cuajone/ppe_analytics.hpp"
 
 #include <array>
@@ -37,7 +38,11 @@ struct RuntimeConfig {
     std::size_t pose_class_count{1};
     std::array<int, 2> pose_keypoint_shape{17, 3};
     std::optional<int> device;
+    int image_size{kDefaultImageSize};
     float ppe_confidence{0.30F};
+    std::array<float, kPpeOutputLabels.size()> ppe_class_confidences{
+        0.30F, 0.30F, 0.30F, 0.30F, 0.30F, 0.30F, 0.30F, 0.30F,
+    };
     float pose_confidence{0.35F};
     float nms_iou{0.45F};
     float tracker_high_threshold{0.35F};

@@ -55,6 +55,9 @@ void validateTask(const EngineMetadata& metadata, const std::string& expected, c
 struct NativeEnginePipeline::Impl {
     explicit Impl(EnginePipelineConfig input)
         : config(std::move(input)), analytics(config.analytics) {
+        validateImageSize(config.image_size);
+        validatePpeClassConfidences(config.ppe_class_confidences);
+        summary.image_size = config.image_size;
         if (config.maximum_detections == 0
             || config.maximum_detections > DecodeLimits{}.max_nms_candidates) {
             throw std::invalid_argument("maximum_detections is outside the supported range");
@@ -89,7 +92,8 @@ struct NativeEnginePipeline::Impl {
         ppe_names = *config.ppe_labels;
         validateContiguousNames(ppe_names, "PPE ONNX model");
         ppe_classes = resolvePpeClasses(ppe_names);
-        ppe_session = std::make_unique<OnnxSession>(config.ppe_onnx, ModelRole::Ppe);
+        ppe_session = std::make_unique<OnnxSession>(
+            config.ppe_onnx, ModelRole::Ppe, OnnxSessionOptions{}, config.image_size);
         validateManifestLabels(static_cast<OnnxSession&>(*ppe_session).manifest(), ppe_names);
         validateDetectSchema(ppe_session->outputShape(), ppe_names.size());
         ppe_preprocessor = std::make_unique<LetterboxPreprocessor>(
@@ -104,7 +108,8 @@ struct NativeEnginePipeline::Impl {
             if (keypoint_shape[1] < 3) {
                 throw std::runtime_error("Pose keypoint dimensions must include x, y, and confidence");
             }
-            pose_session = std::make_unique<OnnxSession>(config.pose_onnx, ModelRole::Pose);
+            pose_session = std::make_unique<OnnxSession>(
+                config.pose_onnx, ModelRole::Pose, OnnxSessionOptions{}, config.image_size);
             validatePoseSchema(
                 pose_session->outputShape(), pose_class_count,
                 static_cast<std::size_t>(keypoint_shape[0]),
@@ -139,7 +144,8 @@ struct NativeEnginePipeline::Impl {
         if (ppe_names.empty() && config.ppe_labels) ppe_names = *config.ppe_labels;
         validateContiguousNames(ppe_names, "PPE engine");
         ppe_classes = resolvePpeClasses(ppe_names);
-        ppe_session = std::make_unique<TensorRtSession>(*ppe_file, ppe_file->metadata().image_size);
+        ppe_session = std::make_unique<TensorRtSession>(
+            *ppe_file, std::array{config.image_size, config.image_size});
         validateDetectSchema(ppe_session->outputShape(), ppe_names.size());
         ppe_preprocessor = std::make_unique<LetterboxPreprocessor>(
             ppe_session->inputWidth(), ppe_session->inputHeight());
@@ -167,7 +173,8 @@ struct NativeEnginePipeline::Impl {
             if (keypoint_shape[1] < 3) {
                 throw std::runtime_error("Pose keypoint dimensions must include x, y, and confidence");
             }
-            pose_session = std::make_unique<TensorRtSession>(*pose_file, pose_file->metadata().image_size);
+            pose_session = std::make_unique<TensorRtSession>(
+                *pose_file, std::array{config.image_size, config.image_size});
             validatePoseSchema(
                 pose_session->outputShape(), pose_class_count,
                 static_cast<std::size_t>(keypoint_shape[0]),
@@ -215,7 +222,7 @@ struct NativeEnginePipeline::Impl {
         ppe_classes = resolvePpeClasses(ppe_names);
         ppe_session = std::make_unique<OnnxSession>(config.ppe_onnx, ModelRole::Ppe, OnnxSessionOptions{
             OnnxExecutionProvider::Cuda, device,
-        });
+        }, config.image_size);
         validateManifestLabels(static_cast<OnnxSession&>(*ppe_session).manifest(), ppe_names);
         validateDetectSchema(ppe_session->outputShape(), ppe_names.size());
         ppe_preprocessor = std::make_unique<LetterboxPreprocessor>(
@@ -225,7 +232,7 @@ struct NativeEnginePipeline::Impl {
             keypoint_shape = config.pose_keypoint_shape;
             const auto pose_contract = validateOnnxPoseContract(pose_class_count, keypoint_shape);
             pose_session = std::make_unique<OnnxSession>(
-                config.pose_onnx, ModelRole::Pose, OnnxSessionOptions{});
+                config.pose_onnx, ModelRole::Pose, OnnxSessionOptions{}, config.image_size);
             validatePoseSchema(
                 pose_session->outputShape(), pose_contract.class_count,
                 static_cast<std::size_t>(pose_contract.keypoint_shape[0]),
@@ -249,7 +256,7 @@ struct NativeEnginePipeline::Impl {
         const auto ppe_output = ppe_session->infer(ppe_input.nchw);
         auto ppe_detections = decodeDetections(
             {ppe_output.values, ppe_output.shape},
-            ppe_names.size(), config.ppe_confidence, config.nms_iou,
+            ppe_names.size(), config.ppe_class_confidences, config.nms_iou,
             ppe_input.transform,
             {DecodeLimits{}.max_nms_candidates, config.maximum_detections});
         std::vector<PoseDetection> poses;

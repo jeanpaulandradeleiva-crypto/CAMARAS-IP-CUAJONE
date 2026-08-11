@@ -67,6 +67,27 @@ def test_native_backend_maps_cpu_onnx_config() -> None:
     assert config.ppe_onnx == "ppe.onnx"
     assert config.pose_onnx == "pose.onnx"
     assert config.device is None
+    assert config.image_size == 640
+    assert config.ppe_class_confidences == [0.30] * 8
+
+
+def test_native_backend_maps_dynamic_size_and_exact_class_thresholds() -> None:
+    thresholds = {label: (index + 1) / 10 for index, label in enumerate(PPE_LABELS)}
+    backend = NativeBackend(
+        QaRuntimeConfig.defaults(mode="ppe-only", backend="native"),
+        module=native_module(),
+        engine_config={
+            "backend": "cpu",
+            "ppe_onnx": "ppe.onnx",
+            "ppe_labels": FIXED_LABELS,
+            "image_size": 960,
+            "ppe_class_confidences": thresholds,
+        },
+    )
+
+    config = backend._engine_pipeline.config
+    assert config.image_size == 960
+    assert config.ppe_class_confidences == list(thresholds.values())
 
 
 @pytest.mark.parametrize(

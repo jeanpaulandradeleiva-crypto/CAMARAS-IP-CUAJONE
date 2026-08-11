@@ -66,6 +66,29 @@ std::array<int, 2> parsePair(const std::string& text, std::string_view option) {
     return {first, second};
 }
 
+std::pair<std::size_t, float> parsePpeClassConfidence(
+    const std::string& text,
+    std::string_view option) {
+    const auto separator = text.find('=');
+    if (separator == std::string::npos || separator == 0 || separator + 1 == text.size()
+        || text.find('=', separator + 1) != std::string::npos) {
+        throw std::invalid_argument(
+            std::string(option) + " requires semantic=value");
+    }
+    const std::string_view semantic(text.data(), separator);
+    const auto found = std::ranges::find(kPpeOutputLabels, semantic);
+    if (found == kPpeOutputLabels.end()) {
+        throw std::invalid_argument(
+            std::string(option) + " contains an unknown PPE semantic: " + std::string(semantic));
+    }
+    const float value = parseNumber<float>(
+        std::string_view(text).substr(separator + 1), option);
+    if (!std::isfinite(value) || value < 0.0F || value > 1.0F) {
+        throw std::invalid_argument(std::string(option) + " must be finite and in [0, 1]");
+    }
+    return {static_cast<std::size_t>(found - kPpeOutputLabels.begin()), value};
+}
+
 std::chrono::milliseconds parseMilliseconds(
     const std::string& text,
     std::string_view option) {
@@ -191,6 +214,8 @@ void validate(RuntimeConfig& config) {
         }
     };
     ratio(config.ppe_confidence, "--ppe-conf");
+    validateImageSize(config.image_size);
+    validatePpeClassConfidences(config.ppe_class_confidences);
     ratio(config.pose_confidence, "--pose-conf");
     ratio(config.nms_iou, "--nms-iou");
     ratio(config.tracker_high_threshold, "--tracker-high-threshold");
@@ -235,6 +260,7 @@ void validate(RuntimeConfig& config) {
 
 RuntimeConfig parseCommandLine(int argc, char** argv) {
     RuntimeConfig config;
+    std::array<std::optional<float>, kPpeOutputLabels.size()> class_confidence_overrides;
     for (int index = 1; index < argc; ++index) {
         const std::string_view option = argv[index];
         if (option == "--help" || option == "-h") config.help = true;
@@ -258,7 +284,18 @@ RuntimeConfig parseCommandLine(int argc, char** argv) {
         else if (option == "--pose-class-count") config.pose_class_count = parseNumber<std::size_t>(requireValue(index, argc, argv, option), option);
         else if (option == "--pose-kpt-shape") config.pose_keypoint_shape = parsePair(requireValue(index, argc, argv, option), option);
         else if (option == "--device") config.device = parseNumber<int>(requireValue(index, argc, argv, option), option);
+        else if (option == "--imgsz") config.image_size = parseNumber<int>(requireValue(index, argc, argv, option), option);
         else if (option == "--ppe-conf") config.ppe_confidence = parseNumber<float>(requireValue(index, argc, argv, option), option);
+        else if (option == "--ppe-class-conf") {
+            const auto [class_index, value] = parsePpeClassConfidence(
+                requireValue(index, argc, argv, option), option);
+            if (class_confidence_overrides[class_index]) {
+                throw std::invalid_argument(
+                    "Duplicate --ppe-class-conf semantic: "
+                    + std::string(kPpeOutputLabels[class_index]));
+            }
+            class_confidence_overrides[class_index] = value;
+        }
         else if (option == "--pose-conf") config.pose_confidence = parseNumber<float>(requireValue(index, argc, argv, option), option);
         else if (option == "--nms-iou") config.nms_iou = parseNumber<float>(requireValue(index, argc, argv, option), option);
         else if (option == "--max-det") config.max_det = parseNumber<std::size_t>(requireValue(index, argc, argv, option), option);
@@ -289,6 +326,12 @@ RuntimeConfig parseCommandLine(int argc, char** argv) {
         else if (option == "--fall-near-floor-ratio") config.fall.near_floor_ratio = parseNumber<float>(requireValue(index, argc, argv, option), option);
         else throw std::invalid_argument("Unknown option: " + std::string(option));
     }
+    config.ppe_class_confidences.fill(config.ppe_confidence);
+    for (std::size_t index = 0; index < class_confidence_overrides.size(); ++index) {
+        if (class_confidence_overrides[index]) {
+            config.ppe_class_confidences[index] = *class_confidence_overrides[index];
+        }
+    }
     validate(config);
     return config;
 }
@@ -317,7 +360,9 @@ void printHelp(std::ostream& output) {
         "  --pose-kpt-shape <count,dim> Pose schema fallback (default: 17,3)\n"
         "  --allow-nonperson-pose-class Allow non-person single-class pose metadata\n\n"
         "Core thresholds:\n"
+        "  --imgsz <size>               Inference size: 640, 768, 960, or 1280 (default: 640)\n"
         "  --ppe-conf <0..1>            PPE confidence (default: 0.30)\n"
+        "  --ppe-class-conf <name=value> Repeatable exact PPE class threshold override\n"
         "  --pose-conf <0..1>           Pose confidence (default: 0.35)\n"
         "  --nms-iou <0..1>             Class-aware NMS IoU (default: 0.45)\n"
         "  --max-det <number>           Final detections per engine (default: 300)\n"

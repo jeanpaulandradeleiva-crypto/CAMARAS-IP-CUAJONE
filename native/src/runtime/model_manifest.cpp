@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
 #include "cuajone/model_manifest.hpp"
+#include "cuajone/inference_settings.hpp"
 #include "cuajone/resource_limits.hpp"
 
 #define WIN32_LEAN_AND_MEAN
@@ -277,7 +278,11 @@ bool boolValue(const JsonValue& value, std::string_view name) {
     return *result;
 }
 
-TensorContract tensorContract(const JsonValue& value, std::string_view name, std::size_t maximum_elements) {
+TensorContract tensorContract(
+    const JsonValue& value,
+    std::string_view name,
+    std::size_t maximum_elements,
+    bool allow_dynamic) {
     const auto& object = objectValue(value, name);
     exactKeys(object, {"name", "element_type", "shape"}, name);
     if (stringValue(required(object, "element_type"), "tensor element_type", 16) != "float32") {
@@ -286,38 +291,94 @@ TensorContract tensorContract(const JsonValue& value, std::string_view name, std
     TensorContract result;
     result.name = stringValue(required(object, "name"), "tensor name", 256);
     for (const auto& dimension : arrayValue(required(object, "shape"), "tensor shape")) {
+        if (allow_dynamic) {
+            if (const auto* symbolic = std::get_if<std::string>(&dimension.value)) {
+                if (*symbolic != "height" && *symbolic != "width" && *symbolic != "predictions") {
+                    throw std::runtime_error("ONNX manifest contains an unsupported symbolic dimension");
+                }
+                result.shape.push_back(-1);
+                continue;
+            }
+        }
         result.shape.push_back(static_cast<std::int64_t>(integerValue(
             dimension, "tensor dimension",
             static_cast<std::size_t>(resource_limits::kMaximumTensorDimension))));
     }
-    resource_limits::checkedVolume(result.shape, maximum_elements, name);
+    if (!allow_dynamic || std::ranges::none_of(result.shape, [](std::int64_t value) { return value < 0; })) {
+        resource_limits::checkedVolume(result.shape, maximum_elements, name);
+    } else if (result.shape.empty() || result.shape.size() > resource_limits::kMaximumTensorRank) {
+        throw std::runtime_error(std::string(name) + " rank is outside the supported range");
+    }
     return result;
+}
+
+void parseDynamicShapeContract(const JsonValue& value, OnnxModelManifest& result) {
+    const auto& object = objectValue(value, "dynamic_shape");
+    exactKeys(object, {
+        "batch", "channels", "allowed_image_sizes", "minimum_image_size",
+        "optimum_image_size", "maximum_image_size",
+    }, "dynamic_shape");
+    if (integerValue(required(object, "batch"), "dynamic batch", 1) != 1
+        || integerValue(required(object, "channels"), "dynamic channels", 3) != 3) {
+        throw std::runtime_error("Dynamic ONNX contract requires fixed batch 1 and channels 3");
+    }
+    for (const auto& size : arrayValue(required(object, "allowed_image_sizes"), "allowed_image_sizes")) {
+        result.allowed_image_sizes.push_back(static_cast<int>(integerValue(
+            size, "allowed image size", kMaximumImageSize)));
+    }
+    const std::vector<int> expected(kAllowedImageSizes.begin(), kAllowedImageSizes.end());
+    if (result.allowed_image_sizes != expected) {
+        throw std::runtime_error("Dynamic ONNX allowed_image_sizes must be exactly 640, 768, 960, and 1280");
+    }
+    result.minimum_image_size = static_cast<int>(integerValue(
+        required(object, "minimum_image_size"), "minimum_image_size", kMaximumImageSize));
+    result.optimum_image_size = static_cast<int>(integerValue(
+        required(object, "optimum_image_size"), "optimum_image_size", kMaximumImageSize));
+    result.maximum_image_size = static_cast<int>(integerValue(
+        required(object, "maximum_image_size"), "maximum_image_size", kMaximumImageSize));
+    if (result.minimum_image_size != 640 || result.optimum_image_size != 640
+        || result.maximum_image_size != 1280) {
+        throw std::runtime_error("Dynamic ONNX min/opt/max contract must be 640/640/1280");
+    }
 }
 
 OnnxModelManifest parseManifest(std::string_view json) {
     const JsonValue parsed = JsonParser(json).parse();
     const auto& root = objectValue(parsed, "ONNX manifest");
     const std::string role = stringValue(required(root, "role"), "role", 16);
+    const std::size_t schema_version = integerValue(
+        required(root, "schema_version"), "schema_version", 2);
+    if (schema_version != 1 && schema_version != 2) {
+        throw std::runtime_error("Unsupported ONNX manifest schema_version");
+    }
     if (role == "ppe") {
-        exactKeys(root, {
+        if (schema_version == 1) exactKeys(root, {
             "schema_version", "artifact_type", "role", "model_file", "model_sha256",
             "model_size_bytes", "external_data", "custom_operators", "input", "output",
             "provenance", "label_contract", "labels",
         }, "ONNX manifest");
-    } else {
-        exactKeys(root, {
-        "schema_version", "artifact_type", "role", "model_file", "model_sha256",
-        "model_size_bytes", "external_data", "custom_operators", "input", "output",
-        "provenance",
+        else exactKeys(root, {
+            "schema_version", "artifact_type", "role", "model_file", "model_sha256",
+            "model_size_bytes", "external_data", "custom_operators", "input", "output",
+            "provenance", "label_contract", "labels", "dynamic_shape",
         }, "ONNX manifest");
-    }
-    if (integerValue(required(root, "schema_version"), "schema_version", 1) != 1) {
-        throw std::runtime_error("Unsupported ONNX manifest schema_version");
+    } else {
+        if (schema_version == 1) exactKeys(root, {
+            "schema_version", "artifact_type", "role", "model_file", "model_sha256",
+            "model_size_bytes", "external_data", "custom_operators", "input", "output",
+            "provenance",
+        }, "ONNX manifest");
+        else exactKeys(root, {
+            "schema_version", "artifact_type", "role", "model_file", "model_sha256",
+            "model_size_bytes", "external_data", "custom_operators", "input", "output",
+            "provenance", "dynamic_shape",
+        }, "ONNX manifest");
     }
     if (stringValue(required(root, "artifact_type"), "artifact_type", 16) != "onnx") {
         throw std::runtime_error("ONNX manifest artifact_type must be onnx");
     }
     OnnxModelManifest result;
+    result.schema_version = schema_version;
     if (role == "ppe") result.role = ModelRole::Ppe;
     else if (role == "pose") result.role = ModelRole::Pose;
     else throw std::runtime_error("ONNX manifest role must be ppe or pose");
@@ -339,12 +400,22 @@ OnnxModelManifest parseManifest(std::string_view json) {
     if (boolValue(required(root, "custom_operators"), "custom_operators")) {
         throw std::runtime_error("ONNX custom operators are prohibited");
     }
-    result.input = tensorContract(required(root, "input"), "ONNX input contract", resource_limits::kMaximumInputElements);
-    result.output = tensorContract(required(root, "output"), "ONNX output contract", resource_limits::kMaximumOutputElements);
+    result.input = tensorContract(
+        required(root, "input"), "ONNX input contract",
+        resource_limits::kMaximumInputElements, schema_version == 2);
+    result.output = tensorContract(
+        required(root, "output"), "ONNX output contract",
+        resource_limits::kMaximumOutputElements, schema_version == 2);
     if (result.input.shape.size() != 4 || result.input.shape[0] != 1 || result.input.shape[1] != 3
-        || result.input.shape[2] > resource_limits::kMaximumImageDimension
-        || result.input.shape[3] > resource_limits::kMaximumImageDimension) {
+        || (schema_version == 1 && (result.input.shape[2] > kMaximumImageSize
+            || result.input.shape[3] > kMaximumImageSize))) {
         throw std::runtime_error("ONNX input contract must be bounded batch-1, three-channel NCHW");
+    }
+    if (schema_version == 2) {
+        if (result.input.shape != std::vector<std::int64_t>({1, 3, -1, -1})) {
+            throw std::runtime_error("Dynamic ONNX input shape must be [1,3,height,width]");
+        }
+        parseDynamicShapeContract(required(root, "dynamic_shape"), result);
     }
     const auto& provenance = objectValue(required(root, "provenance"), "provenance");
     exactKeys(provenance, {"source_uri", "exporter", "license"}, "ONNX provenance");
@@ -359,8 +430,19 @@ OnnxModelManifest parseManifest(std::string_view json) {
         for (const auto& label : arrayValue(required(root, "labels"), "PPE labels")) {
             result.labels.push_back(stringValue(label, "PPE label", 64));
         }
-        if (result.label_contract != "always-all-seven-v2" || result.labels.size() != 8) {
+        const std::vector<std::string> expected_labels(
+            kPpeOutputLabels.begin(), kPpeOutputLabels.end());
+        if (result.label_contract != "always-all-seven-v2" || result.labels != expected_labels) {
             throw std::runtime_error("PPE manifest must bind the always-all-seven-v2 label contract");
+        }
+    }
+    if (schema_version == 2) {
+        const std::vector<std::int64_t> expected_output = result.role == ModelRole::Ppe
+            ? std::vector<std::int64_t>{1, 12, -1}
+            : std::vector<std::int64_t>{1, 300, 57};
+        if (result.output.shape != expected_output) {
+            throw std::runtime_error(
+                "Dynamic ONNX output must match the approved bounded role schema");
         }
     }
     return result;
@@ -616,6 +698,10 @@ std::string_view modelRoleName(ModelRole role) noexcept {
     return role == ModelRole::Ppe ? "ppe" : "pose";
 }
 
+OnnxModelManifest parseOnnxModelManifest(std::string_view json) {
+    return parseManifest(json);
+}
+
 std::string sha256Hex(std::span<const std::byte> bytes) {
     return calculateSha256(bytes);
 }
@@ -637,7 +723,7 @@ VerifiedOnnxModel verifyOnnxModel(const std::filesystem::path& model_path, Model
         manifest_path, resource_limits::kMaximumManifestBytes, "ONNX manifest");
     const std::string_view manifest_json(
         reinterpret_cast<const char*>(manifest_bytes.data()), manifest_bytes.size());
-    OnnxModelManifest manifest = parseManifest(manifest_json);
+    OnnxModelManifest manifest = parseOnnxModelManifest(manifest_json);
     if (manifest.role != expected_role) {
         throw std::runtime_error(
             "ONNX manifest role is " + std::string(modelRoleName(manifest.role))

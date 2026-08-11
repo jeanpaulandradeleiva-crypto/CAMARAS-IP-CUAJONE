@@ -173,6 +173,16 @@ void testDetectSchemaDecodeAndNms() {
     require(decoded.size() == 1 && decoded[0].class_id == 0, "Detect decode confidence failed");
     requireNear(decoded[0].box.x1, 80.0F, 0.01F, "Detect box decode failed");
 
+    // Class 0 wins argmax at 0.60 but fails its 0.70 gate. Class 1 must not be
+    // selected merely because its lower 0.40 threshold would accept 0.50.
+    const std::vector<float> class_gate_values{100, 100, 40, 60, 0.60F, 0.50F};
+    const std::array<std::int64_t, 3> class_gate_shape{1, 6, 1};
+    const std::array<float, 2> class_thresholds{0.70F, 0.40F};
+    require(decodeDetections(
+                {class_gate_values, class_gate_shape}, 2, class_thresholds,
+                0.45F, transform).empty(),
+        "Per-class thresholding reclassified an argmax rejection");
+
     const std::vector<float> objectness_values{100, 100, 40, 60, 0.8F, 0.75F, 0.1F, 0.1F};
     const std::array<std::int64_t, 3> objectness_shape{1, 1, 8};
     const TensorView objectness_tensor{objectness_values, objectness_shape};
@@ -321,6 +331,36 @@ void testCliUrlsAndInvariantDefense() {
     require(parsed.max_det == 42 && parsed.rtsp_transport == RtspTransport::Udp
             && parsed.capture_open_timeout.count() == 0 && parsed.device == 2,
         "CLI did not preserve max-det, transport, zero timeout, or device");
+    auto inference_settings = base;
+    inference_settings.insert(inference_settings.end(), {
+        "--imgsz", "1280",
+        "--ppe-conf", "0.25",
+        "--ppe-class-conf", "Gloves=0.11",
+        "--ppe-class-conf", "lentes_protectores=0.88",
+    });
+    const RuntimeConfig parsed_inference = parse(inference_settings);
+    require(parsed_inference.image_size == 1280
+            && parsed_inference.ppe_class_confidences[0] == 0.11F
+            && parsed_inference.ppe_class_confidences[1] == 0.25F
+            && parsed_inference.ppe_class_confidences[7] == 0.88F,
+        "CLI did not apply global fallback plus exact class overrides");
+    for (const std::string invalid_size : {"0", "639", "800", "1281"}) {
+        auto invalid = base;
+        invalid.insert(invalid.end(), {"--imgsz", invalid_size});
+        requireThrows([&] { parse(invalid); }, "CLI accepted an unsupported imgsz");
+    }
+    for (const std::string invalid_threshold : {
+             "unknown=0.2", "Gloves=nan", "Gloves=-0.1", "Gloves=1.1", "Gloves"}) {
+        auto invalid = base;
+        invalid.insert(invalid.end(), {"--ppe-class-conf", invalid_threshold});
+        requireThrows([&] { parse(invalid); }, "CLI accepted an invalid PPE class threshold");
+    }
+    auto duplicate_threshold = base;
+    duplicate_threshold.insert(duplicate_threshold.end(), {
+        "--ppe-class-conf", "Vest=0.2", "--ppe-class-conf", "Vest=0.3",
+    });
+    requireThrows([&] { parse(duplicate_threshold); },
+        "CLI accepted a duplicate PPE class threshold");
     auto byte_track = base;
     byte_track.insert(byte_track.end(), {
         "--tracker-high-threshold", "0.4", "--tracker-match-threshold", "0.7",

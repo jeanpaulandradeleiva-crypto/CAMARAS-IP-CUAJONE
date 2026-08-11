@@ -35,7 +35,7 @@ tensores. Para ONNX CUDA ejecuta además un warmup aislado con un frame BGR real
 | `engine_reader` | Acepta planes raw y engines Ultralytics con prefijo reconocible; valida JSON estricto, Unicode y IDs de clase. |
 | `compute` | Política Auto/CUDA/CPU, Driver API mínimo, selección multidispositivo y probe DXGI con carga dinámica de `nvcuda.dll`. |
 | `model_manifest` | Verifica tipo, rol, tamaño, SHA-256, procedencia, I/O y protobuf ONNX antes de crear una sesión. |
-| `onnx_session` | Sesión ONNX Runtime CPU o CUDA creada desde los bytes ya verificados, con un input/output FP32 y shapes fijos. |
+| `onnx_session` | Sesión ONNX Runtime CPU o CUDA creada desde bytes verificados, con forma concreta seleccionada y salida real acotada por ejecución. |
 | `tensorrt_runtime` | Backend opcional: RAII para runtime, contexto, stream y buffers CUDA. |
 | `preprocess` | Letterbox OpenCV, BGR a RGB, normalización y empaquetado NCHW FP32; conserva escala y padding exactos. |
 | `yolo_decode` | Valida y decodifica PPE raw, pose raw y pose end-to-end `[1,300,57]`; rechaza valores no finitos y limita candidatos. |
@@ -174,12 +174,13 @@ esto evita que Windows resuelva por error otra versión instalada en `System32`.
 El launcher resuelve el runtime hermano mediante la ruta absoluta de su propio
 módulo y usa `CreateProcessW`; no busca ejecutables mediante `PATH`. La interfaz
 expone la URL RTSP de la cámara, carpeta de salida, modo `PPE only`/`PPE + fall`,
-cómputo `Auto`/`CUDA`/`CPU`, los cuatro artefactos de modelo, labels EPP y `Show`.
+cómputo `Auto`/`CUDA`/`CPU`, `imgsz` 640/768/960/1280, ocho confianzas EPP y `Show`.
 `Load .env...` importa la configuración compatible del runtime nativo y conserva el
 archivo local fuera de Git; las opciones exclusivas de Python se ignoran y se
-informan en el estado. El selector `Language` permite cambiar inmediatamente las
-etiquetas, botones y modos de análisis entre English y Español sin alterar la
-configuración o los argumentos del runtime.
+informan en el estado. Los botones superiores cambian idioma y tema claro/oscuro.
+Idioma, tema, `imgsz` y confianzas se persisten atómicamente por usuario en
+`%LocalAppData%\NexoAI Vision\operator-settings-v1.txt`; las credenciales permanecen
+exclusivamente en Credential Manager.
 `Validate` ejecuta el mismo plan con `--preflight`; `Start` inicia el procesamiento.
 `Saved camera` usa el `Camera ID` como nombre de perfil y guarda la URL RTSP
 completa solamente como una credencial genérica por usuario en Windows Credential
@@ -188,22 +189,21 @@ no exportan ni registran la URL. Las URLs RTSP completas nunca se escriben en
 `.env`, ProgramData ni logs; la salida del runtime continúa redactando userinfo
 antes de persistirse.
 
-Las rutas iniciales se derivan de `FOLDERID_ProgramData`:
+Los modelos se resuelven únicamente desde el bundle administrado junto al runtime:
 
 ```text
-%ProgramData%\NexoAI Vision\runtime\
-  models\ppe.engine
-  models\pose.engine
+<carpeta del runtime>\
   models\ppe.onnx
   models\pose.onnx
+%ProgramData%\NexoAI Vision\runtime\
   output\
   logs\cuajone-<timestamp>.log
 ```
 
-La validación estructural replica la matriz CLI: CUDA exige el engine EPP y, en
-`PPE + fall`, el engine pose; CPU exige los ONNX equivalentes, cada manifest
-`<modelo>.onnx.manifest.json` adyacente y labels EPP; Auto exige al menos un
-candidato completo. `PPE only` nunca emite argumentos pose. El launcher no analiza
+La validación estructural exige un conjunto administrado completo. CPU requiere los
+ONNX y manifests adyacentes; CUDA puede usar internamente un par TensorRT completo
+compatible o el mismo conjunto ONNX. `PPE only` nunca emite argumentos pose. No hay
+controles ni importación `.env` para rutas o labels. El launcher no analiza
 el contenido de engines, ONNX ni manifests: el `--preflight` del runtime conserva
 esa autoridad.
 
@@ -249,16 +249,18 @@ build\windows-msvc\Release\NexoAIVision.exe `
 ```
 
 Para CPU reemplaza engines por `--ppe-onnx`, `--pose-onnx` y declara el orden de
-clases con `--ppe-labels`. CPU exige modelos FP32 con batch 1, NCHW fijo y un input
-y output. PPE usa output raw; pose acepta raw o el contrato end-to-end aprobado
-`[1,300,57]`. Shapes dinámicos o múltiples outputs fallan cerrado.
+clases con `--ppe-labels`. `--imgsz` acepta únicamente 640, 768, 960 o 1280.
+`--ppe-class-conf semantic=value` es repetible y exige las semánticas exactas; el
+decoder elige argmax antes de aplicar el umbral de esa clase. `--ppe-conf` permanece
+como fallback global. PPE usa output raw `[1,12,N]`; pose usa el contrato end-to-end
+aprobado `[1,300,57]`.
 
 Cada `<modelo>.onnx` requiere un `<modelo>.onnx.manifest.json` adyacente. El sidecar
 es parte del artefacto aprobado y usa exactamente este contrato:
 
 ```json
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "artifact_type": "onnx",
   "role": "ppe",
   "model_file": "ppe.onnx",
@@ -266,8 +268,16 @@ es parte del artefacto aprobado y usa exactamente este contrato:
   "model_size_bytes": 123456,
   "external_data": false,
   "custom_operators": false,
-  "input": { "name": "images", "element_type": "float32", "shape": [1, 3, 640, 640] },
-  "output": { "name": "output0", "element_type": "float32", "shape": [1, 12, 8400] },
+  "input": { "name": "images", "element_type": "float32", "shape": [1, 3, "height", "width"] },
+  "output": { "name": "output0", "element_type": "float32", "shape": [1, 12, "predictions"] },
+  "dynamic_shape": {
+    "batch": 1,
+    "channels": 3,
+    "allowed_image_sizes": [640, 768, 960, 1280],
+    "minimum_image_size": 640,
+    "optimum_image_size": 640,
+    "maximum_image_size": 1280
+  },
   "provenance": {
     "source_uri": "https://example.invalid/approved-model-record",
     "exporter": "approved-exporter-version",
@@ -293,7 +303,8 @@ Consulta todas las opciones con:
 build\windows-msvc\Release\NexoAIVision.exe --help
 ```
 
-Opciones principales de calibración: `--ppe-conf`, `--pose-conf`, `--nms-iou`,
+Opciones principales de calibración: `--imgsz`, `--ppe-conf`, `--ppe-class-conf`,
+`--pose-conf`, `--nms-iou`,
 `--max-det`, `--tracker-high-threshold`, `--tracker-match-threshold`,
 `--tracker-max-age`, `--tracker-max-tracks`, `--tracker-frame-rate`,
 `--target-fps`, `--ppe-window`, `--ppe-min-samples`, `--ppe-present-ratio`,
@@ -353,7 +364,7 @@ Se admiten solamente:
   `x1,y1,x2,y2,confidence,class_id,17*(x,y,confidence)`.
 
 Los límites previos a reserva son: manifest ONNX 64 KiB, modelo ONNX 256 MiB,
-engine TensorRT 1 GiB, rank máximo 8, H/W máximo 4096, entrada máxima
+engine TensorRT 1 GiB, rank máximo 8, H/W máximo 1280, entrada máxima
 `3 * 4096 * 4096` elementos, salida máxima 16 777 216 elementos y 256 MiB por
 tensor. Una dimensión individual no puede superar 1 000 000. Las multiplicaciones
 de elementos y bytes se comprueban antes de reservar memoria CPU o CUDA.

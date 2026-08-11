@@ -161,7 +161,9 @@ EnginePipelineConfig enginePipelineConfig(
         config.pose_keypoint_shape,
         config.allow_nonperson_pose_class,
         config.device,
+        config.image_size,
         config.ppe_confidence,
+        config.ppe_class_confidences,
         config.pose_confidence,
         config.nms_iou,
         config.max_det,
@@ -208,6 +210,7 @@ std::unique_ptr<NativeEnginePipeline> runBasePreflight(
 #endif
     const auto& summary = pipeline->summary();
     std::cout << "OpenCV: " << CV_VERSION << " | provider: " << summary.provider << '\n';
+    std::cout << "Inference imgsz: " << summary.image_size << 'x' << summary.image_size << '\n';
     if (selection.backend == ComputeBackend::Cuda) {
         std::cout << "CUDA device " << summary.device_index << ": " << summary.device_name
                    << " | SM " << summary.compute_major << '.' << summary.compute_minor

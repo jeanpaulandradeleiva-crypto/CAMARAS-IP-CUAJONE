@@ -12,7 +12,7 @@ import numpy as np
 
 from ..config import QaRuntimeConfig
 from ..contracts import CONTRACT_VERSION, CONTRACT_VERSION_V2, validate_instance, validate_instance_v2
-from ..ppe import native_item_ids, validate_ppe_labels
+from ..ppe import PPE_LABELS, native_item_ids, validate_ppe_labels
 from .base import BackendResult
 
 
@@ -100,7 +100,18 @@ class NativeBackend:
             native_engine.pose_class_count = int(engine_config.get("pose_class_count", 1))
             native_engine.pose_keypoint_shape = engine_config.get("pose_keypoint_shape", [17, 3])
             native_engine.allow_nonperson_pose_class = bool(engine_config.get("allow_nonperson_pose_class", False))
+            native_engine.image_size = int(engine_config.get("image_size", 640))
             native_engine.ppe_confidence = config.values["thresholds"]["ppe_confidence"]
+            class_confidences = engine_config.get("ppe_class_confidences")
+            if class_confidences is None:
+                native_engine.ppe_class_confidences = [native_engine.ppe_confidence] * 8
+            else:
+                if not isinstance(class_confidences, dict) or list(class_confidences) != list(PPE_LABELS):
+                    raise ValueError("ppe_class_confidences must bind the exact eight PPE labels in order")
+                values = [float(class_confidences[label]) for label in PPE_LABELS]
+                if any(not 0.0 <= value <= 1.0 for value in values):
+                    raise ValueError("ppe_class_confidences values must be in [0, 1]")
+                native_engine.ppe_class_confidences = values
             native_engine.pose_confidence = config.values["thresholds"]["pose_confidence"]
             native_engine.nms_iou = config.values["thresholds"]["nms_iou"]
             native_engine.maximum_detections = config.values["thresholds"]["maximum_detections"]

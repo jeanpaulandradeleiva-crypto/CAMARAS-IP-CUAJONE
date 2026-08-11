@@ -139,15 +139,11 @@
     <Feature Id="MainFeature" Title="NexoAI Vision" Level="1">
       <ComponentGroupRef Id="PayloadComponents" />
       <ComponentGroupRef Id="RuntimeDataDirectories" />
+      <ComponentGroupRef Id="ModelComponents" />
     </Feature>
     <?if $(var.HasCudaPayload)=1 ?>
     <Feature Id="CudaRuntimeFeature" Title="NVIDIA CUDA acceleration" Description="ONNX Runtime CUDA provider, installed only after a compatible NVIDIA CUDA probe succeeds." Level="1">
       <ComponentGroupRef Id="CudaPayloadComponents" />
-    </Feature>
-    <?endif?>
-    <?if $(var.HasModels)=1 ?>
-    <Feature Id="ModelsFeature" Title="AI Models (ONNX)" Description="Bundled ONNX models for PPE and pose detection. Uncheck to skip; the launcher can browse to external files." Level="1">
-      <ComponentGroupRef Id="ModelComponents" />
     </Feature>
     <?endif?>
   </Package>
@@ -160,7 +156,6 @@
     <StandardDirectory Id="CommonAppDataFolder">
       <Directory Id="APPLICATIONDATAFOLDER" Name="NexoAI Vision">
         <Directory Id="RUNTIMEFOLDER" Name="runtime">
-          <Directory Id="MODELSFOLDER" Name="models" />
           <Directory Id="CONFIGFOLDER" Name="config" />
           <Directory Id="OUTPUTFOLDER" Name="output" />
           <Directory Id="LOGSFOLDER" Name="logs" />
@@ -175,13 +170,6 @@
 
   <Fragment>
     <ComponentGroup Id="RuntimeDataDirectories">
-      <Component Id="RuntimeModelsDirectory" Directory="MODELSFOLDER" Guid="D35B10E0-97B1-4CB4-A638-8BD836FF77F5">
-        <CreateFolder>
-          <util:PermissionEx User="Users" GenericRead="yes" GenericWrite="yes" GenericExecute="yes"
-                             CreateFile="yes" CreateChild="yes" Delete="yes" DeleteChild="yes"
-                             ReadPermission="yes" Synchronize="yes" Traverse="yes" />
-        </CreateFolder>
-      </Component>
       <Component Id="RuntimeConfigDirectory" Directory="CONFIGFOLDER" Guid="0CE24DFA-B744-43D4-999C-4CB3886BE0A5">
         <CreateFolder>
           <util:PermissionEx User="Users" GenericRead="yes" GenericWrite="yes" GenericExecute="yes"

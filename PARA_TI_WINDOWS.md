@@ -41,9 +41,9 @@ RTSP y no inicia inferencia.
 | Builds desde fuente | Flujo de ingeniería futuro; requiere firma, revisión y sus propios gates. |
 
 El MSI no instala Python, PyTorch, Ultralytics, CVAT, Supervision, `cuajone_qa`, el
-binding `.pyd`, fixtures, engines TensorRT ni recibos de paridad. Instala por defecto
-el bundle ONNX opcional de EPP y pose; cualquier modelo o engine externo sigue siendo
-un artefacto aprobado aparte. Los demás componentes son exclusivamente de desarrollo y QA.
+binding `.pyd`, fixtures, engines TensorRT ni recibos de paridad. Instala como parte
+obligatoria del producto el bundle ONNX dinámico de EPP y pose. Los demás componentes
+son exclusivamente de desarrollo y QA.
 
 ## Verificar SHA y firma
 
@@ -135,7 +135,7 @@ msiexec.exe /i "<RUTA_MSI>" /qn /norestart `
 
 Durante una actualización desde Cuajone PPE Monitor, conserva la carpeta heredada
 sin moverla ni eliminarla. NexoAI Vision escribe datos nuevos en su propia carpeta
-y el iniciador puede leer modelos de la ubicación heredada. El modo de cómputo se
+y carga modelos solo desde el bundle administrado junto al runtime. El modo de cómputo se
 lee primero desde `HKLM\SOFTWARE\NexoAI Vision\ComputeMode` y, si no existe, desde
 la clave heredada; las instalaciones nuevas escriben solo la clave NexoAI Vision.
 
@@ -153,8 +153,8 @@ versión de Windows. La comprobación aceptada es:
 
 1. Confirma el producto en Aplicaciones instaladas.
 2. Abre **NexoAI Vision** desde Inicio.
-3. Confirma que el formulario permite elegir fuente, análisis, cómputo, modelos
-   externos, salida y visualización.
+3. Confirma que el formulario permite elegir fuente, análisis, cómputo, `imgsz`,
+   ocho confianzas, salida, idioma, tema y visualización, sin rutas de modelos.
 4. Cierra el iniciador sin completar credenciales, abrir la fuente o cargar modelos.
 
 No uses `--preflight` como smoke test: puede seleccionar CUDA y deserializar
@@ -168,11 +168,10 @@ El runtime de consola permanece instalado en
 de soporte requiera opciones explícitas, `--help`, el probe JSON o automatización.
 No entregues al usuario normal una línea de comandos con credenciales RTSP.
 
-El MSI incluye por defecto los modelos ONNX aprobados de EPP y pose con sus
-manifests adyacentes. Los modelos fuente o de desarrollo permanecen fuera del MSI;
-GPU usa engines TensorRT externos aprobados. Conserva hashes, procedencia y
-autorización junto con la evidencia de despliegue, y no copies modelos adicionales
-al directorio de binarios.
+El MSI incluye obligatoriamente los modelos ONNX aprobados de EPP y pose con sus
+manifests adyacentes. Los modelos fuente o de desarrollo permanecen fuera del MSI.
+Conserva hashes, procedencia y autorización junto con la evidencia de despliegue,
+y no copies modelos adicionales al directorio de binarios.
 
 La salida de producción sigue el
 [contrato EPP v2](docs/ppe-contract-v2.md):

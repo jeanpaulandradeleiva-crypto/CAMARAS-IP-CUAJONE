@@ -40,8 +40,8 @@ PowerShell ni escribir comandos.
    - URL RTSP de la cámara autorizada (`rtsp://` o `rtsps://`);
    - modo de análisis: EPP solamente o EPP y caídas;
    - modo de cómputo: Auto, GPU o CPU;
-    - los modelos incluidos si conservaste marcada la característica **AI Models (ONNX)**; selecciona archivos externos solo si el responsable te indicó otro modelo;
-    - las etiquetas EPP que el bundle incluido completa por defecto; ajusta el orden exacto solo para un modelo CPU externo;
+   - tamaño de inferencia: 640, 768, 960 o 1280;
+   - confianza para cada una de las ocho clases EPP;
    - carpeta donde se guardarán los resultados;
    - si deseas mostrar la ventana de análisis.
 
@@ -65,19 +65,19 @@ uso avanzado. No es la forma normal de iniciar el monitor.
 ## Configurar cámaras después
 
 La instalación y la configuración de cámaras son pasos separados. El instalador
-no agrega una cámara e incluye por defecto el bundle opcional ONNX de EPP y pose.
-Después de instalar, el iniciador gráfico permite elegir la cámara, el modo, los
-modelos externos aprobados cuando sean necesarios y la salida sin reinstalar la
-aplicación.
+ no agrega una cámara e incluye obligatoriamente el bundle ONNX de EPP y pose.
+Después de instalar, el iniciador gráfico permite elegir la cámara, el modo, el
+tamaño de inferencia, las confianzas y la salida sin reinstalar la aplicación.
 
-La versión piloto tiene un alcance limitado. El bundle ONNX incluido se instala
-junto al runtime; los modelos externos siguen requiriendo aprobación de TI o del
-responsable de la aplicación. La configuración y los datos mutables se guardan
-fuera de la carpeta de instalación, bajo `C:\ProgramData\NexoAI Vision`.
+La versión piloto tiene un alcance limitado. El bundle ONNX administrado se instala
+junto al runtime y no puede sustituirse desde la interfaz. Idioma, tema, tamaño y
+confianzas se guardan por usuario en LocalAppData; las credenciales RTSP permanecen
+en Windows Credential Manager. La salida operativa se guarda bajo
+`C:\ProgramData\NexoAI Vision`.
 
 Al actualizar desde Cuajone PPE Monitor, NexoAI Vision usa la carpeta nueva para
-archivos nuevos. No elimina ni mueve la carpeta anterior; el iniciador también
-detecta modelos que permanezcan bajo `C:\ProgramData\Cuajone PPE Monitor`.
+archivos nuevos. No elimina ni mueve la carpeta anterior, pero tampoco carga modelos
+desde la ubicación heredada.
 
 Si una carpeta de salida conserva `native_events.csv` o `evidence/`, son resultados
 de una versión nativa anterior. No los borres ni los combines con el CSV nuevo;
@@ -94,8 +94,8 @@ cámaras.
 | --- | --- |
 | Windows no confía en el instalador | No cambies la seguridad del equipo. Contacta a TI. |
 | La instalación falla | Pide a TI que genere el registro MSI y envíaselo. |
-| El iniciador indica que falta un campo | Revisa la cámara, el modo, los modelos requeridos y la carpeta de salida. |
-| El iniciador rechaza un modelo | Conserva el bundle ONNX incluido o usa únicamente archivos externos aprobados para el modo GPU o CPU elegido; contacta al responsable. |
+| El iniciador indica que falta un campo | Revisa la cámara, el modo y la carpeta de salida. |
+| El iniciador indica que falta el bundle administrado | Repara o reinstala el MSI aprobado; no selecciones modelos externos. |
 | GPU aparece como no disponible | Elige Auto o CPU y pide a TI revisar hardware/driver por separado. No instales drivers desde el MSI. |
 
 ## Para TI
