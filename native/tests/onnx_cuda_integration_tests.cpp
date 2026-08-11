@@ -126,11 +126,19 @@ void verifyCudaProfile(
         "Staged PPE model must expose exactly one input and one output");
     const auto input_type_info = session.GetInputTypeInfo(0);
     const auto input_info = input_type_info.GetTensorTypeAndShapeInfo();
-    const auto shape = input_info.GetShape();
+    const auto declared_shape = input_info.GetShape();
     require(input_info.GetElementType() == ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT
-            && shape.size() == 4 && shape[0] == 1 && shape[1] == 3
-            && shape[2] > 0 && shape[3] > 0,
-        "Staged PPE model input is not fixed batch-1 FP32 NCHW");
+            && declared_shape.size() == 4 && declared_shape[0] == 1 && declared_shape[1] == 3,
+        "Staged PPE model input is not batch-1 FP32 NCHW");
+    const bool static_spatial = declared_shape[2] > 0 && declared_shape[3] > 0;
+    const bool dynamic_spatial = declared_shape[2] == -1 && declared_shape[3] == -1;
+    require(static_spatial || dynamic_spatial,
+        "Staged PPE model input must use fixed or bounded dynamic spatial dimensions");
+    auto shape = declared_shape;
+    if (dynamic_spatial) {
+        shape[2] = 640;
+        shape[3] = 640;
+    }
     const std::size_t input_elements = std::accumulate(
         shape.begin(), shape.end(), std::size_t{1},
         [](std::size_t product, std::int64_t dimension) {
@@ -154,6 +162,36 @@ void verifyCudaProfile(
     const std::string profile = readText(profile_path);
     require(std::regex_search(profile, std::regex(R"("provider"\s*:\s*"CUDAExecutionProvider")")),
         "CUDAExecutionProvider did not execute the staged PPE graph. Verify the provider DLL search path and CUDA runtime closure");
+}
+
+void verifyPpeOnnxSessionContract(const std::filesystem::path& ppe_model, int device) {
+    const OnnxSessionOptions options{OnnxExecutionProvider::Cuda, device};
+    OnnxSession baseline(ppe_model, ModelRole::Ppe, options);
+    const auto& manifest = baseline.manifest();
+    const std::vector<int> image_sizes = manifest.dynamicShapes()
+        ? manifest.allowed_image_sizes
+        : std::vector<int>{0};
+    for (const int image_size : image_sizes) {
+        OnnxSession session(
+            ppe_model,
+            ModelRole::Ppe,
+            options,
+            manifest.dynamicShapes() ? std::optional<int>{image_size} : std::nullopt);
+        if (manifest.dynamicShapes()) {
+            require(session.inputWidth() == image_size && session.inputHeight() == image_size,
+                "OnnxSession did not resolve the approved PPE input dimensions");
+        }
+        std::vector<float> input(
+            static_cast<std::size_t>(session.inputWidth())
+                * static_cast<std::size_t>(session.inputHeight()) * 3,
+            0.25F);
+        const InferenceOutput output = session.infer(input);
+        const std::vector<std::int64_t> expected_shape = manifest.dynamicShapes()
+            ? std::vector<std::int64_t>{1, 12, static_cast<std::int64_t>(yoloPredictionCount(image_size))}
+            : session.outputShape();
+        require(std::ranges::equal(output.shape, expected_shape),
+            "OnnxSession returned an unexpected PPE output shape");
+    }
 }
 
 void verifyStandalonePose(
@@ -250,6 +288,7 @@ void runPpeOnly(const std::filesystem::path& ppe_model) {
     TemporaryDirectory directory;
     verifyCudaProfile(
         ppe_model, directory.path() / L"cuajone_staged_ppe_cuda_profile", device);
+    verifyPpeOnnxSessionContract(ppe_model, device);
 
     EnginePipelineConfig config;
     config.backend = ComputeBackend::Cuda;
@@ -270,8 +309,9 @@ void runPpeOnly(const std::filesystem::path& ppe_model) {
             && processed.canonical.frame_width == frame.cols
             && processed.canonical.frame_height == frame.rows,
         "PPE-only production pipeline returned invalid canonical frame metadata");
-    std::cout << "PASS: CUDAExecutionProvider executed the real staged PPE graph and "
-                 "the PPE-only production pipeline processed a deterministic BGR frame"
+    std::cout << "PASS: CUDAExecutionProvider executed the real staged PPE graph, OnnxSession "
+                 "validated its static v1 or all bounded dynamic v2 input sizes, and the PPE-only "
+                 "production pipeline processed a deterministic BGR frame"
               << std::endl;
 }
 

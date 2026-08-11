@@ -20,6 +20,12 @@ $requiredPatterns = [ordered]@{
     "raw cache identity" = 'raw-detect-dynamic-end2end-false-v2'
     "bounded image sizes" = '"allowed_image_sizes": [640, 768, 960, 1280]'
     "all-size inference validation" = 'for image_size in (640, 768, 960, 1280):'
+    "normalized cache receipt hash" = '$exported.onnxSha256 = $manifest.modelSha256'
+    "staged PPE ONNX hash" = '$ppeStagedOnnxSha256 = (Get-FileHash -Algorithm SHA256'
+    "staged pose ONNX hash" = '$poseStagedOnnxSha256 = (Get-FileHash -Algorithm SHA256'
+    "staged ONNX hash verification" = 'Staged ONNX model hash differs from the normalized export cache'
+    "metadata uses staged PPE hash" = 'artifactSha256 = $ppeStagedOnnxSha256'
+    "metadata uses staged pose hash" = 'artifactSha256 = $poseStagedOnnxSha256'
     "fixed PPE label contract" = 'always-all-seven-v2'
     "fixed PPE label order" = '"Gloves", "Person", "Safety_boots", "Vest", "respirador"'
 }

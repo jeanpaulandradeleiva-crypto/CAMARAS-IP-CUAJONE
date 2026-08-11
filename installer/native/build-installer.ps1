@@ -297,6 +297,7 @@ print(json.dumps(manifest, separators=(",", ":")))
     [pscustomobject]@{
         path = $manifestPath
         sha256 = (Get-FileHash -Algorithm SHA256 -LiteralPath $manifestPath).Hash.ToLowerInvariant()
+        modelSha256 = (Get-FileHash -Algorithm SHA256 -LiteralPath $OnnxPath).Hash.ToLowerInvariant()
     }
 }
 
@@ -359,6 +360,7 @@ function Get-OrExportOnnxModel(
         Reset-Directory $cacheDirectory
         $exported = Export-OnnxModel $PythonPath $SourceModel $onnxPath $Task
         $manifest = Write-OnnxManifest $PythonPath $exported.onnx $Role $SourceModel
+        $exported.onnxSha256 = $manifest.modelSha256
         $receipt = [ordered]@{
             recipe = $recipe
             source_sha256 = $exported.sourceSha256
@@ -379,6 +381,7 @@ function Get-OrExportOnnxModel(
         $manifest = [pscustomobject]@{
             path = $manifestPath
             sha256 = (Get-FileHash -Algorithm SHA256 -LiteralPath $manifestPath).Hash.ToLowerInvariant()
+            modelSha256 = (Get-FileHash -Algorithm SHA256 -LiteralPath $onnxPath).Hash.ToLowerInvariant()
         }
     }
 
@@ -1145,6 +1148,12 @@ Pose engine SHA-256: $poseEngineSha256
     Copy-StagedInput $ppeManifest.path (Join-Path $StageDir "bin\models\ppe.onnx.manifest.json") "tool" "PPE ONNX model manifest"
     Copy-StagedInput $poseOnnxResult.onnx (Join-Path $StageDir "bin\models\pose.onnx") "tool" "Auto-exported pose ONNX model"
     Copy-StagedInput $poseManifest.path (Join-Path $StageDir "bin\models\pose.onnx.manifest.json") "tool" "Pose ONNX model manifest"
+    $ppeStagedOnnxSha256 = (Get-FileHash -Algorithm SHA256 -LiteralPath (Join-Path $StageDir "bin\models\ppe.onnx")).Hash.ToLowerInvariant()
+    $poseStagedOnnxSha256 = (Get-FileHash -Algorithm SHA256 -LiteralPath (Join-Path $StageDir "bin\models\pose.onnx")).Hash.ToLowerInvariant()
+    if ($ppeStagedOnnxSha256 -cne $ppeOnnxResult.onnxSha256 -or
+        $poseStagedOnnxSha256 -cne $poseOnnxResult.onnxSha256) {
+        throw "Staged ONNX model hash differs from the normalized export cache"
+    }
     $hasModels = $true
     $modelBundleSource = "content-addressed-onnx"
 
@@ -1158,13 +1167,13 @@ Bundle included: yes
 PPE source model: $($ppeOnnxResult.source)
 PPE source SHA-256: $($ppeOnnxResult.sourceSha256)
 PPE ONNX: $($ppeOnnxResult.onnx)
-PPE ONNX SHA-256: $($ppeOnnxResult.onnxSha256)
+PPE staged ONNX SHA-256: $ppeStagedOnnxSha256
 PPE ONNX manifest SHA-256: $($ppeManifest.sha256)
 
 Pose source model: $($poseOnnxResult.source)
 Pose source SHA-256: $($poseOnnxResult.sourceSha256)
 Pose ONNX: $($poseOnnxResult.onnx)
-Pose ONNX SHA-256: $($poseOnnxResult.onnxSha256)
+Pose staged ONNX SHA-256: $poseStagedOnnxSha256
 Pose ONNX manifest SHA-256: $($poseManifest.sha256)
 "@ | Set-Content -LiteralPath (Join-Path $stageDocs.FullName "MODEL-BUNDLE.txt") -Encoding UTF8
 }
@@ -1389,7 +1398,7 @@ $metadata = [ordered]@{
                 source = $ppeOnnxResult.source
                 sourceSha256 = $ppeOnnxResult.sourceSha256
                 artifact = "bin/models/ppe.onnx"
-                artifactSha256 = $ppeOnnxResult.onnxSha256
+                artifactSha256 = $ppeStagedOnnxSha256
                 manifest = "bin/models/ppe.onnx.manifest.json"
                 manifestSha256 = $ppeManifest.sha256
             }
@@ -1397,7 +1406,7 @@ $metadata = [ordered]@{
                 source = $poseOnnxResult.source
                 sourceSha256 = $poseOnnxResult.sourceSha256
                 artifact = "bin/models/pose.onnx"
-                artifactSha256 = $poseOnnxResult.onnxSha256
+                artifactSha256 = $poseStagedOnnxSha256
                 manifest = "bin/models/pose.onnx.manifest.json"
                 manifestSha256 = $poseManifest.sha256
             }

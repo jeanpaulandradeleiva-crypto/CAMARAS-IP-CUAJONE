@@ -451,7 +451,8 @@ try {
             $directoryMap.APPLICATIONDATAFOLDER.DefaultDir -notmatch '(^|\|)NexoAI Vision$') {
             throw "Mutable application data is not rooted under CommonAppDataFolder\NexoAI Vision"
         }
-        foreach ($directoryId in @("CONFIGFOLDER", "OUTPUTFOLDER", "LOGSFOLDER")) {
+        $mutableRuntimeDirectories = @("CONFIGFOLDER", "OUTPUTFOLDER", "LOGSFOLDER")
+        foreach ($directoryId in $mutableRuntimeDirectories) {
             if (-not $directoryMap.ContainsKey($directoryId) -or
                 $directoryMap[$directoryId].Parent -cne "RUNTIMEFOLDER") {
                 throw "Mutable runtime directory is missing from ProgramData: $directoryId"
@@ -472,7 +473,7 @@ try {
             }
         }
         $secureObjectRows = Get-MsiRows $database 'SELECT `Domain`, `User`, `Component_` FROM `Wix4SecureObject`' 3
-        if ($secureObjectRows.Count -ne 4 -or @($secureObjectRows | Where-Object {
+        if ($secureObjectRows.Count -ne $mutableRuntimeDirectories.Count -or @($secureObjectRows | Where-Object {
             -not [string]::IsNullOrEmpty($_.Columns[0]) -or $_.Columns[1] -cne "Users"
         }).Count -ne 0) {
             throw "Runtime directory permissions do not use the locale-independent WiX Users account"
@@ -629,10 +630,9 @@ try {
             throw "Least-privilege runtime ACL declarations are missing"
         }
         $secureObjectRows = Get-MsiRows $database 'SELECT `SecureObject`, `Table`, `User`, `Permission`, `Component_` FROM `Wix4SecureObject`' 5
-        $expectedSecureObjects = @("CONFIGFOLDER", "OUTPUTFOLDER", "LOGSFOLDER")
-        if ($secureObjectRows.Count -ne $expectedSecureObjects.Count -or
+        if ($secureObjectRows.Count -ne $mutableRuntimeDirectories.Count -or
             @($secureObjectRows | Where-Object {
-                $_.Columns[0] -notin $expectedSecureObjects -or
+                $_.Columns[0] -notin $mutableRuntimeDirectories -or
                 $_.Columns[1] -cne "CreateFolder" -or
                 $_.Columns[2] -cne "Users"
             }).Count -ne 0) {
