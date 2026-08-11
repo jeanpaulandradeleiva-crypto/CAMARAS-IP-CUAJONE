@@ -180,9 +180,17 @@ if ($stageMetadata.stagingProvenanceVersion -ne 1 -or $stageMetadata.sourceProve
     throw "Staged build metadata does not contain supported source provenance"
 }
 if ($stageMetadata.onnxRuntime.version -cne "1.25.0" -or
-    $stageMetadata.onnxRuntime.assetSha256 -cne "da753f762bf2400e7191ec594086b186a7051d5af8dc886f6e2020c2403df738" -or
-    $stageMetadata.onnxRuntime.executionProvider -cne "CPUExecutionProvider") {
-    throw "Staged build metadata does not pin the approved ONNX Runtime CPU package"
+    $stageMetadata.onnxRuntime.assetSha256 -cne "125c9fe408f41b9ae1ad7138dac5ebb19a85e65438d1e368d21b50e6abb32f4e" -or
+    $stageMetadata.onnxRuntime.executionProvider -cne "CPUExecutionProvider + CUDAExecutionProvider") {
+    throw "Staged build metadata does not pin the approved ONNX Runtime GPU package"
+}
+$approvedOnnxRuntimeCore = Join-Path $stageMetadata.onnxRuntime.root "lib\onnxruntime.dll"
+Assert-File $approvedOnnxRuntimeCore "Approved ONNX Runtime GPU core"
+$stagedOnnxRuntimeCore = Join-Path $stage "bin\onnxruntime.dll"
+Assert-File $stagedOnnxRuntimeCore "Staged ONNX Runtime core"
+if ((Get-FileHash -Algorithm SHA256 -LiteralPath $stagedOnnxRuntimeCore).Hash -cne
+    (Get-FileHash -Algorithm SHA256 -LiteralPath $approvedOnnxRuntimeCore).Hash) {
+    throw "Staged onnxruntime.dll does not match the approved GPU package core"
 }
 if ((Split-Path -Leaf $stageMetadata.launcherExecutable) -cne "NexoAIVisionLauncher.exe" -or
     $stageMetadata.launcherExecutableSha256 -cne (Get-FileHash -Algorithm SHA256 -LiteralPath $stagedLauncher).Hash.ToLowerInvariant() -or

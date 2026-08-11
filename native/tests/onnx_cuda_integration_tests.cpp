@@ -16,6 +16,7 @@
 
 #include <algorithm>
 #include <array>
+#include <chrono>
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
@@ -274,6 +275,32 @@ void runPpeOnly(const std::filesystem::path& ppe_model) {
               << std::endl;
 }
 
+void runDynamicPpe(const std::filesystem::path& ppe_model, int image_size) {
+    const int device = cudaDeviceOrSkip();
+    configureProviderDllSearch(cudaRuntimeDirectory());
+    OnnxSession session(
+        ppe_model,
+        ModelRole::Ppe,
+        OnnxSessionOptions{OnnxExecutionProvider::Cuda, device},
+        image_size);
+    std::vector<float> input(
+        static_cast<std::size_t>(session.inputWidth())
+            * static_cast<std::size_t>(session.inputHeight()) * 3,
+        0.25F);
+    const auto started = std::chrono::steady_clock::now();
+    const InferenceOutput output = session.infer(input);
+    const auto elapsed = std::chrono::duration<double, std::milli>(
+        std::chrono::steady_clock::now() - started).count();
+    const std::vector<std::int64_t> expected_shape{
+        1, 12, static_cast<std::int64_t>(yoloPredictionCount(image_size))};
+    require(std::ranges::equal(output.shape, expected_shape)
+            && output.values.size() == static_cast<std::size_t>(12 * yoloPredictionCount(image_size)),
+        "Dynamic PPE CUDA session returned an unexpected output shape");
+    std::cout << "PASS: dynamic PPE OnnxSession CUDA inference at imgsz " << image_size
+              << " returned " << output.shape[2] << " predictions in " << elapsed << " ms"
+              << std::endl;
+}
+
 void runStandalonePoseCpu(const std::filesystem::path& pose_model) {
     verifyStandalonePose(pose_model, OnnxSessionOptions{}, "CPU");
 }
@@ -303,11 +330,14 @@ int main(int argc, char** argv) {
             runStandalonePoseCpu(argv[2]);
         } else if (argc == 3 && std::string_view(argv[1]) == "ppe-only") {
             runPpeOnly(argv[2]);
+        } else if (argc == 4 && std::string_view(argv[1]) == "dynamic-ppe") {
+            runDynamicPpe(argv[2], std::stoi(argv[3]));
         } else if (argc == 5 && std::string_view(argv[1]) == "pipeline") {
             runPipeline(argv[2], argv[3], argv[4]);
         } else {
             throw std::invalid_argument("Usage: cuajone_onnx_cuda_integration_tests "
                 "standalone-pose-cpu <pose.onnx> | ppe-only <ppe.onnx> | "
+                "dynamic-ppe <ppe.onnx> <imgsz> | "
                 "pipeline <ppe.onnx> <pose.onnx> <person-image>");
         }
         return 0;

@@ -70,8 +70,8 @@ $releaseGates = Join-Path $scriptRoot "release-gates.ps1"
 $sourceRepository = "https://github.com/jeanpaulandradeleiva-crypto/CAMARAS-IP-CUAJONE"
 $upgradeCode = "88A886C2-8F6D-4669-B6FB-7DFC1E7B0397"
 $onnxRuntimeVersion = "1.25.0"
-$onnxRuntimeAssetUrl = "https://github.com/microsoft/onnxruntime/releases/download/v1.25.0/onnxruntime-win-x64-1.25.0.zip"
-$onnxRuntimeAssetSha256 = "da753f762bf2400e7191ec594086b186a7051d5af8dc886f6e2020c2403df738"
+$onnxRuntimeAssetUrl = "https://github.com/microsoft/onnxruntime/releases/download/v1.25.0/onnxruntime-win-x64-gpu-1.25.0.zip"
+$onnxRuntimeAssetSha256 = "125c9fe408f41b9ae1ad7138dac5ebb19a85e65438d1e368d21b50e6abb32f4e"
 
 function Assert-File([string]$Path, [string]$Description) {
     if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) {
@@ -669,13 +669,13 @@ $cudnnBin = Join-Path $cudnnRoot "nvidia\cudnn\bin"
 $cufftBin = Join-Path $cufftRoot "nvidia\cufft\bin"
 $tensorRtRoot = Join-Path $ToolRoot "tensorrt\TensorRT-11.1.0.106"
 $tensorRtBin = Join-Path $tensorRtRoot "bin"
-$onnxRuntimeRoot = Join-Path $ToolRoot "onnxruntime-win-x64-1.25.0"
 $onnxRuntimeGpuDefaultRoot = Join-Path $ToolRoot "onnxruntime-win-x64-gpu-1.25.0"
 $byteTrackCommit = "a865158906f6138465668810a98ffd918d95f9a3"
 $eigenCommit = "3147391d946bb4b6c68edd901f2add6ac1f31f8c"
 $byteTrackRoot = Join-Path $ToolRoot "dependencies\byte-track-eigen-$byteTrackCommit"
 $eigenRoot = Join-Path $ToolRoot "dependencies\eigen-$eigenCommit"
 if ([string]::IsNullOrWhiteSpace($OnnxRuntimeGpuRoot)) { $OnnxRuntimeGpuRoot = $onnxRuntimeGpuDefaultRoot }
+$onnxRuntimeRoot = $OnnxRuntimeGpuRoot
 $onnxRuntimeBin = Join-Path $onnxRuntimeRoot "lib"
 $msvcCrt = Join-Path $ToolRoot "vs\VC\Redist\MSVC\14.44.35112\x64\Microsoft.VC143.CRT"
 $searchDirectories = @($openCvBin, $cudaBin, $cublasBin, $cudnnBin, $cufftBin, $tensorRtBin, $onnxRuntimeBin, $msvcCrt)
@@ -1323,7 +1323,7 @@ $metadata = [ordered]@{
         root = $onnxRuntimeRoot
         assetUrl = $onnxRuntimeAssetUrl
         assetSha256 = $onnxRuntimeAssetSha256
-        executionProvider = "CPUExecutionProvider"
+        executionProvider = "CPUExecutionProvider + CUDAExecutionProvider"
     }
     runtimeSecurityPolicy = [ordered]@{
         hardwareProbeSchemaVersion = 2
