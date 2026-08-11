@@ -20,7 +20,7 @@ cámaras ni iniciar inferencia.
 
 **Ruta de cinco pasos:**
 
-1. Confirma que el paquete es `internal.3` y que la VM está autorizada.
+1. Confirma que el paquete es `internal.23` y que la VM está autorizada.
 2. Compara SHA-256, huellas y firma antes de modificar confianza.
 3. Valida y enrola los certificados públicos con autorización explícita.
 4. Instala el MSI con interfaz o en silencio y guarda `/L*V`.
@@ -35,8 +35,8 @@ RTSP y no inicia inferencia.
 
 | Elemento | Estado |
 | --- | --- |
-| `v0.1.0-internal.3` | Release interna publicada que TI puede evaluar con el paquete aprobado. |
-| `0.1.0-internal.4` | Candidato local de ingeniería. No está publicado, aprobado ni autorizado para instalación. |
+| `v0.1.0-internal.23` | Release interna publicada que TI puede evaluar con el paquete aprobado. |
+| `0.1.0-internal.24` (`FileVersion 0.1.0.24`) | Candidato local de ingeniería. No está publicado, aprobado ni autorizado para instalación. |
 | Builds desde fuente | Flujo de ingeniería futuro; requiere firma, revisión y sus propios gates. |
 
 El MSI no instala Python, PyTorch, Ultralytics, CVAT, Supervision, `cuajone_qa`, el

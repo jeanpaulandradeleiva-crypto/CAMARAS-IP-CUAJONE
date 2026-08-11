@@ -96,6 +96,27 @@ def test_absolute_model_path_is_preserved(tmp_path: Path) -> None:
     assert app.resolve_runtime_path(absolute, base_dir=tmp_path / "ignored") == absolute
 
 
+def test_local_native_binding_is_discovered_automatically(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    build_python = tmp_path / ".tools/native/build/presets/python-bindings/python"
+    onnx_lib = tmp_path / ".tools/native/onnxruntime-win-x64-1.25.0/lib"
+    build_python.mkdir(parents=True)
+    onnx_lib.mkdir(parents=True)
+    monkeypatch.setattr(app, "RUNTIME_DIR", tmp_path)
+    monkeypatch.setattr(sys, "path", list(sys.path))
+    monkeypatch.delenv("CUAJONE_NATIVE_DLL_DIRS", raising=False)
+
+    app.configure_local_native_binding()
+
+    assert sys.path[0] == str(build_python.resolve())
+    assert os.environ["CUAJONE_NATIVE_DLL_DIRS"].split(os.pathsep) == [
+        str(build_python.resolve()),
+        str(onnx_lib.resolve()),
+    ]
+
+
 def test_native_preflight_reports_fixed_onnx_without_rtsp(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,

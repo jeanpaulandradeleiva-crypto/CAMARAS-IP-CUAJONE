@@ -133,7 +133,10 @@ class RuntimeSettings:
                     base_dir=resolved_runtime_dir,
                 )
             ),
-            ppe_labels=value("PPE_LABELS", "Person,Hard_hat,Vest") or "",
+            ppe_labels=value(
+                "PPE_LABELS",
+                "Gloves,Person,Safety_boots,Vest,respirador,tapaorejas,Hard_hat,lentes_protectores",
+            ) or "",
             yolo_device=value("YOLO_DEVICE"),
             target_inference_fps=float(value("TARGET_INFERENCE_FPS", "0") or ""),
             base_dir=base_dir,

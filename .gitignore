@@ -23,6 +23,8 @@ __pycache__/
 *.engine
 *.engine.manifest.json
 *.onnx
+/models/
+/runs/
 
 # Generated native, packaging, and installer output
 .tools/

@@ -30,6 +30,7 @@ binding, Python, los modelos, fixtures y resultados de QA permanecen fuera del M
 ```powershell
 uv python install 3.12
 uv sync --locked
+uv run python tools/export_runtime_onnx.py --ppe best_ppe.pt --pose yolo26s-pose.pt --output-dir models
 Copy-Item .env.example .env
 uv run python ppe_reportev2.py --help
 uv run python ppe_reportev2.py --mode ppe-only --preflight
@@ -40,6 +41,10 @@ manifests adyacentes. `PPE_LABELS` declara el orden fijo de clases del ONNX. El
 facade Python no carga modelos `.pt`, PyTorch ni Ultralytics. El backend nativo
 enlaza ByteTrack-Eigen estaticamente sin importar paquetes Python.
 
+El exportador local genera `models/ppe.onnx`, `models/pose.onnx` y sus manifests.
+El detector EPP usa salida raw `[1,12,8400]`; pose conserva el contrato de exportación
+de Ultralytics. `models/` es generado y permanece fuera de Git.
+
 La configuración mínima de QA es:
 
 ```dotenv
@@ -48,7 +53,7 @@ RTSP_URL=rtsp://CAMERA_HOST/axis-media/media.amp
 ANALYTICS_MODE=ppe-only
 PPE_ONNX_PATH=models/ppe.onnx
 POSE_ONNX_PATH=models/pose.onnx
-PPE_LABELS=Person,Hard_hat,Vest
+PPE_LABELS=Gloves,Person,Safety_boots,Vest,respirador,tapaorejas,Hard_hat,lentes_protectores
 TARGET_INFERENCE_FPS=0
 ```
 
@@ -62,7 +67,8 @@ La referencia completa está en
 `cuajone_native.pyd` se construye con
 `CUAJONE_BUILD_PYTHON_BINDINGS=ON`. Su salida válida permanece bajo
 `.tools\native\build\presets\python-bindings\python`; nunca debe copiarse a staging
-ni al MSI. Consulta
+ni al MSI. `ppe_reportev2.py` descubre automáticamente esa salida y las DLL locales
+conocidas cuando existen. Consulta
 [`docs/python-cpp-coupling.md`](docs/python-cpp-coupling.md) para compilarlo y
 registrar sus DLL locales.
 

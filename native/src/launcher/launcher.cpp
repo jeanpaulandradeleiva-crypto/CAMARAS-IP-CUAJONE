@@ -42,7 +42,7 @@ std::string runtimeExecutableName() {
     }
     return name;
 }
-constexpr wchar_t kBundledPpeLabels[] = L"Gloves,Hard_hat,Mask,Person,Safety_boots,Vest";
+constexpr wchar_t kBundledPpeLabels[] = L"Gloves,Person,Safety_boots,Vest,respirador,tapaorejas,Hard_hat,lentes_protectores";
 constexpr UINT kProcessFinished = WM_APP + 1;
 constexpr ULONGLONG kGracefulStopMilliseconds = 30000;
 constexpr COLORREF kWindowColor = RGB(246, 248, 252);

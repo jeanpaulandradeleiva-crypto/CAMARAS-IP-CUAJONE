@@ -267,7 +267,7 @@ es parte del artefacto aprobado y usa exactamente este contrato:
   "external_data": false,
   "custom_operators": false,
   "input": { "name": "images", "element_type": "float32", "shape": [1, 3, 640, 640] },
-  "output": { "name": "output0", "element_type": "float32", "shape": [1, 84, 8400] },
+  "output": { "name": "output0", "element_type": "float32", "shape": [1, 12, 8400] },
   "provenance": {
     "source_uri": "https://example.invalid/approved-model-record",
     "exporter": "approved-exporter-version",
@@ -329,7 +329,8 @@ little-endian, longitud JSON validada, JSON de objeto y plan no vacío. Cuando
 existen, se leen únicamente `task`, `names`, `imgsz` y `kpt_shape`.
 
 Para un engine EPP raw sin `names`, proporciona el orden exacto mediante
-`--ppe-labels Person,Hard_hat,Vest`. El inicio exige clases reconocibles de persona,
+`--ppe-labels Gloves,Person,Safety_boots,Vest,respirador,tapaorejas,Hard_hat,lentes_protectores`.
+El inicio exige clases reconocibles de persona,
 casco y chaleco. Para pose raw, configura `--pose-class-count` y
 `--pose-kpt-shape`; los defaults explícitos son una clase y `17,3`. Este primer
 candidato exige exactamente una clase de pose. Si metadata `names` está presente,

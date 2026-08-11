@@ -46,7 +46,9 @@ ctest --preset python-bindings-release
 Pop-Location
 ```
 
-Antes de importar el binding, registra las DLL locales y el directorio de salida:
+`ppe_reportev2.py` descubre automáticamente el binding y las DLL en estas rutas
+locales. Para importar `cuajone_native` directamente desde otro proceso, registra
+las DLL y el directorio de salida:
 
 ```powershell
 $buildPython = (Resolve-Path ".tools\native\build\presets\python-bindings\python").Path
@@ -74,7 +76,7 @@ RTSP_URL=rtsp://CAMERA_HOST/axis-media/media.amp
 ANALYTICS_MODE=ppe-fall
 PPE_ONNX_PATH=models/ppe.onnx
 POSE_ONNX_PATH=models/pose.onnx
-PPE_LABELS=Person,Hard_hat,Vest
+PPE_LABELS=Gloves,Person,Safety_boots,Vest,respirador,tapaorejas,Hard_hat,lentes_protectores
 TARGET_INFERENCE_FPS=0
 
 OUTPUT_DIR=.
@@ -109,11 +111,21 @@ RTSP_SOCKET_TIMEOUT_S=3
 
 ## Modelos ONNX
 
+Genera los artefactos locales y sus manifests desde los checkpoints fuente:
+
+```powershell
+uv run python tools/export_runtime_onnx.py --ppe best_ppe.pt --pose yolo26s-pose.pt --output-dir models
+```
+
+El detector EPP se exporta raw con `end2end=False` y produce `[1,12,8400]` para las
+ocho clases configuradas. Pose conserva la exportación predeterminada compatible de
+Ultralytics. La carpeta `models/` completa es generada y no se versiona.
+
 | Variable | Uso |
 | --- | --- |
 | `PPE_ONNX_PATH` | Detector EPP fijo requerido en ambos modos. |
 | `POSE_ONNX_PATH` | Modelo pose fijo requerido solo en `ppe-fall`. |
-| `PPE_LABELS` | Orden consecutivo de clases; debe contener `Person` o `Persona`. |
+| `PPE_LABELS` | Orden consecutivo de clases: `Gloves,Person,Safety_boots,Vest,respirador,tapaorejas,Hard_hat,lentes_protectores`. |
 
 Cada ONNX necesita un manifest adyacente `<modelo>.onnx.manifest.json`. Las rutas
 relativas se resuelven desde la raíz del repositorio. El binding valida el archivo,

@@ -34,6 +34,9 @@ def test_runtime_settings_defaults_and_overrides_are_isolated(tmp_path: Path) ->
     assert second.pose_model_path == str((second_runtime / "yolo26s-pose.pt").resolve())
     assert second.ppe_onnx_path == str((second_runtime / "models/ppe.onnx").resolve())
     assert second.pose_onnx_path == str((second_runtime / "models/pose.onnx").resolve())
+    assert second.ppe_labels == (
+        "Gloves,Person,Safety_boots,Vest,respirador,tapaorejas,Hard_hat,lentes_protectores"
+    )
     assert second.show_window
     assert second.epp_window == 20
 

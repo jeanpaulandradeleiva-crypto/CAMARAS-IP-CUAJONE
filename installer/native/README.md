@@ -74,7 +74,7 @@ Installer.
 
 ```powershell
 .\installer\native\Install-Pilot.ps1 `
-  -MsiPath "D:\Paquete\NexoAIVision-0.1.0-internal.3-x64-Internal.msi" `
+  -MsiPath "D:\Paquete\NexoAIVision-0.1.0-internal.23-x64-Internal.msi" `
   -RootCertificatePath "D:\Paquete\Cuajone-PPE-Monitor-Internal-Pilot-Root-CA-2026.cer" `
   -LeafCertificatePath "D:\Paquete\Cuajone-PPE-Monitor-Internal-Pilot-Code-Signing-2026.cer" `
   -ExpectedMsiSha256 "<SHA256_MSI>" `
@@ -151,7 +151,7 @@ Cuando la confianza ya fue preparada y el MSI fue verificado mediante el proceso
 aprobado, `INSTALLFOLDER` puede dirigirse a otra ruta:
 
 ```powershell
-$msi = "D:\Paquetes\NexoAIVision-0.1.0-internal.3-x64-Internal.msi"
+$msi = "D:\Paquetes\NexoAIVision-0.1.0-internal.23-x64-Internal.msi"
 $log = "D:\Logs\cuajone-install.log"
 
 msiexec.exe /i $msi /qn /norestart `
@@ -218,11 +218,16 @@ $env:CUAJONE_SIGNTOOL_PATH = "C:\Program Files (x86)\Windows Kits\10\bin\10.0.26
 $env:CUAJONE_TIMESTAMP_URL = "http://timestamp.acs.microsoft.com"
 $env:CUAJONE_SIGN_COMMAND = (Resolve-Path .\installer\native\sign-release.ps1).Path
 
-.\installer\native\build-installer.ps1 -BuildMode Preview
+.\installer\native\build-installer.ps1 `
+  -BuildMode Preview `
+  -Version "0.1.0-internal.24" `
+  -FileVersion "0.1.0.24" `
+  -PpeModelPath ".\best_ppe.pt" `
+  -RefreshModelExport
 ```
 
-El candidato local usa `0.1.0-internal.4`, no está publicado ni autorizado para
-instalación; `v0.1.0-internal.3` y sus assets publicados son inmutables. Un build `Release` exige además
+El candidato local usa `0.1.0-internal.24`, no está publicado ni autorizado para
+instalación; `v0.1.0-internal.23` y sus assets publicados son inmutables. Un build `Release` exige además
 `CUAJONE_PARITY_RECEIPT` con contrato `1.0.0`, commit exacto y paridad completa
 sobre engines/video autorizados. El recibo debe cumplir el esquema compartido,
 identificar y hashear al menos dos inputs aprobados, aportar evidencia hash y
@@ -270,13 +275,13 @@ marcado como fast, y `-FastPreview` exige exactamente ese marcado.
 
 ```powershell
 # 1) Layout portable (segundos): sin MSI
-.\installer\native\build-installer.ps1 -BuildMode Preview -AllowUnsignedPreview -StageOnly -Version 0.1.0-internal.22 -FileVersion 0.1.0.22
+.\installer\native\build-installer.ps1 -BuildMode Preview -AllowUnsignedPreview -StageOnly -Version 0.1.0-internal.24 -FileVersion 0.1.0.24
 
 # 2) Preview rápido (el primer run comprime una vez; el siguiente es incremental)
-.\installer\native\build-installer.ps1 -BuildMode Preview -AllowUnsignedPreview -FastPreview -Version 0.1.0-internal.22 -FileVersion 0.1.0.22
+.\installer\native\build-installer.ps1 -BuildMode Preview -AllowUnsignedPreview -FastPreview -Version 0.1.0-internal.24 -FileVersion 0.1.0.24
 
 # 3) Preview completo (aceptación)
-.\installer\native\build-installer.ps1 -BuildMode Preview -AllowUnsignedPreview -Version 0.1.0-internal.22 -FileVersion 0.1.0.22
+.\installer\native\build-installer.ps1 -BuildMode Preview -AllowUnsignedPreview -Version 0.1.0-internal.24 -FileVersion 0.1.0.24
 ```
 
 El layout portable de `-StageOnly` queda listo para inspección o para el harness de

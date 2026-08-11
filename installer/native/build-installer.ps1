@@ -3,10 +3,10 @@
 [CmdletBinding()]
 param(
     [ValidatePattern('^\d+\.\d+\.\d+(-[0-9A-Za-z.-]+)?$')]
-    [string]$Version = "0.1.0-internal.4",
+    [string]$Version = "0.1.0-internal.24",
 
     [ValidatePattern('^\d+\.\d+\.\d+\.\d+$')]
-    [string]$FileVersion = "0.1.0.4",
+    [string]$FileVersion = "0.1.0.24",
 
     [ValidateSet("Preview", "Release")]
     [string]$BuildMode = "Release",
@@ -137,6 +137,7 @@ function Export-OnnxModel(
     [string]$PythonPath,
     [string]$SourceModel,
     [string]$OutputPath,
+    [ValidateSet("detect", "pose")]
     [string]$Task
 ) {
     Assert-File $PythonPath "Python executable for ONNX export"
@@ -144,8 +145,22 @@ function Export-OnnxModel(
     $outputParent = Split-Path -Parent $OutputPath
     Ensure-Directory $outputParent
 
-    $pyCode = "import sys; from ultralytics import YOLO; model = YOLO(r'$SourceModel'); model.export(format='onnx', imgsz=640)"
-    $output = @(& $PythonPath -c $pyCode 2>&1)
+    $python = @'
+import sys
+
+from ultralytics import YOLO
+
+source_model, task = sys.argv[1:]
+model = YOLO(source_model)
+if task == "detect":
+    head = model.model.model[-1]
+    if hasattr(head, "end2end"):
+        head.end2end = False
+    model.export(format="onnx", imgsz=640, end2end=False)
+else:
+    model.export(format="onnx", imgsz=640)
+'@
+    $output = @(& $PythonPath -c $python $SourceModel $Task 2>&1)
     if ($LASTEXITCODE -ne 0) {
         throw "ONNX export failed for $SourceModel`n$($output -join [Environment]::NewLine)"
     }
@@ -259,6 +274,7 @@ function Get-OrExportOnnxModel(
     [string]$CacheRoot,
     [ValidateSet("ppe", "pose")]
     [string]$Role,
+    [ValidateSet("detect", "pose")]
     [string]$Task,
     [switch]$Refresh
 ) {
@@ -266,7 +282,8 @@ function Get-OrExportOnnxModel(
     Ensure-Directory $CacheRoot
     $sourceSha256 = (Get-FileHash -Algorithm SHA256 -LiteralPath $SourceModel).Hash.ToLowerInvariant()
     $exporterVersion = Get-UltralyticsVersion $PythonPath
-    $recipe = "role=$Role;task=$Task;imgsz=640;source_sha256=$sourceSha256;ultralytics=$exporterVersion"
+    $exportMode = if ($Task -ceq "detect") { "raw-detect-end2end-false-v1" } else { "ultralytics-default-v1" }
+    $recipe = "recipe_version=2;role=$Role;task=$Task;export_mode=$exportMode;imgsz=640;source_sha256=$sourceSha256;ultralytics=$exporterVersion"
     $cacheDirectory = Join-Path $CacheRoot (Get-StringSha256 $recipe)
     $onnxPath = Join-Path $cacheDirectory "$Role.onnx"
     $manifestPath = "$onnxPath.manifest.json"

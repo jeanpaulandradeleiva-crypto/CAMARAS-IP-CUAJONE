@@ -225,7 +225,47 @@ def validate_native_runtime_prerequisites(mode: str) -> None:
         )
 
 
+def configure_local_native_binding() -> None:
+    """Discover the local QA binding without requiring a shell-specific setup."""
+    build_python = (
+        RUNTIME_DIR
+        / ".tools"
+        / "native"
+        / "build"
+        / "presets"
+        / "python-bindings"
+        / "python"
+    )
+    if not build_python.is_dir():
+        return
+
+    build_python_text = str(build_python.resolve())
+    if build_python_text not in sys.path:
+        sys.path.insert(0, build_python_text)
+
+    candidates = [
+        build_python,
+        RUNTIME_DIR / ".tools" / "native" / "onnxruntime-win-x64-1.25.0" / "lib",
+        RUNTIME_DIR / ".tools" / "native" / "opencv" / "opencv" / "build" / "x64" / "vc16" / "bin",
+        RUNTIME_DIR / ".tools" / "native" / "cuda-runtime" / "nvidia" / "cuda_runtime" / "bin",
+        RUNTIME_DIR / ".tools" / "native" / "tensorrt" / "TensorRT-11.1.0.106" / "bin",
+    ]
+    configured = [
+        value
+        for value in os.environ.get("CUAJONE_NATIVE_DLL_DIRS", "").split(os.pathsep)
+        if value
+    ]
+    for candidate in candidates:
+        if candidate.is_dir():
+            candidate_text = str(candidate.resolve())
+            if candidate_text not in configured:
+                configured.append(candidate_text)
+    if configured:
+        os.environ["CUAJONE_NATIVE_DLL_DIRS"] = os.pathsep.join(configured)
+
+
 def load_native_backend(mode: str) -> NativeBackend:
+    configure_local_native_binding()
     try:
         return NativeBackend(native_runtime_config(mode), engine_config=native_engine_config(mode))
     except (ImportError, OSError, RuntimeError, ValueError) as exc:
