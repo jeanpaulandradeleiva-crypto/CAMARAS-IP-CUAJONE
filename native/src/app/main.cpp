@@ -265,6 +265,18 @@ void drawPerson(cv::Mat& frame, const CanonicalPerson& person) {
     cv::putText(frame, text,
         cv::Point(static_cast<int>(person.box.x1), std::max(25, static_cast<int>(person.box.y1) - 10)),
         cv::FONT_HERSHEY_SIMPLEX, 0.5, cv::Scalar(255, 255, 255), 2, cv::LINE_AA);
+    if (!person.ppe) return;
+    int line_y = static_cast<int>(person.box.y1) + 18;
+    for (const auto& item : person.ppe->items) {
+        const std::string state = !person.ppe->evaluated ? "..." : item.present ? "OK" : "MISSING";
+        const cv::Scalar color = !person.ppe->evaluated ? cv::Scalar(0, 220, 255)
+            : item.present ? cv::Scalar(0, 220, 0) : cv::Scalar(0, 0, 255);
+        cv::putText(frame,
+            std::string(ppeItemLabel(item.item)) + ": " + state,
+            cv::Point(static_cast<int>(person.box.x1) + 4, line_y),
+            cv::FONT_HERSHEY_SIMPLEX, 0.42, color, 1, cv::LINE_AA);
+        line_y += 17;
+    }
 }
 
 std::string observedAtUtc() {
@@ -350,8 +362,9 @@ int monitor(
             }
             drawPerson(frame, person);
             const auto& association = processed.associations.at(person.track_id);
-            drawAssociatedItem(frame, association.helmet_detection, "helmet");
-            drawAssociatedItem(frame, association.vest_detection, "vest");
+            for (const PpeItem item : requiredPpeItems()) {
+                drawAssociatedItem(frame, association.detection(item), std::string(ppeItemLabel(item)));
+            }
         }
 
         for (const auto& event : processed.canonical.events) {

@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
 #include "cuajone/contracts.hpp"
+#include "cuajone/ppe_analytics.hpp"
 
 #include <algorithm>
 #include <cctype>
@@ -71,6 +72,59 @@ std::string keypointsJson(const std::vector<Keypoint>& keypoints) {
     return output + "]";
 }
 
+std::string stringArrayJson(const std::vector<std::string>& values) {
+    std::string output{"["};
+    for (std::size_t index = 0; index < values.size(); ++index) {
+        if (index != 0) output += ',';
+        output += quote(values[index]);
+    }
+    return output + "]";
+}
+
+std::string ppeJson(const std::optional<PpeEvaluation>& value) {
+    if (!value) return "null";
+    std::vector<std::string> required;
+    std::vector<std::string> present;
+    std::vector<std::string> missing;
+    std::string items{"["};
+    for (std::size_t index = 0; index < value->items.size(); ++index) {
+        const auto& item = value->items[index];
+        const std::string semantic(ppeItemSemantic(item.item));
+        if (item.required) required.push_back(semantic);
+        if (value->evaluated) (item.present ? present : missing).push_back(semantic);
+        if (index != 0) items += ',';
+        items += "{\"confidence\":" + number(item.confidence)
+            + ",\"detection\":" + (item.detection
+                ? "{\"box\":" + boxJson(item.detection->box) + ",\"confidence\":"
+                    + number(item.detection->confidence) + "}"
+                : "null")
+            + ",\"label\":" + quote(ppeItemLabel(item.item))
+            + ",\"present\":" + (item.present ? "true" : "false")
+            + ",\"ratio\":" + number(item.ratio)
+            + ",\"required\":" + (item.required ? "true" : "false")
+            + ",\"semantic\":" + quote(semantic) + "}";
+    }
+    items += ']';
+    const std::string state = !value->evaluated ? "evaluating"
+        : value->compliant ? "compliant" : "noncompliant";
+    return "{\"items\":" + items + ",\"missing\":" + stringArrayJson(missing)
+        + ",\"present\":" + stringArrayJson(present)
+        + ",\"required\":" + stringArrayJson(required)
+        + ",\"samples\":" + std::to_string(value->samples)
+        + ",\"state\":" + quote(state) + "}";
+}
+
+std::string legacyEventType(std::string_view type) {
+    if (type == "com.cuajone.safety.ppe.violation.v2") return "com.cuajone.safety.ppe.violation.v1";
+    if (type == "com.cuajone.safety.fall.possible.v2") return "com.cuajone.safety.fall.possible.v1";
+    return std::string(type);
+}
+
+std::string legacyStatus(const CanonicalEvent& event) {
+    if (event.ppe) return event.ppe->evaluated ? legacyPpeStatus(*event.ppe) : "En evaluación";
+    return event.status == "Evaluando EPP" ? "En evaluación" : event.status;
+}
+
 bool containsSecretMaterial(std::string_view value) {
     std::string lower(value);
     std::transform(lower.begin(), lower.end(), lower.begin(), [](unsigned char character) {
@@ -109,12 +163,12 @@ std::string canonicalJson(const CanonicalEvent& event) {
     return "{\"contractversion\":\"1.0.0\",\"data\":{\"confidence\":"
         + number(event.confidence) + ",\"contract_version\":\"1.0.0\",\"evidence\":[],\"frame_id\":"
         + std::to_string(event.frame_id) + ",\"monotonic_timestamp_ms\":"
-        + std::to_string(event.monotonic_timestamp_ms) + ",\"status\":" + quote(event.status)
+        + std::to_string(event.monotonic_timestamp_ms) + ",\"status\":" + quote(legacyStatus(event))
         + ",\"track_id\":" + std::to_string(event.track_id)
         + "},\"datacontenttype\":\"application/json\",\"dataschema\":\"https://cuajone.example/contracts/v1/event.schema.json\",\"id\":"
         + quote(event.id) + ",\"source\":" + quote(event.source)
         + ",\"specversion\":\"1.0\",\"subject\":" + quote(event.subject)
-        + ",\"time\":" + quote(event.time) + ",\"type\":" + quote(event.type) + "}";
+        + ",\"time\":" + quote(event.time) + ",\"type\":" + quote(legacyEventType(event.type)) + "}";
 }
 
 std::string canonicalJson(const CanonicalFrameResult& result) {
@@ -137,8 +191,45 @@ std::string canonicalJson(const CanonicalFrameResult& result) {
             + (person.fall_active ? "true" : "false") + ",\"keypoints\":"
             + keypointsJson(person.keypoints) + ",\"ppe_evaluable\":"
             + (person.ppe_evaluable ? "true" : "false") + ",\"ppe_status\":"
-            + quote(person.ppe_status) + ",\"track_id\":"
+            + quote(person.ppe ? legacyPpeStatus(*person.ppe) : person.ppe_status) + ",\"track_id\":"
             + std::to_string(person.track_id) + "}";
+    }
+    return output + "],\"source_id\":" + quote(result.source_id) + "}";
+}
+
+std::string canonicalJsonV2(const CanonicalEvent& event) {
+    return "{\"contractversion\":\"2.0.0\",\"data\":{\"confidence\":"
+        + number(event.confidence) + ",\"contract_version\":\"2.0.0\",\"evidence\":[],\"frame_id\":"
+        + std::to_string(event.frame_id) + ",\"monotonic_timestamp_ms\":"
+        + std::to_string(event.monotonic_timestamp_ms) + ",\"ppe\":" + ppeJson(event.ppe)
+        + ",\"status\":" + quote(event.status) + ",\"track_id\":" + std::to_string(event.track_id)
+        + "},\"datacontenttype\":\"application/json\",\"dataschema\":\"https://cuajone.example/contracts/v2/event.schema.json\",\"id\":"
+        + quote(event.id) + ",\"source\":" + quote(event.source)
+        + ",\"specversion\":\"1.0\",\"subject\":" + quote(event.subject)
+        + ",\"time\":" + quote(event.time) + ",\"type\":" + quote(event.type) + "}";
+}
+
+std::string canonicalJsonV2(const CanonicalFrameResult& result) {
+    validateCanonicalMetadata(result);
+    std::string output = "{\"contract_version\":\"2.0.0\",\"events\":[";
+    for (std::size_t index = 0; index < result.events.size(); ++index) {
+        if (index != 0) output += ',';
+        output += quote(result.events[index].id);
+    }
+    output += "],\"frame\":{\"height\":" + std::to_string(result.frame_height)
+        + ",\"width\":" + std::to_string(result.frame_width) + "},\"frame_id\":"
+        + std::to_string(result.frame_id) + ",\"monotonic_timestamp_ms\":"
+        + std::to_string(result.monotonic_timestamp_ms) + ",\"observed_at\":"
+        + quote(result.observed_at) + ",\"people\":[";
+    for (std::size_t index = 0; index < result.people.size(); ++index) {
+        if (index != 0) output += ',';
+        const auto& person = result.people[index];
+        output += "{\"box\":" + boxJson(person.box) + ",\"confidence\":"
+            + number(person.confidence) + ",\"fall_active\":"
+            + (person.fall_active ? "true" : "false") + ",\"keypoints\":"
+            + keypointsJson(person.keypoints) + ",\"ppe\":" + ppeJson(person.ppe)
+            + ",\"ppe_visibility_sufficient\":" + (person.ppe_evaluable ? "true" : "false")
+            + ",\"track_id\":" + std::to_string(person.track_id) + "}";
     }
     return output + "],\"source_id\":" + quote(result.source_id) + "}";
 }

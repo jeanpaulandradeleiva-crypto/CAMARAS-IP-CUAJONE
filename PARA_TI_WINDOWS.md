@@ -36,7 +36,8 @@ RTSP y no inicia inferencia.
 | Elemento | Estado |
 | --- | --- |
 | `v0.1.0-internal.23` | Release interna publicada que TI puede evaluar con el paquete aprobado. |
-| `0.1.0-internal.24` (`FileVersion 0.1.0.24`) | Candidato local de ingeniería. No está publicado, aprobado ni autorizado para instalación. |
+| `v0.1.0-internal.24` | Release interna publicada; el tag y sus assets son inmutables. |
+| `0.1.0-internal.25` (`FileVersion 0.1.0.25`) | Candidato local de ingeniería. No está publicado, aprobado ni autorizado para instalación. |
 | Builds desde fuente | Flujo de ingeniería futuro; requiere firma, revisión y sus propios gates. |
 
 El MSI no instala Python, PyTorch, Ultralytics, CVAT, Supervision, `cuajone_qa`, el
@@ -174,8 +175,8 @@ autorización junto con la evidencia de despliegue, y no copies modelos adiciona
 al directorio de binarios.
 
 La salida de producción sigue el
-[contrato v1 común](docs/operator-evidence-contract-v1.md):
-`Reporte_Eventos_Seguridad.csv` y `Evidencias/`. El MSI no genera XLSX; esa
+[contrato EPP v2](docs/ppe-contract-v2.md):
+`Reporte_Eventos_Seguridad_v2.csv` y `Evidencias/`. El MSI no genera XLSX; esa
 exportación existe solo en el harness Python de QA local/offline. En una salida
 reutilizada, conserva `native_events.csv` y `evidence/` antiguos por separado y no
 los concatenes con el contrato nuevo.

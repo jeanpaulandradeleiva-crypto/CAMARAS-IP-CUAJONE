@@ -123,6 +123,7 @@ OnnxSession::~OnnxSession() = default;
 int OnnxSession::inputWidth() const noexcept { return impl_->input_width; }
 int OnnxSession::inputHeight() const noexcept { return impl_->input_height; }
 const std::vector<std::int64_t>& OnnxSession::outputShape() const noexcept { return impl_->output_shape; }
+const OnnxModelManifest& OnnxSession::manifest() const noexcept { return impl_->verified_model.manifest; }
 InferenceOutput OnnxSession::infer(std::span<const float> input) { return impl_->run(input); }
 
 }  // namespace cuajone

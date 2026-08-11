@@ -16,6 +16,7 @@ from cuajone_qa.backends.native import NativeBackend
 from cuajone_qa.canonical import canonical_json, safe_source_id
 from cuajone_qa.config import QaRuntimeConfig
 from cuajone_qa.contracts import runtime_defaults
+from cuajone_qa.ppe import PPE_ITEMS
 from cuajone_qa.parity import normalize_track_identities, run_synthetic_parity, synthetic_frames
 
 native = pytest.importorskip("cuajone_native")
@@ -65,6 +66,8 @@ def test_actual_binding_constructs_cpu_engine_pipelines_from_staged_onnx() -> No
         assert manifest["artifact_type"] == "onnx"
         assert manifest["role"] == role
         assert manifest["model_file"] == model.name
+        if role == "ppe" and manifest.get("label_contract") != "always-all-seven-v2":
+            pytest.skip("staged PPE ONNX manifest predates the fixed-seven label binding")
 
     for mode in ("ppe-only", "ppe-fall"):
         result = subprocess.run(
@@ -92,11 +95,13 @@ config.ppe_onnx = str(models / "ppe.onnx")
 config.pose_onnx = str(models / "pose.onnx") if mode == "ppe-fall" else ""
 config.ppe_labels = {
     0: "Gloves",
-    1: "Hard_hat",
-    2: "Mask",
-    3: "Person",
-    4: "Safety_boots",
-    5: "Vest",
+    1: "Person",
+    2: "Safety_boots",
+    3: "Vest",
+    4: "respirador",
+    5: "tapaorejas",
+    6: "Hard_hat",
+    7: "lentes_protectores",
 }
 analytics = native.AnalyticsConfig()
 analytics.mode = (
@@ -123,6 +128,56 @@ def test_binding_validates_numpy_without_implicit_copy() -> None:
         backend.process_frame(np.zeros((720, 640, 3), dtype=np.float32), frame)
     with pytest.raises(ValueError, match="C-contiguous"):
         backend.process_frame(np.zeros((720, 640, 3), dtype=np.uint8)[:, ::2], frame)
+
+
+def _seven_item_frame(missing: set[str]) -> dict[str, object]:
+    frame = deepcopy(synthetic_frames()[0])
+    frame["frame"] = {"width": 640, "height": 720}
+    frame["ppe_detections"] = [
+        {"box": [100, 50, 300, 500], "confidence": 0.95, "class_id": 1},
+    ]
+    items = {
+        "gloves": ([80, 180, 125, 240], 0),
+        "safety_boots": ([130, 400, 220, 510], 2),
+        "vest": ([130, 150, 270, 330], 3),
+        "respirator": ([155, 85, 210, 130], 4),
+        "hearing_protection": ([145, 75, 225, 135], 5),
+        "hard_hat": ([145, 45, 225, 115], 6),
+        "eye_protection": ([155, 80, 215, 120], 7),
+    }
+    frame["ppe_detections"].extend(
+        {"box": box, "confidence": 0.9, "class_id": class_id}
+        for semantic, (box, class_id) in items.items()
+        if semantic not in missing
+    )
+    frame["pose_detections"] = []
+    return frame
+
+
+@pytest.mark.parametrize("missing", [set(), *[{item} for item in PPE_ITEMS], {"gloves", "safety_boots"}])
+def test_binding_v2_requires_all_seven_items(missing: set[str]) -> None:
+    values = deepcopy(runtime_defaults())
+    values["analytics"]["mode"] = "ppe-only"
+    values["ppe"].update(window=1, minimum_samples=1, present_ratio=0.5)
+    backend = NativeBackend(QaRuntimeConfig(values), module=native)
+    result = backend.process_observations_v2(_seven_item_frame(missing))
+    ppe = result.frame_result["people"][0]["ppe"]
+    assert set(ppe["required"]) == set(PPE_ITEMS)
+    assert set(ppe["missing"]) == missing
+    assert ppe["state"] == ("compliant" if not missing else "noncompliant")
+    assert len(result.events) == (0 if not missing else 1)
+
+
+def test_binding_v1_projection_remains_helmet_and_vest_only() -> None:
+    values = deepcopy(runtime_defaults())
+    values["analytics"]["mode"] = "ppe-only"
+    values["ppe"].update(window=1, minimum_samples=1, present_ratio=0.5)
+    result = NativeBackend(QaRuntimeConfig(values), module=native).process_observations(
+        _seven_item_frame({"gloves"})
+    )
+    assert result.frame_result["people"][0]["ppe_status"] == "EPP Completo"
+    assert result.events[0]["type"] == "com.cuajone.safety.ppe.violation.v1"
+    assert result.events[0]["data"]["status"] == "EPP Completo"
 
 
 def test_actual_binding_staged_synthetic_parity() -> None:

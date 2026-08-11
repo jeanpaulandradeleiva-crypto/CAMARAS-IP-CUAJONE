@@ -74,11 +74,11 @@ class RuntimeSettings:
 
     @property
     def csv_path(self) -> Path:
-        return self.base_dir / "Reporte_Eventos_Seguridad.csv"
+        return self.base_dir / "Reporte_Eventos_Seguridad_v2.csv"
 
     @property
     def excel_path(self) -> Path:
-        return self.base_dir / "Reporte_Eventos_Seguridad.xlsx"
+        return self.base_dir / "Reporte_Eventos_Seguridad_v2.xlsx"
 
     @classmethod
     def load(cls, *, runtime_dir: Path) -> "RuntimeSettings":

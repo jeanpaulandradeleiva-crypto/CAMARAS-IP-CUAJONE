@@ -14,9 +14,11 @@ $requiredPatterns = [ordered]@{
     "YOLO26 raw head" = 'head.end2end = False'
     "raw detect export" = 'model.export(format="onnx", imgsz=640, end2end=False)'
     "pose-compatible export" = 'model.export(format="onnx", imgsz=640)'
-    "versioned cache recipe" = 'recipe_version=2'
+    "versioned cache recipe" = 'recipe_version=3'
     "cache export mode" = 'export_mode=$exportMode'
     "raw cache identity" = 'raw-detect-end2end-false-v1'
+    "fixed PPE label contract" = 'always-all-seven-v2'
+    "fixed PPE label order" = '"Gloves", "Person", "Safety_boots", "Vest", "respirador"'
 }
 
 foreach ($entry in $requiredPatterns.GetEnumerator()) {

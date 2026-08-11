@@ -430,20 +430,14 @@ para compilación, API sintética, runtime externo y paridad.
 
 ```text
 <output>/
-  Reporte_Eventos_Seguridad.csv
+  Reporte_Eventos_Seguridad_v2.csv
   Evidencias/
     <camara>_<tipo>_<YYYYMMDD_HHMMSS_mmm>_<ultimos-8-del-evento>.jpg
 ```
 
 El runtime recibe el `CanonicalEvent` completo y conserva su ID estable, tipo,
-timestamp UTC, track, estado y confianza. El CSV UTF-8 usa exactamente:
-
-```csv
-Evento_ID,Camara,Fecha,Hora,Tipo_Evento,Casco,Chaleco,Estado_EPP,Confianza_Evento,ID_Seguimiento_Temporal,Estado_Revision,Identificacion_Humana,Observaciones_Revision,Foto
-```
-
-El [contrato v1](../docs/operator-evidence-contract-v1.md) define el mapeo
-`SI`/`NO`/`N/D`, revisión `PENDIENTE`, escape CSV, timestamp y nombre del JPEG. El
+timestamp UTC, track, estado y confianza. El [contrato v2](../docs/ppe-contract-v2.md)
+define las siete columnas de estado, ratios, confianzas y faltantes. El
 ID temporal correlaciona observaciones; no identifica personas. El MSI no genera
 XLSX; la exportación del harness Python es solo QA local/offline.
 

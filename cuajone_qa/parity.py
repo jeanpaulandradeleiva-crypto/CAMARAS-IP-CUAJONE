@@ -140,9 +140,16 @@ def synthetic_frames() -> list[dict[str, Any]]:
                 "monotonic_timestamp_ms": timestamp,
                 "observed_at": f"2026-01-01T00:00:00.{timestamp:03d}Z",
                 "frame": {"width": 640, "height": 720},
-                "ppe_classes": {"person_ids": [0], "helmet_ids": [1], "vest_ids": [2]},
+                "ppe_classes": {
+                    "person_ids": [1],
+                    "item_ids": {
+                        "gloves": 0, "safety_boots": 2, "vest": 3,
+                        "respirator": 4, "hearing_protection": 5,
+                        "hard_hat": 6, "eye_protection": 7
+                    },
+                },
                 "ppe_detections": [
-                    {"box": [100.0, 500.0, 400.0, 650.0], "confidence": 0.9, "class_id": 0}
+                    {"box": [100.0, 500.0, 400.0, 650.0], "confidence": 0.9, "class_id": 1}
                 ],
                 "pose_detections": [
                     {

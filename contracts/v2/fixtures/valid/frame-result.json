@@ -1,0 +1,33 @@
+{
+  "contract_version": "2.0.0",
+  "source_id": "SYNTHETIC_QA_01",
+  "frame_id": 7,
+  "monotonic_timestamp_ms": 700,
+  "observed_at": "2026-01-01T00:00:00.700Z",
+  "frame": {"width": 640, "height": 480},
+  "people": [{
+    "track_id": 1,
+    "box": [100, 50, 300, 450],
+    "confidence": 0.9,
+    "ppe_visibility_sufficient": false,
+    "ppe": {
+      "state": "noncompliant",
+      "samples": 12,
+      "required": ["gloves", "safety_boots", "vest", "respirator", "hearing_protection", "hard_hat", "eye_protection"],
+      "present": ["safety_boots", "vest", "respirator", "hearing_protection", "hard_hat", "eye_protection"],
+      "missing": ["gloves"],
+      "items": [
+        {"semantic": "gloves", "label": "Gloves", "required": true, "present": false, "ratio": 0.1, "confidence": 0, "detection": null},
+        {"semantic": "safety_boots", "label": "Safety_boots", "required": true, "present": true, "ratio": 0.8, "confidence": 0.8, "detection": null},
+        {"semantic": "vest", "label": "Vest", "required": true, "present": true, "ratio": 0.8, "confidence": 0.8, "detection": null},
+        {"semantic": "respirator", "label": "respirador", "required": true, "present": true, "ratio": 0.8, "confidence": 0.8, "detection": null},
+        {"semantic": "hearing_protection", "label": "tapaorejas", "required": true, "present": true, "ratio": 0.8, "confidence": 0.8, "detection": null},
+        {"semantic": "hard_hat", "label": "Hard_hat", "required": true, "present": true, "ratio": 0.8, "confidence": 0.8, "detection": null},
+        {"semantic": "eye_protection", "label": "lentes_protectores", "required": true, "present": true, "ratio": 0.8, "confidence": 0.8, "detection": null}
+      ]
+    },
+    "fall_active": false,
+    "keypoints": []
+  }],
+  "events": ["evt-SYNTHETIC_QA_01-7-1-0"]
+}

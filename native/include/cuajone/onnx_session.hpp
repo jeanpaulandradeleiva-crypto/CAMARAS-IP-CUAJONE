@@ -34,6 +34,7 @@ public:
     [[nodiscard]] int inputWidth() const noexcept override;
     [[nodiscard]] int inputHeight() const noexcept override;
     [[nodiscard]] const std::vector<std::int64_t>& outputShape() const noexcept override;
+    [[nodiscard]] const OnnxModelManifest& manifest() const noexcept;
     InferenceOutput infer(std::span<const float> nchw_input) override;
 
 private:

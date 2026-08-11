@@ -1,0 +1,6 @@
+{
+  "contract_version": "2.0.0",
+  "policy": "always-all-seven",
+  "labels": ["Gloves", "Person", "Safety_boots", "Vest", "respirador", "tapaorejas", "Hard_hat", "lentes_protectores"],
+  "required": ["gloves", "safety_boots", "vest", "respirator", "hearing_protection", "hard_hat", "eye_protection"]
+}

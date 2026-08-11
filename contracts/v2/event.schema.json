@@ -1,0 +1,76 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://cuajone.example/contracts/v2/event.schema.json",
+  "title": "Cuajone safety event CloudEvents 1.0 envelope v2",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["specversion", "id", "source", "type", "time", "datacontenttype", "dataschema", "subject", "contractversion", "data"],
+  "properties": {
+    "specversion": {"const": "1.0"},
+    "id": {"type": "string", "pattern": "^evt-[A-Za-z0-9._:-]+$"},
+    "source": {"type": "string", "pattern": "^urn:cuajone:camera:[A-Za-z0-9._:-]+$"},
+    "type": {"enum": ["com.cuajone.safety.ppe.violation.v2", "com.cuajone.safety.fall.possible.v2"]},
+    "time": {"type": "string", "format": "date-time"},
+    "datacontenttype": {"const": "application/json"},
+    "dataschema": {"const": "https://cuajone.example/contracts/v2/event.schema.json"},
+    "subject": {"type": "string", "pattern": "^track/[1-9][0-9]*$"},
+    "contractversion": {"const": "2.0.0"},
+    "data": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["contract_version", "frame_id", "monotonic_timestamp_ms", "track_id", "status", "confidence", "ppe", "evidence"],
+      "properties": {
+        "contract_version": {"const": "2.0.0"},
+        "frame_id": {"type": "integer", "minimum": 0},
+        "monotonic_timestamp_ms": {"type": "integer", "minimum": 0},
+        "track_id": {"type": "integer", "minimum": 1},
+        "status": {"type": "string", "minLength": 1},
+        "confidence": {"type": "number", "minimum": 0, "maximum": 1},
+        "ppe": {"anyOf": [{"$ref": "#/$defs/ppe"}, {"type": "null"}]},
+        "evidence": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["ref", "sha256"],
+            "properties": {
+              "ref": {"type": "string", "pattern": "^(urn:|https://|file:)", "not": {"pattern": "^[Rr][Tt][Ss]?[Pp]://|@|[Pp][Aa][Ss][Ss][Ww][Oo][Rr][Dd]"}},
+              "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+            }
+          }
+        }
+      }
+    }
+  },
+  "$defs": {
+    "semantic": {"enum": ["gloves", "safety_boots", "vest", "respirator", "hearing_protection", "hard_hat", "eye_protection"]},
+    "box": {"type": "array", "prefixItems": [{"type": "number"}, {"type": "number"}, {"type": "number"}, {"type": "number"}], "items": false, "minItems": 4, "maxItems": 4},
+    "ppe_item": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["semantic", "label", "required", "present", "ratio", "confidence", "detection"],
+      "properties": {
+        "semantic": {"$ref": "#/$defs/semantic"},
+        "label": {"type": "string", "minLength": 1},
+        "required": {"const": true},
+        "present": {"type": "boolean"},
+        "ratio": {"type": "number", "minimum": 0, "maximum": 1},
+        "confidence": {"type": "number", "minimum": 0, "maximum": 1},
+        "detection": {"anyOf": [{"type": "null"}, {"type": "object", "additionalProperties": false, "required": ["box", "confidence"], "properties": {"box": {"$ref": "#/$defs/box"}, "confidence": {"type": "number", "minimum": 0, "maximum": 1}}}]}
+      }
+    },
+    "ppe": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["state", "samples", "required", "present", "missing", "items"],
+      "properties": {
+        "state": {"enum": ["evaluating", "compliant", "noncompliant"]},
+        "samples": {"type": "integer", "minimum": 0},
+        "required": {"type": "array", "prefixItems": [{"const": "gloves"}, {"const": "safety_boots"}, {"const": "vest"}, {"const": "respirator"}, {"const": "hearing_protection"}, {"const": "hard_hat"}, {"const": "eye_protection"}], "items": false, "minItems": 7, "maxItems": 7},
+        "present": {"type": "array", "uniqueItems": true, "items": {"$ref": "#/$defs/semantic"}},
+        "missing": {"type": "array", "uniqueItems": true, "items": {"$ref": "#/$defs/semantic"}},
+        "items": {"type": "array", "minItems": 7, "maxItems": 7, "items": {"$ref": "#/$defs/ppe_item"}}
+      }
+    }
+  }
+}

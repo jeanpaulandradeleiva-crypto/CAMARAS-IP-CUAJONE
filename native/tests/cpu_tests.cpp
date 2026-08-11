@@ -678,15 +678,31 @@ void testByteTrackCapacityResetEmptyFramesAndTies() {
     }
 }
 
+std::map<int, std::string> fixedPpeLabels() {
+    return {{0, "Gloves"}, {1, "Person"}, {2, "Safety_boots"}, {3, "Vest"},
+            {4, "respirador"}, {5, "tapaorejas"}, {6, "Hard_hat"},
+            {7, "lentes_protectores"}};
+}
+
+std::array<Detection, 7> allPpeDetections() {
+    return {{{{80, 170, 125, 230}, 0.81F, 0},
+             {{130, 350, 220, 455}, 0.82F, 2},
+             {{130, 130, 270, 300}, 0.83F, 3},
+             {{155, 75, 210, 120}, 0.84F, 4},
+             {{145, 65, 225, 125}, 0.85F, 5},
+             {{145, 35, 225, 105}, 0.86F, 6},
+             {{155, 70, 215, 110}, 0.87F, 7}}};
+}
+
 void testPpeAssociationVotingAndCooldown() {
-    const auto classes = resolvePpeClasses({{0, "Person"}, {1, "Hard hat"}, {2, "Vest"}});
+    const auto classes = resolvePpeClasses(fixedPpeLabels());
     const TrackedPerson person{7, {100, 50, 300, 450}, 0.9F, {}, true};
-    const std::array<Detection, 2> items{{
-        {{150, 40, 220, 130}, 0.8F, 1},
-        {{140, 160, 260, 330}, 0.9F, 2},
-    }};
+    const auto items = allPpeDetections();
     const auto associations = associatePpe(std::span(&person, 1), items, classes);
-    require(associations.at(7).helmet && associations.at(7).vest, "PPE association failed");
+    for (const PpeItem item : requiredPpeItems()) {
+        require(associations.at(7).present(item),
+            "PPE regional association failed for " + std::string(ppeItemLabel(item)));
+    }
 
     PpeAnalyzer analyzer({4, 3, 0.5F, std::chrono::seconds(10), std::chrono::seconds(5)});
     const PpeAssociation missing{};
@@ -696,6 +712,47 @@ void testPpeAssociationVotingAndCooldown() {
     require(analyzer.update(7, missing, true, start + std::chrono::seconds(2)).has_value(), "PPE violation was not emitted");
     require(!analyzer.update(7, missing, true, start + std::chrono::seconds(3)), "PPE cooldown failed");
     require(analyzer.update(7, missing, true, start + std::chrono::seconds(12)).has_value(), "PPE cooldown did not reopen");
+
+    for (const PpeItem omitted : requiredPpeItems()) {
+        PpeAnalyzer per_item({1, 1, 0.5F, std::chrono::seconds(60), std::chrono::seconds(5)});
+        PpeAssociation association = associations.at(7);
+        association.detections.erase(omitted);
+        const auto event = per_item.update(static_cast<int>(omitted) + 20, association, false, start);
+        require(event && event->ppe && !event->ppe->compliant
+                && event->status.find(ppeItemLabel(omitted)) != std::string::npos,
+            "Independently missing PPE item did not cause noncompliance");
+    }
+
+    PpeAnalyzer compliant({1, 1, 0.5F, std::chrono::seconds(60), std::chrono::seconds(5)});
+    require(!compliant.update(99, associations.at(7), false, start),
+        "All-seven compliant person emitted a violation");
+    require(compliant.currentEvaluation(99)->compliant,
+        "All-seven PPE state was not compliant");
+
+    PpeAssociation multiple = associations.at(7);
+    multiple.detections.erase(PpeItem::Gloves);
+    multiple.detections.erase(PpeItem::SafetyBoots);
+    PpeAnalyzer multiple_analyzer({1, 1, 0.5F, std::chrono::seconds(60), std::chrono::seconds(5)});
+    const auto multiple_event = multiple_analyzer.update(100, multiple, true, start);
+    require(multiple_event && multiple_event->status.find("Gloves") != std::string::npos
+            && multiple_event->status.find("Safety_boots") != std::string::npos,
+        "Multiple missing PPE items were not retained");
+
+    PpeAnalyzer temporal({4, 4, 0.5F, std::chrono::seconds(60), std::chrono::seconds(5)});
+    temporal.update(101, missing, false, start);
+    temporal.update(101, missing, false, start + std::chrono::seconds(1));
+    temporal.update(101, associations.at(7), false, start + std::chrono::seconds(2));
+    require(!temporal.update(101, associations.at(7), false, start + std::chrono::seconds(3)),
+        "Temporal voting emitted despite every PPE item reaching the present ratio");
+    require(temporal.currentEvaluation(101)->compliant,
+        "Temporal voting did not apply the existing present-ratio policy to all items");
+
+    requireThrows([] { resolvePpeClasses({{0, "Gloves"}, {1, "Person"}}); },
+        "Missing PPE semantics were accepted");
+    auto wrong_order = fixedPpeLabels();
+    std::swap(wrong_order[0], wrong_order[1]);
+    requireThrows([&] { resolvePpeClasses(wrong_order); },
+        "Wrong PPE label order was accepted");
 }
 
 std::vector<Keypoint> horizontalPose() {
@@ -760,9 +817,9 @@ ObservationFrame syntheticPpeFrame(std::uint64_t frame_id, std::int64_t timestam
         frame_id == 1 ? "2026-01-01T00:00:00.100Z" : "2026-01-01T00:00:00.200Z",
         640,
         720,
-        {{{100, 100, 300, 500}, 0.9F, 0}},
+        {{{100, 100, 300, 500}, 0.9F, 1}},
         {},
-        {{0}, {1}, {2}},
+        resolvePpeClasses(fixedPpeLabels()),
     };
 }
 
@@ -787,9 +844,9 @@ void testPoseFilteringPreservesTrackerIdentity() {
         "2026-01-01T00:00:00.100Z",
         640,
         720,
-        {{{100, 100, 300, 600}, 0.9F, 0}},
+        {{{100, 100, 300, 600}, 0.9F, 1}},
         {invalid, valid},
-        {{0}, {1}, {2}},
+        resolvePpeClasses(fixedPpeLabels()),
     };
 
     const auto result = pipeline.process(frame);
@@ -830,6 +887,15 @@ void testCanonicalContractsAndDeterministicPipeline() {
         "CloudEvents version is missing");
     require(event_json.find("rtsp://") == std::string::npos,
         "Canonical event exposed an RTSP URL");
+    const std::string frame_v2 = canonicalJsonV2(second.canonical);
+    const std::string event_v2 = canonicalJsonV2(second.canonical.events.front());
+    require(frame_v2.find("\"contract_version\":\"2.0.0\"") != std::string::npos
+            && frame_v2.find("\"required\":[\"gloves\",\"safety_boots\",\"vest\",\"respirator\",\"hearing_protection\",\"hard_hat\",\"eye_protection\"]") != std::string::npos
+            && event_v2.find("com.cuajone.safety.ppe.violation.v2") != std::string::npos,
+        "Structured PPE v2 frame/event serialization is incomplete");
+    require(event_json.find("com.cuajone.safety.ppe.violation.v1") != std::string::npos
+            && event_json.find("Sin Casco y Chaleco") != std::string::npos,
+        "Explicit v1 helmet/vest projection was not preserved");
     requireThrows([&] { pipeline.process(syntheticPpeFrame(2, 300)); },
         "Duplicate frame_id was accepted");
 

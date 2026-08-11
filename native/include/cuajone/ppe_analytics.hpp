@@ -4,6 +4,7 @@
 
 #include "cuajone/types.hpp"
 
+#include <array>
 #include <chrono>
 #include <deque>
 #include <map>
@@ -17,13 +18,17 @@ namespace cuajone {
 
 struct PpeClassMap {
     std::vector<int> person_ids;
-    std::vector<int> helmet_ids;
-    std::vector<int> vest_ids;
+    std::map<PpeItem, int> item_ids;
 };
 
 PpeClassMap resolvePpeClasses(const std::map<int, std::string>& names);
 std::string normalizeLabel(std::string label);
 bool isPersonClassLabel(std::string_view label);
+std::span<const PpeItem> requiredPpeItems() noexcept;
+std::string_view ppeItemSemantic(PpeItem item) noexcept;
+std::string_view ppeItemLabel(PpeItem item) noexcept;
+std::string ppeStatus(const PpeEvaluation& evaluation);
+std::string legacyPpeStatus(const PpeEvaluation& evaluation);
 
 struct TrackedPerson {
     int track_id{};
@@ -34,10 +39,10 @@ struct TrackedPerson {
 };
 
 struct PpeAssociation {
-    bool helmet{};
-    bool vest{};
-    std::optional<Detection> helmet_detection;
-    std::optional<Detection> vest_detection;
+    std::map<PpeItem, Detection> detections;
+
+    [[nodiscard]] bool present(PpeItem item) const noexcept;
+    [[nodiscard]] std::optional<Detection> detection(PpeItem item) const;
 };
 
 std::map<int, PpeAssociation> associatePpe(
@@ -67,14 +72,14 @@ public:
         const PpeAssociation& association,
         bool evaluable,
         std::chrono::steady_clock::time_point now);
-    [[nodiscard]] std::optional<std::string> currentStatus(int track_id) const;
+    [[nodiscard]] std::optional<PpeEvaluation> currentEvaluation(int track_id) const;
     void prune(std::chrono::steady_clock::time_point now);
     void reset() noexcept;
 
 private:
     struct State {
-        std::deque<bool> helmet_history;
-        std::deque<bool> vest_history;
+        std::array<std::deque<float>, kPpeItemCount> histories;
+        std::array<std::optional<Detection>, kPpeItemCount> detections;
         std::string last_status;
         std::chrono::steady_clock::time_point last_seen{};
         std::chrono::steady_clock::time_point last_alert{};

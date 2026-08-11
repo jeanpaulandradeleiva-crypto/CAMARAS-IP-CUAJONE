@@ -29,6 +29,18 @@ void validateContiguousNames(const std::map<int, std::string>& names, const std:
     }
 }
 
+void validateManifestLabels(const OnnxModelManifest& manifest, const std::map<int, std::string>& names) {
+    std::vector<std::string> ordered;
+    ordered.reserve(names.size());
+    for (const auto& [id, name] : names) {
+        static_cast<void>(id);
+        ordered.push_back(name);
+    }
+    if (manifest.label_contract != "always-all-seven-v2" || manifest.labels != ordered) {
+        throw std::runtime_error("PPE ONNX manifest labels do not match the configured semantic order");
+    }
+}
+
 #ifdef CUAJONE_WITH_TENSORRT
 void validateTask(const EngineMetadata& metadata, const std::string& expected, const std::string& engine_name) {
     if (metadata.task && normalizeLabel(*metadata.task) != expected) {
@@ -78,6 +90,7 @@ struct NativeEnginePipeline::Impl {
         validateContiguousNames(ppe_names, "PPE ONNX model");
         ppe_classes = resolvePpeClasses(ppe_names);
         ppe_session = std::make_unique<OnnxSession>(config.ppe_onnx, ModelRole::Ppe);
+        validateManifestLabels(static_cast<OnnxSession&>(*ppe_session).manifest(), ppe_names);
         validateDetectSchema(ppe_session->outputShape(), ppe_names.size());
         ppe_preprocessor = std::make_unique<LetterboxPreprocessor>(
             ppe_session->inputWidth(), ppe_session->inputHeight());
@@ -203,6 +216,7 @@ struct NativeEnginePipeline::Impl {
         ppe_session = std::make_unique<OnnxSession>(config.ppe_onnx, ModelRole::Ppe, OnnxSessionOptions{
             OnnxExecutionProvider::Cuda, device,
         });
+        validateManifestLabels(static_cast<OnnxSession&>(*ppe_session).manifest(), ppe_names);
         validateDetectSchema(ppe_session->outputShape(), ppe_names.size());
         ppe_preprocessor = std::make_unique<LetterboxPreprocessor>(
             ppe_session->inputWidth(), ppe_session->inputHeight());

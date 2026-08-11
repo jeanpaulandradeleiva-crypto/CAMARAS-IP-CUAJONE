@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import os
+import hashlib
+import json
 import subprocess
 import sys
 from pathlib import Path
@@ -124,7 +126,11 @@ def test_native_preflight_reports_fixed_onnx_without_rtsp(
 ) -> None:
     onnx = tmp_path / "ppe.onnx"
     onnx.write_bytes(b"fixed-onnx")
-    (tmp_path / "ppe.onnx.manifest.json").write_text("{}", encoding="utf-8")
+    (tmp_path / "ppe.onnx.manifest.json").write_text(json.dumps({
+        "model_sha256": hashlib.sha256(b"fixed-onnx").hexdigest(),
+        "labels": ["Gloves", "Person", "Safety_boots", "Vest", "respirador", "tapaorejas", "Hard_hat", "lentes_protectores"],
+        "label_contract": "always-all-seven-v2",
+    }), encoding="utf-8")
     monkeypatch.setattr(app, "PPE_ONNX_PATH", str(onnx))
     loaded_modes: list[str] = []
     monkeypatch.setattr(
@@ -157,7 +163,11 @@ def test_native_preflight_propagates_engine_startup_failure(
 ) -> None:
     onnx = tmp_path / "ppe.onnx"
     onnx.write_bytes(b"fixed-onnx")
-    (tmp_path / "ppe.onnx.manifest.json").write_text("{}", encoding="utf-8")
+    (tmp_path / "ppe.onnx.manifest.json").write_text(json.dumps({
+        "model_sha256": hashlib.sha256(b"fixed-onnx").hexdigest(),
+        "labels": ["Gloves", "Person", "Safety_boots", "Vest", "respirador", "tapaorejas", "Hard_hat", "lentes_protectores"],
+        "label_contract": "always-all-seven-v2",
+    }), encoding="utf-8")
     monkeypatch.setattr(app, "PPE_ONNX_PATH", str(onnx))
 
     def failed_engine_startup(_mode: str) -> object:
@@ -198,7 +208,11 @@ def test_native_preflight_requires_pose_onnx_only_for_ppe_fall(
 ) -> None:
     ppe_onnx = tmp_path / "ppe.onnx"
     ppe_onnx.write_bytes(b"fixed-onnx")
-    (tmp_path / "ppe.onnx.manifest.json").write_text("{}", encoding="utf-8")
+    (tmp_path / "ppe.onnx.manifest.json").write_text(json.dumps({
+        "model_sha256": hashlib.sha256(b"fixed-onnx").hexdigest(),
+        "labels": ["Gloves", "Person", "Safety_boots", "Vest", "respirador", "tapaorejas", "Hard_hat", "lentes_protectores"],
+        "label_contract": "always-all-seven-v2",
+    }), encoding="utf-8")
     monkeypatch.setattr(app, "PPE_ONNX_PATH", str(ppe_onnx))
     monkeypatch.setattr(app, "POSE_ONNX_PATH", str(tmp_path / "missing-pose.onnx"))
     monkeypatch.setattr(app, "load_native_backend", lambda _mode: object())
@@ -215,7 +229,7 @@ def test_native_engine_config_uses_fixed_cpu_onnx_paths(
 ) -> None:
     monkeypatch.setattr(app, "PPE_ONNX_PATH", "C:/models/ppe.onnx")
     monkeypatch.setattr(app, "POSE_ONNX_PATH", "C:/models/pose.onnx")
-    monkeypatch.setattr(app, "PPE_LABELS", "0:Person,1:Hard_hat,2:Vest")
+    monkeypatch.setattr(app, "PPE_LABELS", "Gloves,Person,Safety_boots,Vest,respirador,tapaorejas,Hard_hat,lentes_protectores")
 
     config = app.native_engine_config("ppe-fall")
 
@@ -223,7 +237,11 @@ def test_native_engine_config_uses_fixed_cpu_onnx_paths(
         "backend": "cpu",
         "ppe_onnx": "C:/models/ppe.onnx",
         "pose_onnx": "C:/models/pose.onnx",
-        "ppe_labels": {0: "Person", 1: "Hard_hat", 2: "Vest"},
+        "ppe_labels": {
+            0: "Gloves", 1: "Person", 2: "Safety_boots", 3: "Vest",
+            4: "respirador", 5: "tapaorejas", 6: "Hard_hat",
+            7: "lentes_protectores",
+        },
     }
 
 
@@ -231,18 +249,19 @@ def test_native_frame_translates_canonical_events_for_existing_report() -> None:
     calls: list[dict[str, Any]] = []
 
     class FakeNativeBackend:
-        def process_frame(self, frame: np.ndarray, observations: dict[str, Any]) -> Any:
+        def process_frame_v2(self, frame: np.ndarray, observations: dict[str, Any]) -> Any:
             calls.append(observations)
             return SimpleNamespace(
                 frame_result={"people": []},
                 events=(
                     {
                         "id": "evt-CAM_P01-1-3-0",
-                        "type": "com.cuajone.safety.ppe.violation.v1",
+                        "type": "com.cuajone.safety.ppe.violation.v2",
                         "data": {
                             "track_id": 3,
-                            "status": "Falta Chaleco",
+                            "status": "Falta: Vest",
                             "confidence": 0.8,
+                            "ppe": {"state": "noncompliant", "missing": ["vest"], "items": []},
                         },
                     },
                 ),
@@ -266,9 +285,8 @@ def test_native_frame_translates_canonical_events_for_existing_report() -> None:
             "event_id": "evt-CAM_P01-1-3-0",
             "track_id": 3,
             "type": "INCUMPLIMIENTO_EPP",
-            "epp_status": "Falta Chaleco",
-            "helmet": True,
-            "vest": False,
+            "epp_status": "Falta: Vest",
+            "ppe": {"state": "noncompliant", "missing": ["vest"], "items": []},
             "confidence": 0.8,
         }
     ]

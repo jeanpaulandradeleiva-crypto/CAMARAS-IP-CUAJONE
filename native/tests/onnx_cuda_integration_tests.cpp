@@ -96,11 +96,13 @@ std::string readText(const std::filesystem::path& path) {
 std::map<int, std::string> stagedPpeLabels() {
     return {
         {0, "Gloves"},
-        {1, "Hard_hat"},
-        {2, "Mask"},
-        {3, "Person"},
-        {4, "Safety_boots"},
-        {5, "Vest"},
+        {1, "Person"},
+        {2, "Safety_boots"},
+        {3, "Vest"},
+        {4, "respirador"},
+        {5, "tapaorejas"},
+        {6, "Hard_hat"},
+        {7, "lentes_protectores"},
     };
 }
 

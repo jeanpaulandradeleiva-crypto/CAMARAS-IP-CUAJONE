@@ -12,6 +12,8 @@ from typing import Any
 
 from ultralytics import YOLO
 
+from cuajone_qa.ppe import validate_ppe_labels
+
 
 MANIFEST_VERSION = 1
 
@@ -63,6 +65,11 @@ def export_one(source: Path, target: Path, role: str, task: str) -> None:
 
     print(f"Exportando {role}: {source.name} -> {target}")
     model = YOLO(str(source), task=task)
+    exported_labels: list[str] | None = None
+    if role == "ppe":
+        names = {int(class_id): str(name) for class_id, name in dict(model.names).items()}
+        validate_ppe_labels(names)
+        exported_labels = [names[index] for index in range(len(names))]
     if task == "detect" and hasattr(model.model.model[-1], "end2end"):
         # The native decoder expects raw YOLO channels, not YOLO26 end-to-end [N, 6].
         model.model.model[-1].end2end = False
@@ -107,6 +114,9 @@ def export_one(source: Path, target: Path, role: str, task: str) -> None:
             "license": "AGPL-3.0-only",
         },
     }
+    if exported_labels is not None:
+        payload["labels"] = exported_labels
+        payload["label_contract"] = "always-all-seven-v2"
     manifest = target.with_name(f"{target.name}.manifest.json")
     manifest.write_text(json.dumps(payload, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
     print(f"  ONNX: {target} ({target.stat().st_size} bytes)")

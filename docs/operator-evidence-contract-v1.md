@@ -1,5 +1,7 @@
 # Contrato v1 de eventos y evidencias del operador
 
+> Contrato congelado para compatibilidad. El runtime de siete EPP usa el [contrato v2](ppe-contract-v2.md) y un reporte `_v2` separado; no anexes filas v2 a este formato.
+
 La salida autoritativa de producción es la generada por `NexoAIVision.exe` desde
 el MSI. El harness Python de QA conserva los mismos nombres y columnas para que las
 herramientas offline puedan consumir el CSV sin mantener otro esquema.

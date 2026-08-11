@@ -114,9 +114,9 @@ C:\ProgramData\NexoAI Vision\runtime\logs
 ```
 
 La carpeta `output` usa el
-[contrato v1 de eventos y evidencias](../../docs/operator-evidence-contract-v1.md):
-`Reporte_Eventos_Seguridad.csv` y `Evidencias/`. Esa es la salida autoritativa del
-runtime MSI. El MSI no genera `Reporte_Eventos_Seguridad.xlsx`; dicho archivo es
+[contrato v2 de siete EPP](../../docs/ppe-contract-v2.md):
+`Reporte_Eventos_Seguridad_v2.csv` y `Evidencias/`. Esa es la salida autoritativa del
+runtime MSI. El MSI no genera `Reporte_Eventos_Seguridad_v2.xlsx`; dicho archivo es
 solo una exportación local/offline del harness Python de QA.
 
 Los usuarios estándar reciben permisos de modificación solo en esas cuatro
@@ -220,14 +220,14 @@ $env:CUAJONE_SIGN_COMMAND = (Resolve-Path .\installer\native\sign-release.ps1).P
 
 .\installer\native\build-installer.ps1 `
   -BuildMode Preview `
-  -Version "0.1.0-internal.24" `
-  -FileVersion "0.1.0.24" `
+  -Version "0.1.0-internal.25" `
+  -FileVersion "0.1.0.25" `
   -PpeModelPath ".\best_ppe.pt" `
   -RefreshModelExport
 ```
 
-El candidato local usa `0.1.0-internal.24`, no está publicado ni autorizado para
-instalación; `v0.1.0-internal.23` y sus assets publicados son inmutables. Un build `Release` exige además
+El candidato local usa `0.1.0-internal.25`, no está publicado ni autorizado para
+instalación; `v0.1.0-internal.24` y sus assets publicados son inmutables. Un build `Release` exige además
 `CUAJONE_PARITY_RECEIPT` con contrato `1.0.0`, commit exacto y paridad completa
 sobre engines/video autorizados. El recibo debe cumplir el esquema compartido,
 identificar y hashear al menos dos inputs aprobados, aportar evidencia hash y
@@ -275,13 +275,13 @@ marcado como fast, y `-FastPreview` exige exactamente ese marcado.
 
 ```powershell
 # 1) Layout portable (segundos): sin MSI
-.\installer\native\build-installer.ps1 -BuildMode Preview -AllowUnsignedPreview -StageOnly -Version 0.1.0-internal.24 -FileVersion 0.1.0.24
+.\installer\native\build-installer.ps1 -BuildMode Preview -AllowUnsignedPreview -StageOnly -Version 0.1.0-internal.25 -FileVersion 0.1.0.25
 
 # 2) Preview rápido (el primer run comprime una vez; el siguiente es incremental)
-.\installer\native\build-installer.ps1 -BuildMode Preview -AllowUnsignedPreview -FastPreview -Version 0.1.0-internal.24 -FileVersion 0.1.0.24
+.\installer\native\build-installer.ps1 -BuildMode Preview -AllowUnsignedPreview -FastPreview -Version 0.1.0-internal.25 -FileVersion 0.1.0.25
 
 # 3) Preview completo (aceptación)
-.\installer\native\build-installer.ps1 -BuildMode Preview -AllowUnsignedPreview -Version 0.1.0-internal.24 -FileVersion 0.1.0.24
+.\installer\native\build-installer.ps1 -BuildMode Preview -AllowUnsignedPreview -Version 0.1.0-internal.25 -FileVersion 0.1.0.25
 ```
 
 El layout portable de `-StageOnly` queda listo para inspección o para el harness de

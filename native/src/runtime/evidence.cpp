@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
 #include "cuajone/evidence.hpp"
+#include "cuajone/ppe_analytics.hpp"
 
 #include <opencv2/imgcodecs.hpp>
 
@@ -119,18 +120,21 @@ std::string safeFilePart(std::string value) {
 }
 
 std::string operatorEventType(const std::string& canonical_type) {
-    if (canonical_type == "com.cuajone.safety.ppe.violation.v1") return "INCUMPLIMIENTO_EPP";
-    if (canonical_type == "com.cuajone.safety.fall.possible.v1") return "POSIBLE_CAIDA";
+    if (canonical_type == "com.cuajone.safety.ppe.violation.v2") return "INCUMPLIMIENTO_EPP";
+    if (canonical_type == "com.cuajone.safety.fall.possible.v2") return "POSIBLE_CAIDA";
     throw std::invalid_argument(
         "Unsupported canonical event type for operator evidence: " + canonical_type);
 }
 
-std::pair<std::string, std::string> ppePresence(const std::string& status) {
-    if (status == "EPP Completo") return {"SI", "SI"};
-    if (status == "Falta Chaleco") return {"SI", "NO"};
-    if (status == "Falta Casco") return {"NO", "SI"};
-    if (status == "Sin Casco y Chaleco") return {"NO", "NO"};
-    return {"N/D", "N/D"};
+std::string missingItems(const std::optional<PpeEvaluation>& evaluation) {
+    if (!evaluation || !evaluation->evaluated) return {};
+    std::string result;
+    for (const auto& item : evaluation->items) {
+        if (item.present) continue;
+        if (!result.empty()) result += ";";
+        result += ppeItemLabel(item.item);
+    }
+    return result;
 }
 
 std::string formatConfidence(float confidence) {
@@ -258,14 +262,23 @@ void appendDurably(const std::filesystem::path& path, const std::string& row) {
 
 std::string csvRow(const EvidenceRecord& record) {
     const std::vector<std::string> fields{
+        std::string(kOperatorEvidenceContractVersion),
         record.event_id,
         record.camera,
         record.date,
         record.time,
         record.event_type,
-        record.helmet,
-        record.vest,
+        record.ppe_states[0], record.ppe_states[1], record.ppe_states[2],
+        record.ppe_states[3], record.ppe_states[4], record.ppe_states[5],
+        record.ppe_states[6], record.missing_items,
         record.ppe_status,
+        formatConfidence(record.ppe_ratios[0]), formatConfidence(record.ppe_ratios[1]),
+        formatConfidence(record.ppe_ratios[2]), formatConfidence(record.ppe_ratios[3]),
+        formatConfidence(record.ppe_ratios[4]), formatConfidence(record.ppe_ratios[5]),
+        formatConfidence(record.ppe_ratios[6]), formatConfidence(record.ppe_confidences[0]),
+        formatConfidence(record.ppe_confidences[1]), formatConfidence(record.ppe_confidences[2]),
+        formatConfidence(record.ppe_confidences[3]), formatConfidence(record.ppe_confidences[4]),
+        formatConfidence(record.ppe_confidences[5]), formatConfidence(record.ppe_confidences[6]),
         formatConfidence(record.confidence),
         std::to_string(record.track_id),
         record.review_status,
@@ -306,7 +319,7 @@ void validateWritableOutput(const std::filesystem::path& output) {
 
 EvidenceWriter::EvidenceWriter(std::filesystem::path output)
     : output_(std::move(output)), images_(output_ / "Evidencias"),
-      csv_(output_ / "Reporte_Eventos_Seguridad.csv") {
+      csv_(output_ / "Reporte_Eventos_Seguridad_v2.csv") {
     validateWritableOutput(output_);
     std::filesystem::create_directories(images_);
     validateExistingCsv(csv_);
@@ -321,7 +334,6 @@ EvidenceRecord EvidenceWriter::append(
     }
     const ParsedTimestamp timestamp = parseUtcTimestamp(event.time);
     const std::string event_type = operatorEventType(event.type);
-    const auto [helmet, vest] = ppePresence(event.status);
     const std::string id_suffix = event.id.substr(event.id.size() > 8 ? event.id.size() - 8 : 0);
     const std::string filename = safeFilePart(source_label) + "_" + safeFilePart(event_type)
         + "_" + timestamp.filename + "_" + safeFilePart(id_suffix) + ".jpg";
@@ -353,9 +365,12 @@ EvidenceRecord EvidenceWriter::append(
         timestamp.date,
         timestamp.time,
         event_type,
-        helmet,
-        vest,
-        event.status == "Evaluating PPE" ? "En evaluaci\xC3\xB3n" : event.status,
+        {},
+        {},
+        {},
+        missingItems(event.ppe),
+        event.status == "Evaluating PPE" || event.status == "Evaluando EPP"
+            ? "En evaluaci\xC3\xB3n" : event.status,
         event.confidence,
         event.track_id,
         "PENDIENTE",
@@ -363,6 +378,17 @@ EvidenceRecord EvidenceWriter::append(
         {},
         image_path,
     };
+    for (std::size_t index = 0; index < kPpeItemCount; ++index) {
+        record.ppe_states[index] = "N/D";
+    }
+    if (event.ppe) {
+        for (const auto& item : event.ppe->items) {
+            const auto index = static_cast<std::size_t>(item.item);
+            record.ppe_states[index] = event.ppe->evaluated ? (item.present ? "SI" : "NO") : "N/D";
+            record.ppe_ratios[index] = item.ratio;
+            record.ppe_confidences[index] = item.confidence;
+        }
+    }
     appendDurably(csv_, csvRow(record));
     return record;
 }

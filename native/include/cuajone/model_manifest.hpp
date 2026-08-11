@@ -29,6 +29,8 @@ struct OnnxModelManifest {
     std::string source_uri;
     std::string exporter;
     std::string license;
+    std::string label_contract;
+    std::vector<std::string> labels;
     TensorContract input;
     TensorContract output;
 };

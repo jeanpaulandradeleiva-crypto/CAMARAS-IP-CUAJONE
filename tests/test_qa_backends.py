@@ -57,8 +57,8 @@ def test_experimental_serializes_each_persons_own_box() -> None:
     values["analytics"]["mode"] = "ppe-only"
     frame = deepcopy(synthetic_frames()[0])
     frame["ppe_detections"] = [
-        {"box": [10.25, 20.5, 110.75, 320.125], "confidence": 0.91, "class_id": 0},
-        {"box": [210.5, 30.25, 410.875, 430.625], "confidence": 0.82, "class_id": 0},
+        {"box": [10.25, 20.5, 110.75, 320.125], "confidence": 0.91, "class_id": 1},
+        {"box": [210.5, 30.25, 410.875, 430.625], "confidence": 0.82, "class_id": 1},
     ]
     frame["pose_detections"] = []
 

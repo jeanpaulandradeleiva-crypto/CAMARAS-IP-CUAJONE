@@ -198,7 +198,7 @@ Credential Manager mediante el launcher es la ruta preferida y aprobada.
 | `SHOW_TEMPORARY_TRACK_ID` | Muestra IDs temporales solo para depuración. |
 
 Los IDs temporales no son identidades humanas. El CSV usa el
-[contrato v1 común](../operator-evidence-contract-v1.md) y se escribe de inmediato.
+[contrato EPP v2](../ppe-contract-v2.md) y se escribe de inmediato.
 Solo el harness Python consolida XLSX periódicamente y al cierre limpio; el runtime
 MSI no lo genera.
 

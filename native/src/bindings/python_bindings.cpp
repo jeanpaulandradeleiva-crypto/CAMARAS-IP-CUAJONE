@@ -45,6 +45,20 @@ std::pair<std::string, std::vector<std::string>> processObservationBundle(
     return {canonicalJson(result.canonical), std::move(events)};
 }
 
+std::pair<std::string, std::vector<std::string>> processObservationBundleV2(
+    AnalyticsPipeline& pipeline,
+    const ObservationFrame& frame) {
+    ProcessedFrame result;
+    {
+        py::gil_scoped_release release;
+        result = pipeline.process(frame);
+    }
+    std::vector<std::string> events;
+    events.reserve(result.canonical.events.size());
+    for (const auto& event : result.canonical.events) events.push_back(canonicalJsonV2(event));
+    return {canonicalJsonV2(result.canonical), std::move(events)};
+}
+
 void applyFrameDimensions(const py::array& bgr_frame, ObservationFrame& observations) {
     // Reject layouts that would require a hidden copy before exposing borrowed memory.
     if (!bgr_frame.dtype().is(py::dtype::of<std::uint8_t>())) {
@@ -79,6 +93,14 @@ std::pair<std::string, std::vector<std::string>> processFrameBundle(
     return processObservationBundle(pipeline, observations);
 }
 
+std::pair<std::string, std::vector<std::string>> processFrameBundleV2(
+    AnalyticsPipeline& pipeline,
+    const py::array& bgr_frame,
+    ObservationFrame observations) {
+    applyFrameDimensions(bgr_frame, observations);
+    return processObservationBundleV2(pipeline, observations);
+}
+
 #ifdef CUAJONE_PYTHON_WITH_ENGINE_RUNTIME
 std::pair<std::string, std::vector<std::string>> processEngineFrame(
     NativeEnginePipeline& pipeline,
@@ -108,6 +130,28 @@ std::pair<std::string, std::vector<std::string>> processEngineFrame(
     for (const auto& event : result.canonical.events) events.push_back(canonicalJson(event));
     return {canonicalJson(result.canonical), std::move(events)};
 }
+
+std::pair<std::string, std::vector<std::string>> processEngineFrameV2(
+    NativeEnginePipeline& pipeline,
+    const py::array& bgr_frame,
+    const std::string& source_id,
+    std::uint64_t frame_id,
+    std::int64_t monotonic_timestamp_ms,
+    const std::string& observed_at) {
+    ObservationFrame dimensions;
+    applyFrameDimensions(bgr_frame, dimensions);
+    cv::Mat view(dimensions.frame_height, dimensions.frame_width, CV_8UC3,
+        const_cast<void*>(bgr_frame.data()), static_cast<std::size_t>(bgr_frame.strides(0)));
+    ProcessedFrame result;
+    {
+        py::gil_scoped_release release;
+        result = pipeline.processFrame(view, source_id, frame_id, monotonic_timestamp_ms, observed_at);
+    }
+    std::vector<std::string> events;
+    events.reserve(result.canonical.events.size());
+    for (const auto& event : result.canonical.events) events.push_back(canonicalJsonV2(event));
+    return {canonicalJsonV2(result.canonical), std::move(events)};
+}
 #endif
 
 }  // namespace
@@ -116,10 +160,19 @@ PYBIND11_MODULE(cuajone_native, module) {
     module.doc() = "Development/QA bindings for the deterministic Cuajone C++ core";
     module.attr("__version__") = std::string(kRuntimeVersion);
     module.attr("CONTRACT_VERSION") = std::string(kContractVersion);
+    module.attr("CONTRACT_VERSION_V2") = std::string(kContractVersionV2);
 
     py::enum_<AnalyticsMode>(module, "AnalyticsMode")
         .value("PPE_ONLY", AnalyticsMode::PpeOnly)
         .value("PPE_FALL", AnalyticsMode::PpeFall);
+    py::enum_<PpeItem>(module, "PpeItem")
+        .value("GLOVES", PpeItem::Gloves)
+        .value("SAFETY_BOOTS", PpeItem::SafetyBoots)
+        .value("VEST", PpeItem::Vest)
+        .value("RESPIRATOR", PpeItem::Respirator)
+        .value("HEARING_PROTECTION", PpeItem::HearingProtection)
+        .value("HARD_HAT", PpeItem::HardHat)
+        .value("EYE_PROTECTION", PpeItem::EyeProtection);
 
 #ifdef CUAJONE_PYTHON_WITH_ENGINE_RUNTIME
     py::enum_<ComputeBackend>(module, "ComputeBackend")
@@ -153,8 +206,7 @@ PYBIND11_MODULE(cuajone_native, module) {
     py::class_<PpeClassMap>(module, "PpeClassMap")
         .def(py::init<>())
         .def_readwrite("person_ids", &PpeClassMap::person_ids)
-        .def_readwrite("helmet_ids", &PpeClassMap::helmet_ids)
-        .def_readwrite("vest_ids", &PpeClassMap::vest_ids);
+        .def_readwrite("item_ids", &PpeClassMap::item_ids);
     py::class_<ByteTrackConfig>(module, "TrackerConfig")
         .def(py::init<>())
         .def_readwrite("high_confidence_threshold", &ByteTrackConfig::high_confidence_threshold)
@@ -215,8 +267,10 @@ PYBIND11_MODULE(cuajone_native, module) {
         .def(py::init<AnalyticsPipelineConfig>(), py::arg("config") = AnalyticsPipelineConfig{})
         .def("process_observations", &processObservations, py::arg("observations"))
         .def("process_observations_bundle", &processObservationBundle, py::arg("observations"))
+        .def("process_observations_bundle_v2", &processObservationBundleV2, py::arg("observations"))
         .def("process_frame", &processFrame, py::arg("frame"), py::arg("observations"))
         .def("process_frame_bundle", &processFrameBundle, py::arg("frame"), py::arg("observations"))
+        .def("process_frame_bundle_v2", &processFrameBundleV2, py::arg("frame"), py::arg("observations"))
         .def("reset", &AnalyticsPipeline::reset)
         .def_property_readonly("contract_version", [](const AnalyticsPipeline& value) {
             return std::string(value.contractVersion());
@@ -255,6 +309,9 @@ PYBIND11_MODULE(cuajone_native, module) {
     py::class_<NativeEnginePipeline>(module, "EnginePipeline")
         .def(py::init<EnginePipelineConfig>())
         .def("process_frame", &processEngineFrame,
+            py::arg("frame"), py::arg("source_id"), py::arg("frame_id"),
+            py::arg("monotonic_timestamp_ms"), py::arg("observed_at"))
+        .def("process_frame_v2", &processEngineFrameV2,
             py::arg("frame"), py::arg("source_id"), py::arg("frame_id"),
             py::arg("monotonic_timestamp_ms"), py::arg("observed_at"))
         .def("reset", &NativeEnginePipeline::reset);

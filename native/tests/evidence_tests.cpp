@@ -1,10 +1,12 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
 #include "cuajone/evidence.hpp"
+#include "cuajone/ppe_analytics.hpp"
 
 #include <opencv2/core.hpp>
 
 #include <chrono>
+#include <algorithm>
 #include <filesystem>
 #include <fstream>
 #include <functional>
@@ -94,10 +96,22 @@ CanonicalEvent event(
     std::string time,
     std::string status,
     int track_id,
-    float confidence) {
+    float confidence,
+    std::vector<PpeItem> missing = {},
+    bool evaluated = true) {
+    PpeEvaluation ppe;
+    ppe.evaluated = evaluated;
+    ppe.compliant = evaluated && missing.empty();
+    ppe.samples = evaluated ? 12 : 1;
+    for (const PpeItem item : requiredPpeItems()) {
+        const bool present = evaluated
+            && std::find(missing.begin(), missing.end(), item) == missing.end();
+        ppe.items.push_back({item, true, present, present ? 0.8F : 0.1F,
+            present ? 0.9F : 0.0F, std::nullopt});
+    }
     return {
         std::move(id), "urn:cuajone:camera:CAM_01", std::move(type), std::move(time),
-        "track/" + std::to_string(track_id), 1, 100, track_id, std::move(status), confidence,
+        "track/" + std::to_string(track_id), 1, 100, track_id, std::move(status), confidence, ppe,
     };
 }
 
@@ -106,12 +120,12 @@ void testExactContractAndAppendBehavior() {
     const cv::Mat frame(24, 32, CV_8UC3, cv::Scalar(10, 20, 30));
     const std::string camera = "CAM/01, \"Norte\"";
     const auto first_event = event(
-        "evt-CAM-12345678", "com.cuajone.safety.ppe.violation.v1",
-        "2026-01-02T03:04:05.678901Z", "Falta Chaleco", 42, 0.875F);
+        "evt-CAM-12345678", "com.cuajone.safety.ppe.violation.v2",
+        "2026-01-02T03:04:05.678901Z", "Falta: Vest", 42, 0.875F, {PpeItem::Vest});
 
     EvidenceWriter writer(temporary.path());
     const EvidenceRecord first = writer.append(frame, camera, first_event);
-    const auto csv = temporary.path() / "Reporte_Eventos_Seguridad.csv";
+    const auto csv = temporary.path() / "Reporte_Eventos_Seguridad_v2.csv";
     const auto images = temporary.path() / "Evidencias";
     require(std::filesystem::is_regular_file(first.image_path),
         "Evidence image was not created");
@@ -119,17 +133,17 @@ void testExactContractAndAppendBehavior() {
             == "CAM_01___Norte__INCUMPLIMIENTO_EPP_20260102_030405_678_12345678.jpg",
         "Evidence filename does not follow the operator semantic pattern");
 
-    const std::string first_row =
-        "evt-CAM-12345678,\"CAM/01, \"\"Norte\"\"\",2026-01-02,03:04:05.678,"
-        "INCUMPLIMIENTO_EPP,SI,NO,Falta Chaleco,0.875,42,PENDIENTE,,,"
-        + csvEscape(pathUtf8(first.image_path)) + "\n";
-    require(readBytes(csv) == std::string(kOperatorCsvHeader) + "\n" + first_row,
-        "Initial operator CSV bytes differ from the exact contract");
+    const std::string first_content = readBytes(csv);
+    require(first_content.starts_with(std::string(kOperatorCsvHeader) + "\n")
+            && first_content.find("2.0.0,evt-CAM-12345678") != std::string::npos
+            && first_content.find("INCUMPLIMIENTO_EPP,SI,SI,NO,SI,SI,SI,SI,Vest,Falta: Vest") != std::string::npos,
+        "Initial v2 operator CSV does not expose all seven PPE states");
 
     const EvidenceRecord second = writer.append(frame, "CAM_01", event(
-        "evt-CAM-ABCDEFGH", "com.cuajone.safety.fall.possible.v1",
-        "2026-01-02T03:04:06Z", "Evaluating PPE", 7, 0.9F));
-    require(second.helmet == "N/D" && second.vest == "N/D"
+        "evt-CAM-ABCDEFGH", "com.cuajone.safety.fall.possible.v2",
+        "2026-01-02T03:04:06Z", "Evaluando EPP", 7, 0.9F, {}, false));
+    require(std::all_of(second.ppe_states.begin(), second.ppe_states.end(),
+                [](const std::string& value) { return value == "N/D"; })
             && second.ppe_status == "En evaluaci\xC3\xB3n",
         "Unknown PPE state did not preserve Python SI/NO/N/D semantics");
     require(second.image_path.filename()
@@ -138,9 +152,11 @@ void testExactContractAndAppendBehavior() {
 
     EvidenceWriter reopened(temporary.path());
     const EvidenceRecord third = reopened.append(frame, "CAM_01", event(
-        "evt-CAM-IJKLMNOP", "com.cuajone.safety.ppe.violation.v1",
-        "2026-01-02T03:04:07.1Z", "Falta Casco", 8, 1.0F));
-    require(third.helmet == "NO" && third.vest == "SI", "PPE status mapping drifted");
+        "evt-CAM-IJKLMNOP", "com.cuajone.safety.ppe.violation.v2",
+        "2026-01-02T03:04:07.1Z", "Falta: Hard_hat", 8, 1.0F, {PpeItem::HardHat}));
+    require(third.ppe_states[static_cast<std::size_t>(PpeItem::HardHat)] == "NO"
+            && third.ppe_states[static_cast<std::size_t>(PpeItem::Vest)] == "SI",
+        "PPE v2 item mapping drifted");
 
     const std::string content = readBytes(csv);
     require(countOccurrences(content, std::string(kOperatorCsvHeader)) == 1,
@@ -148,7 +164,7 @@ void testExactContractAndAppendBehavior() {
     require(countOccurrences(content, "PENDIENTE,,,") == 3,
         "CSV append did not preserve all operator rows");
     require(content.find(
-                "POSIBLE_CAIDA,N/D,N/D,En evaluaci\xC3\xB3n,0.9,7,PENDIENTE,,,")
+                "POSIBLE_CAIDA,N/D,N/D,N/D,N/D,N/D,N/D,N/D,,En evaluaci\xC3\xB3n")
             != std::string::npos,
         "Fall row fields or UTF-8 encoding changed");
     require(regularFileCount(images) == 3, "Append did not retain one image per row");
@@ -160,11 +176,11 @@ void testMalformedTimestampDoesNotWrite() {
     const cv::Mat frame(8, 8, CV_8UC3, cv::Scalar(1, 2, 3));
     requireThrows([&] {
         writer.append(frame, "CAM_01", event(
-            "evt-invalid-time", "com.cuajone.safety.ppe.violation.v1",
+            "evt-invalid-time", "com.cuajone.safety.ppe.violation.v2",
             "2026-02-30T25:61:00Z", "Falta Casco", 1, 0.5F));
     }, "Malformed canonical timestamp was accepted");
     require(!std::filesystem::exists(
-            temporary.path() / "Reporte_Eventos_Seguridad.csv"),
+            temporary.path() / "Reporte_Eventos_Seguridad_v2.csv"),
         "Malformed timestamp created a CSV");
     require(regularFileCount(temporary.path() / "Evidencias") == 0,
         "Malformed timestamp created evidence");
@@ -175,11 +191,11 @@ void testImageFailureDoesNotCreatePartialCsvRow() {
     EvidenceWriter writer(temporary.path());
     requireThrows([&] {
         writer.append(cv::Mat{}, "CAM_01", event(
-            "evt-empty-frame", "com.cuajone.safety.fall.possible.v1",
+            "evt-empty-frame", "com.cuajone.safety.fall.possible.v2",
             "2026-01-02T03:04:05.000Z", "En evaluaci\xC3\xB3n", 2, 0.4F));
     }, "Empty evidence frame was accepted");
     require(!std::filesystem::exists(
-            temporary.path() / "Reporte_Eventos_Seguridad.csv"),
+            temporary.path() / "Reporte_Eventos_Seguridad_v2.csv"),
         "Image failure created a partial CSV row");
     require(regularFileCount(temporary.path() / "Evidencias") == 0,
         "Image failure retained a temporary image");
@@ -189,15 +205,15 @@ void testCsvWriteFailureIsReported() {
     TemporaryDirectory temporary("csv-failure");
     EvidenceWriter writer(temporary.path());
     std::filesystem::create_directory(
-        temporary.path() / "Reporte_Eventos_Seguridad.csv");
+        temporary.path() / "Reporte_Eventos_Seguridad_v2.csv");
     const cv::Mat frame(8, 8, CV_8UC3, cv::Scalar(1, 2, 3));
     requireThrows([&] {
         writer.append(frame, "CAM_01", event(
-            "evt-csv-failure", "com.cuajone.safety.ppe.violation.v1",
+            "evt-csv-failure", "com.cuajone.safety.ppe.violation.v2",
             "2026-01-02T03:04:05.000Z", "Sin Casco y Chaleco", 3, 0.7F));
     }, "CSV path failure was not reported");
     require(!std::filesystem::is_regular_file(
-            temporary.path() / "Reporte_Eventos_Seguridad.csv"),
+            temporary.path() / "Reporte_Eventos_Seguridad_v2.csv"),
         "CSV failure produced an unexpected regular file");
 }
 

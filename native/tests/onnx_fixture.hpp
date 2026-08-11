@@ -231,12 +231,15 @@ inline std::string manifest(
     std::string_view input_name = "input",
     std::string_view extra_root = {}) {
     const std::string digest = hash.empty() ? sha256Hex(model) : std::string(hash);
+    const std::string ppe_contract = role == "ppe"
+        ? "\"label_contract\":\"always-all-seven-v2\",\"labels\":[\"Gloves\",\"Person\",\"Safety_boots\",\"Vest\",\"respirador\",\"tapaorejas\",\"Hard_hat\",\"lentes_protectores\"],"
+        : "";
     return "{\"schema_version\":1,\"artifact_type\":\"onnx\",\"role\":\""
         + std::string(role) + "\",\"model_file\":\"" + model_path.filename().string()
         + "\",\"model_sha256\":\"" + digest + "\",\"model_size_bytes\":"
         + std::to_string(model.size())
-        + ",\"external_data\":false,\"custom_operators\":false,"
-          "\"input\":{\"name\":\"" + std::string(input_name)
+        + ",\"external_data\":false,\"custom_operators\":false," + ppe_contract
+        + "\"input\":{\"name\":\"" + std::string(input_name)
         + "\",\"element_type\":\"float32\",\"shape\":[1,3,2,2]},"
           "\"output\":{\"name\":\"output\",\"element_type\":\"float32\",\"shape\":[1,3,2,2]},"
           "\"provenance\":{\"source_uri\":\"urn:cuajone:synthetic-test\","

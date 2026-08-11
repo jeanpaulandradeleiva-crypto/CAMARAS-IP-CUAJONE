@@ -52,9 +52,9 @@ ProcessedFrame AnalyticsPipeline::process(const ObservationFrame& frame) {
     if (last_frame_id_ && frame.monotonic_timestamp_ms < last_monotonic_timestamp_ms_) {
         throw std::invalid_argument("monotonic_timestamp_ms must not move backwards until reset");
     }
-    if (frame.ppe_classes.person_ids.empty() || frame.ppe_classes.helmet_ids.empty()
-        || frame.ppe_classes.vest_ids.empty()) {
-        throw std::invalid_argument("PPE semantic classes must include person, helmet, and vest IDs");
+    if (frame.ppe_classes.person_ids.size() != 1
+        || frame.ppe_classes.item_ids.size() != kPpeItemCount) {
+        throw std::invalid_argument("PPE semantic classes must include one person and all seven required PPE items");
     }
 
     std::vector<PoseDetection> candidates;
@@ -111,16 +111,16 @@ ProcessedFrame AnalyticsPipeline::process(const ObservationFrame& frame) {
     std::size_t event_index{};
     for (const auto& person : tracked) {
         const auto& association = associations.at(person.track_id);
-        std::string status = person.ppe_evaluable ? "Evaluating PPE" : "PPE not evaluable";
+        std::string status = "Evaluando EPP";
+        std::optional<PpeEvaluation> ppe;
         std::vector<EventCandidate> candidates_for_person;
         if (auto event = ppe_analyzer_.update(
                 person.track_id, association, person.ppe_evaluable, now)) {
             status = event->status;
             candidates_for_person.push_back(std::move(*event));
         }
-        if (person.ppe_evaluable) {
-            if (const auto stable = ppe_analyzer_.currentStatus(person.track_id)) status = *stable;
-        }
+        ppe = ppe_analyzer_.currentEvaluation(person.track_id);
+        if (ppe) status = ppeStatus(*ppe);
         bool fall_active{};
         if (config_.mode == AnalyticsMode::PpeFall) {
             const FallResult fall = fall_analyzer_.update(
@@ -129,13 +129,13 @@ ProcessedFrame AnalyticsPipeline::process(const ObservationFrame& frame) {
             if (fall.confirmed_now) {
                 candidates_for_person.push_back({
                     person.track_id, "POSIBLE_CAIDA",
-                    person.ppe_evaluable ? status : "En evaluación", fall.score,
+                    status, fall.score, ppe,
                 });
             }
         }
         canonical.people.push_back({
             person.track_id, person.box, person.confidence, person.ppe_evaluable,
-            status, fall_active, std::vector<Keypoint>(person.keypoints.begin(), person.keypoints.end()),
+            status, ppe, fall_active, std::vector<Keypoint>(person.keypoints.begin(), person.keypoints.end()),
         });
         for (const auto& event : candidates_for_person) {
             const std::string id = "evt-" + safeUrnPart(frame.source_id) + "-"
@@ -145,8 +145,8 @@ ProcessedFrame AnalyticsPipeline::process(const ObservationFrame& frame) {
                 id,
                 "urn:cuajone:camera:" + safeUrnPart(frame.source_id),
                 event.event_type == "INCUMPLIMIENTO_EPP"
-                    ? "com.cuajone.safety.ppe.violation.v1"
-                    : "com.cuajone.safety.fall.possible.v1",
+                    ? "com.cuajone.safety.ppe.violation.v2"
+                    : "com.cuajone.safety.fall.possible.v2",
                 frame.observed_at,
                 "track/" + std::to_string(event.track_id),
                 frame.frame_id,
@@ -154,6 +154,7 @@ ProcessedFrame AnalyticsPipeline::process(const ObservationFrame& frame) {
                 event.track_id,
                 event.status,
                 event.confidence,
+                event.ppe,
             });
         }
     }

@@ -8,7 +8,11 @@ import pytest
 
 from cuajone_qa.backends.native import NativeBackend
 from cuajone_qa.config import QaRuntimeConfig
-from cuajone_qa.contracts import CONTRACT_VERSION
+from cuajone_qa.contracts import CONTRACT_VERSION, CONTRACT_VERSION_V2
+from cuajone_qa.ppe import PPE_LABELS
+
+
+FIXED_LABELS = dict(enumerate(PPE_LABELS))
 
 
 class _Values:
@@ -26,6 +30,7 @@ class _EnginePipeline:
 def native_module() -> SimpleNamespace:
     return SimpleNamespace(
         CONTRACT_VERSION=CONTRACT_VERSION,
+        CONTRACT_VERSION_V2=CONTRACT_VERSION_V2,
         ENGINE_RUNTIME_AVAILABLE=True,
         ComputeBackend=SimpleNamespace(CPU="cpu", CUDA="cuda"),
         InferenceProvider=SimpleNamespace(
@@ -52,7 +57,7 @@ def test_native_backend_maps_cpu_onnx_config() -> None:
             "backend": "cpu",
             "ppe_onnx": "ppe.onnx",
             "pose_onnx": "pose.onnx",
-            "ppe_labels": {0: "Person", 1: "Hard_hat", 2: "Vest"},
+            "ppe_labels": FIXED_LABELS,
         },
     )
 
@@ -72,7 +77,7 @@ def test_native_backend_maps_cpu_onnx_config() -> None:
             {
                 "ppe_onnx": "ppe.onnx",
                 "pose_onnx": "pose.onnx",
-                "ppe_labels": {0: "Person"},
+                "ppe_labels": FIXED_LABELS,
             },
             "onnx-runtime-cuda",
         ),

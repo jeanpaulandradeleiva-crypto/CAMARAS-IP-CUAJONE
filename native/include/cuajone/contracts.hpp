@@ -5,6 +5,7 @@
 #include "cuajone/types.hpp"
 
 #include <cstdint>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -12,6 +13,7 @@
 namespace cuajone {
 
 inline constexpr std::string_view kContractVersion{"1.0.0"};
+inline constexpr std::string_view kContractVersionV2{"2.0.0"};
 inline constexpr std::string_view kRuntimeVersion{"0.1.0-internal.4-dev"};
 inline constexpr int kCanonicalDecimalDigits{6};
 
@@ -21,6 +23,7 @@ struct CanonicalPerson {
     float confidence{};
     bool ppe_evaluable{};
     std::string ppe_status;
+    std::optional<PpeEvaluation> ppe;
     bool fall_active{};
     std::vector<Keypoint> keypoints;
 };
@@ -36,6 +39,7 @@ struct CanonicalEvent {
     int track_id{};
     std::string status;
     float confidence{};
+    std::optional<PpeEvaluation> ppe;
 };
 
 struct CanonicalFrameResult {
@@ -53,6 +57,8 @@ void validateContractVersion(std::string_view version);
 void validateCanonicalMetadata(const CanonicalFrameResult& result);
 std::string canonicalJson(const CanonicalEvent& event);
 std::string canonicalJson(const CanonicalFrameResult& result);
+std::string canonicalJsonV2(const CanonicalEvent& event);
+std::string canonicalJsonV2(const CanonicalFrameResult& result);
 std::string runtimeDefaultsJson();
 
 }  // namespace cuajone

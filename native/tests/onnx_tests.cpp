@@ -1,12 +1,14 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
 #include "cuajone/onnx_session.hpp"
+#include "cuajone/engine_pipeline.hpp"
 
 #include "onnx_fixture.hpp"
 
 #include <algorithm>
 #include <functional>
 #include <iostream>
+#include <map>
 #include <stdexcept>
 #include <string>
 
@@ -93,6 +95,30 @@ void testManifestAndArtifactBoundary() {
         "does not exactly match", "Manifest I/O mismatch was accepted");
 }
 
+void testPpeManifestBindsSemanticOrder() {
+    TemporaryDirectory directory;
+    const Bytes model = identityModel();
+    const auto path = directory.path() / "wrong-order.onnx";
+    writeBytes(path, model);
+    std::string json = manifest(path, model);
+    const std::string correct = "\"Gloves\",\"Person\"";
+    const auto position = json.find(correct);
+    require(position != std::string::npos, "Synthetic PPE labels were not found");
+    json.replace(position, correct.size(), "\"Person\",\"Gloves\"");
+    writeText(onnxManifestPath(path), json);
+
+    EnginePipelineConfig config;
+    config.backend = ComputeBackend::Cpu;
+    config.provider = InferenceProvider::OnnxRuntimeCpu;
+    config.ppe_onnx = path;
+    config.ppe_labels = std::map<int, std::string>{{0, "Gloves"}, {1, "Person"},
+        {2, "Safety_boots"}, {3, "Vest"}, {4, "respirador"}, {5, "tapaorejas"},
+        {6, "Hard_hat"}, {7, "lentes_protectores"}};
+    config.analytics.mode = AnalyticsMode::PpeOnly;
+    requireThrows([&] { NativeEnginePipeline pipeline(config); },
+        "manifest labels", "Wrong PPE manifest label order was accepted");
+}
+
 void testExternalDataAndCustomOperatorsRejected() {
     TemporaryDirectory directory;
     const Bytes external = externalDataModel();
@@ -139,6 +165,7 @@ int main() {
     const std::vector<std::pair<std::string, std::function<void()>>> tests{
         {"verified in-memory inference", testVerifiedInMemoryInference},
         {"manifest and artifact boundary", testManifestAndArtifactBoundary},
+        {"PPE manifest semantic order", testPpeManifestBindsSemanticOrder},
         {"external data and custom operators", testExternalDataAndCustomOperatorsRejected},
         {"manifest resource limits", testManifestResourceLimits},
     };

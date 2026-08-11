@@ -11,7 +11,8 @@ from typing import Any
 import numpy as np
 
 from ..config import QaRuntimeConfig
-from ..contracts import CONTRACT_VERSION, validate_instance
+from ..contracts import CONTRACT_VERSION, CONTRACT_VERSION_V2, validate_instance, validate_instance_v2
+from ..ppe import native_item_ids, validate_ppe_labels
 from .base import BackendResult
 
 
@@ -43,6 +44,10 @@ class NativeBackend:
         if self._module.CONTRACT_VERSION != CONTRACT_VERSION:
             raise RuntimeError(
                 f"Native contract {self._module.CONTRACT_VERSION} does not match {CONTRACT_VERSION}"
+            )
+        if self._module.CONTRACT_VERSION_V2 != CONTRACT_VERSION_V2:
+            raise RuntimeError(
+                f"Native v2 contract {self._module.CONTRACT_VERSION_V2} does not match {CONTRACT_VERSION_V2}"
             )
         self._pipeline = self._module.AnalyticsPipeline(self._native_config(config))
         self._engine_pipeline = None
@@ -90,6 +95,8 @@ class NativeBackend:
                 native_engine.pose_engine = str(engine_config.get("pose_engine", ""))
                 native_engine.device = int(engine_config.get("device", 0))
             native_engine.ppe_labels = engine_config.get("ppe_labels")
+            if engine_config.get("ppe_labels") is not None:
+                validate_ppe_labels(dict(engine_config["ppe_labels"]))
             native_engine.pose_class_count = int(engine_config.get("pose_class_count", 1))
             native_engine.pose_keypoint_shape = engine_config.get("pose_keypoint_shape", [17, 3])
             native_engine.allow_nonperson_pose_class = bool(engine_config.get("allow_nonperson_pose_class", False))
@@ -178,11 +185,9 @@ class NativeBackend:
         frame.frame_height = int(dimensions.get("height", 0))
         frame.ppe_detections = [self._detection(item) for item in value.get("ppe_detections", [])]
         frame.pose_detections = [self._pose(item) for item in value.get("pose_detections", [])]
-        classes = value.get("ppe_classes", {"person_ids": [0], "helmet_ids": [1], "vest_ids": [2]})
         class_map = self._module.PpeClassMap()
-        class_map.person_ids = list(map(int, classes["person_ids"]))
-        class_map.helmet_ids = list(map(int, classes["helmet_ids"]))
-        class_map.vest_ids = list(map(int, classes["vest_ids"]))
+        class_map.person_ids = [1]
+        class_map.item_ids = native_item_ids(self._module)
         frame.ppe_classes = class_map
         return frame
 
@@ -192,9 +197,20 @@ class NativeBackend:
         events = tuple(validate_instance("event", json.loads(value)) for value in bundle[1])
         return BackendResult(frame, events)
 
+    @staticmethod
+    def _result_v2(bundle: tuple[str, list[str]]) -> BackendResult:
+        frame = validate_instance_v2("frame-result", json.loads(bundle[0]))
+        events = tuple(validate_instance_v2("event", json.loads(value)) for value in bundle[1])
+        return BackendResult(frame, events)
+
     def process_observations(self, observations: dict[str, Any]) -> BackendResult:
         return self._result(
             self._pipeline.process_observations_bundle(self._observations(observations))
+        )
+
+    def process_observations_v2(self, observations: dict[str, Any]) -> BackendResult:
+        return self._result_v2(
+            self._pipeline.process_observations_bundle_v2(self._observations(observations))
         )
 
     def process_frame(
@@ -213,6 +229,20 @@ class NativeBackend:
             return self._result(bundle)
         return self._result(
             self._pipeline.process_frame_bundle(frame, self._observations(observations))
+        )
+
+    def process_frame_v2(self, frame: np.ndarray, observations: dict[str, Any]) -> BackendResult:
+        if self._engine_pipeline is not None:
+            bundle = self._engine_pipeline.process_frame_v2(
+                frame,
+                observations["source_id"],
+                int(observations["frame_id"]),
+                int(observations["monotonic_timestamp_ms"]),
+                observations["observed_at"],
+            )
+            return self._result_v2(bundle)
+        return self._result_v2(
+            self._pipeline.process_frame_bundle_v2(frame, self._observations(observations))
         )
 
     def reset(self) -> None:

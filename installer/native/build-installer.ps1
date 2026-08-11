@@ -3,10 +3,10 @@
 [CmdletBinding()]
 param(
     [ValidatePattern('^\d+\.\d+\.\d+(-[0-9A-Za-z.-]+)?$')]
-    [string]$Version = "0.1.0-internal.24",
+    [string]$Version = "0.1.0-internal.25",
 
     [ValidatePattern('^\d+\.\d+\.\d+\.\d+$')]
-    [string]$FileVersion = "0.1.0.24",
+    [string]$FileVersion = "0.1.0.25",
 
     [ValidateSet("Preview", "Release")]
     [string]$BuildMode = "Release",
@@ -235,6 +235,12 @@ manifest = {
         "license": "NOASSERTION",
     },
 }
+if role == "ppe":
+    manifest["label_contract"] = "always-all-seven-v2"
+    manifest["labels"] = [
+        "Gloves", "Person", "Safety_boots", "Vest", "respirador",
+        "tapaorejas", "Hard_hat", "lentes_protectores",
+    ]
 print(json.dumps(manifest, separators=(",", ":")))
 '@
     $output = @(& $PythonPath -c $python $OnnxPath $Role ([System.IO.Path]::GetFileName($SourceModel)) 2>&1)
@@ -283,7 +289,7 @@ function Get-OrExportOnnxModel(
     $sourceSha256 = (Get-FileHash -Algorithm SHA256 -LiteralPath $SourceModel).Hash.ToLowerInvariant()
     $exporterVersion = Get-UltralyticsVersion $PythonPath
     $exportMode = if ($Task -ceq "detect") { "raw-detect-end2end-false-v1" } else { "ultralytics-default-v1" }
-    $recipe = "recipe_version=2;role=$Role;task=$Task;export_mode=$exportMode;imgsz=640;source_sha256=$sourceSha256;ultralytics=$exporterVersion"
+    $recipe = "recipe_version=3;role=$Role;task=$Task;export_mode=$exportMode;imgsz=640;source_sha256=$sourceSha256;ultralytics=$exporterVersion"
     $cacheDirectory = Join-Path $CacheRoot (Get-StringSha256 $recipe)
     $onnxPath = Join-Path $cacheDirectory "$Role.onnx"
     $manifestPath = "$onnxPath.manifest.json"

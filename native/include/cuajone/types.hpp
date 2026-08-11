@@ -4,6 +4,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -48,11 +49,41 @@ struct PoseDetection : Detection {
     std::vector<Keypoint> keypoints;
 };
 
+enum class PpeItem : std::size_t {
+    Gloves,
+    SafetyBoots,
+    Vest,
+    Respirator,
+    HearingProtection,
+    HardHat,
+    EyeProtection,
+    Count,
+};
+
+inline constexpr std::size_t kPpeItemCount = static_cast<std::size_t>(PpeItem::Count);
+
+struct PpeItemState {
+    PpeItem item{};
+    bool required{true};
+    bool present{};
+    float ratio{};
+    float confidence{};
+    std::optional<Detection> detection;
+};
+
+struct PpeEvaluation {
+    bool evaluated{};
+    bool compliant{};
+    std::size_t samples{};
+    std::vector<PpeItemState> items;
+};
+
 struct EventCandidate {
     int track_id{};
     std::string event_type;
     std::string status;
     float confidence{};
+    std::optional<PpeEvaluation> ppe;
 };
 
 float boxArea(const Box& box) noexcept;

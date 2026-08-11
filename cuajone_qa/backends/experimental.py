@@ -19,13 +19,13 @@ from ..canonical import (
 )
 from ..config import QaRuntimeConfig
 from ..contracts import CONTRACT_VERSION, validate_instance
+from ..ppe import PPE_ITEM_CLASS_IDS, PPE_ITEMS, validate_ppe_labels
 from .base import BackendResult
 
 
 @dataclass
 class _State:
-    helmet: deque[bool]
-    vest: deque[bool]
+    ppe: dict[str, deque[float]]
     centers: deque[tuple[int, float]] = field(default_factory=deque)
     last_status: str = ""
     last_ppe_alert: int | None = None
@@ -136,12 +136,16 @@ class ExperimentalBackend:
         return result
 
     @staticmethod
-    def _region(box: list[float], helmet: bool) -> list[float]:
+    def _region(box: list[float], semantic: str) -> list[float]:
         width = max(1.0, box[2] - box[0])
         height = max(1.0, box[3] - box[1])
-        if helmet:
+        if semantic in {"hard_hat", "respirator", "hearing_protection", "eye_protection"}:
             return [box[0] - 0.1 * width, box[1] - 0.15 * height, box[2] + 0.1 * width, box[1] + 0.38 * height]
-        return [box[0] + 0.02 * width, box[1] + 0.15 * height, box[2] - 0.02 * width, box[1] + 0.78 * height]
+        if semantic == "vest":
+            return [box[0] + 0.02 * width, box[1] + 0.15 * height, box[2] - 0.02 * width, box[1] + 0.72 * height]
+        if semantic == "gloves":
+            return [box[0] - 0.2 * width, box[1] + 0.18 * height, box[2] + 0.2 * width, box[1] + 0.78 * height]
+        return [box[0] - 0.1 * width, box[1] + 0.62 * height, box[2] + 0.1 * width, box[1] + 1.12 * height]
 
     @staticmethod
     def _intersection_over_item(item: list[float], region: list[float]) -> float:
@@ -154,23 +158,20 @@ class ExperimentalBackend:
         self,
         people: list[dict[str, Any]],
         detections: list[dict[str, Any]],
-        helmet_ids: set[int],
-        vest_ids: set[int],
-    ) -> dict[int, dict[str, bool]]:
-        result = {person["track_id"]: {"helmet": False, "vest": False} for person in people}
+        item_ids: dict[str, int],
+    ) -> dict[int, dict[str, float]]:
+        result = {person["track_id"]: {item: 0.0 for item in PPE_ITEMS} for person in people}
         scores: dict[tuple[int, str], float] = {}
         for item in detections:
             class_id = int(item["class_id"])
-            semantic = "helmet" if class_id in helmet_ids else "vest" if class_id in vest_ids else None
+            semantic = next((name for name, item_id in item_ids.items() if item_id == class_id), None)
             if semantic is None:
                 continue
             box = [float32_value(value) for value in item["box"]]
             center = ((box[0] + box[2]) / 2.0, (box[1] + box[3]) / 2.0)
             best: tuple[float, int] | None = None
             for person in people:
-                if not person["ppe_evaluable"]:
-                    continue
-                region = self._region(person["box"], semantic == "helmet")
+                region = self._region(person["box"], semantic)
                 inside = region[0] <= center[0] <= region[2] and region[1] <= center[1] <= region[3]
                 score = self._intersection_over_item(box, region) + (0.5 if inside else 0.0)
                 candidate = (score, -person["track_id"])
@@ -182,7 +183,7 @@ class ExperimentalBackend:
                 confidence = float32_value(item["confidence"])
                 if confidence > scores.get(key, -1.0):
                     scores[key] = confidence
-                    result[track_id][semantic] = True
+                    result[track_id][semantic] = confidence
         return result
 
     def _fall(
@@ -244,7 +245,7 @@ class ExperimentalBackend:
             raise ValueError("monotonic_timestamp_ms must not move backwards until reset")
         dimensions = observations["frame"]
         width, height = int(dimensions["width"]), int(dimensions["height"])
-        classes = observations.get("ppe_classes", {"person_ids": [0], "helmet_ids": [1], "vest_ids": [2]})
+        classes = observations.get("ppe_classes", {"person_ids": [1], "item_ids": PPE_ITEM_CLASS_IDS})
         person_ids = set(map(int, classes["person_ids"]))
         ppe_detections = observations.get("ppe_detections", [])
         ppe_person_boxes = [
@@ -289,29 +290,36 @@ class ExperimentalBackend:
                 self.config.mode == "ppe-only" or (visible((0, 1, 2, 3, 4)) and visible((5, 6)) and visible((11, 12)))
             )
             people.append({"track_id": track_id, "box": box, "confidence": candidate["confidence"], "keypoints": keypoints, "ppe_evaluable": evaluable})
-        associations = self._associate(people, ppe_detections, set(classes["helmet_ids"]), set(classes["vest_ids"]))
+        item_ids = {str(name): int(class_id) for name, class_id in classes["item_ids"].items()}
+        associations = self._associate(people, ppe_detections, item_ids)
         canonical_people: list[dict[str, Any]] = []
         events: list[dict[str, Any]] = []
         ppe_config = self.config.values["ppe"]
         for person in people:
             track_id = person["track_id"]
-            state = self._states.setdefault(track_id, _State(deque(maxlen=ppe_config["window"]), deque(maxlen=ppe_config["window"])))
+            state = self._states.setdefault(track_id, _State({
+                item: deque(maxlen=ppe_config["window"]) for item in PPE_ITEMS
+            }))
             association = associations[track_id]
-            status = "Evaluating PPE" if person["ppe_evaluable"] else "PPE not evaluable"
-            if person["ppe_evaluable"]:
-                state.helmet.append(association["helmet"])
-                state.vest.append(association["vest"])
-            if min(len(state.helmet), len(state.vest)) >= ppe_config["minimum_samples"]:
-                helmet_ratio = sum(state.helmet) / len(state.helmet)
-                vest_ratio = sum(state.vest) / len(state.vest)
-                has_helmet = helmet_ratio >= ppe_config["present_ratio"]
-                has_vest = vest_ratio >= ppe_config["present_ratio"]
+            status = "Evaluating PPE"
+            for item in PPE_ITEMS:
+                state.ppe[item].append(association[item])
+            if min(len(values) for values in state.ppe.values()) >= ppe_config["minimum_samples"]:
+                ratios = {
+                    item: sum(value > 0.0 for value in values) / len(values)
+                    for item, values in state.ppe.items()
+                }
+                present = {item: ratio >= ppe_config["present_ratio"] for item, ratio in ratios.items()}
+                has_helmet = present["hard_hat"]
+                has_vest = present["vest"]
                 status = "EPP Completo" if has_helmet and has_vest else "Falta Chaleco" if has_helmet else "Falta Casco" if has_vest else "Sin Casco y Chaleco"
+                missing = tuple(item for item in PPE_ITEMS if not present[item])
+                alert_status = ",".join(missing)
                 cooldown = state.last_ppe_alert is None or timestamp - state.last_ppe_alert >= ppe_config["alert_cooldown_ms"]
-                if status != "EPP Completo" and (status != state.last_status or cooldown):
-                    events.append(make_event(source_id=observations["source_id"], frame_id=frame_id, monotonic_timestamp_ms=timestamp, observed_at=observations["observed_at"], track_id=track_id, event_index=len(events), event_type=PPE_EVENT_TYPE, status=status, confidence=min(1.0, max(1.0 - helmet_ratio, 1.0 - vest_ratio))))
+                if missing and (alert_status != state.last_status or cooldown):
+                    events.append(make_event(source_id=observations["source_id"], frame_id=frame_id, monotonic_timestamp_ms=timestamp, observed_at=observations["observed_at"], track_id=track_id, event_index=len(events), event_type=PPE_EVENT_TYPE, status=status, confidence=min(1.0, max(1.0 - ratios[item] for item in missing))))
                     state.last_ppe_alert = timestamp
-                state.last_status = status
+                state.last_status = alert_status
             fall_active = False
             if self.config.mode == "ppe-fall":
                 confirmed, fall_active, score = self._fall(person, state, height, timestamp)
@@ -380,20 +388,12 @@ class ExperimentalBackend:
             else ppe_model.predict(source=frame, **common)[0]
         )
         names = ppe_result.names
-        normalized = {
-            int(class_id): str(name).strip().lower().replace("-", "_").replace(" ", "_")
-            for class_id, name in (names.items() if isinstance(names, dict) else enumerate(names))
-        }
-        person_aliases = {"person", "persona"}
-        helmet_aliases = {"hard_hat", "hardhat", "helmet", "safety_helmet", "casco"}
-        vest_aliases = {"vest", "safety_vest", "reflective_vest", "chaleco", "chaleco_reflectivo"}
+        validate_ppe_labels({class_id: str(name) for class_id, name in
+            (names.items() if isinstance(names, dict) else enumerate(names))})
         classes = {
-            "person_ids": [class_id for class_id, name in normalized.items() if name in person_aliases],
-            "helmet_ids": [class_id for class_id, name in normalized.items() if name in helmet_aliases],
-            "vest_ids": [class_id for class_id, name in normalized.items() if name in vest_aliases],
+            "person_ids": [1],
+            "item_ids": PPE_ITEM_CLASS_IDS,
         }
-        if any(not values for values in classes.values()):
-            raise RuntimeError("Experimental PPE labels must include person, helmet, and vest semantics")
         boxes = self._tensor_values(ppe_result.boxes.xyxy)
         confidences = self._tensor_values(ppe_result.boxes.conf)
         class_ids = self._tensor_values(ppe_result.boxes.cls).astype(int)

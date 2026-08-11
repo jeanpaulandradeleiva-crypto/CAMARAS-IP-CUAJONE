@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import argparse
 import csv
+import hashlib
+import json
 import math
 import os
 import signal
@@ -26,6 +28,7 @@ import pandas as pd
 from cuajone_qa.backends.native import NativeBackend
 from cuajone_qa.config import QaRuntimeConfig
 from cuajone_qa.contracts import CONTRACT_VERSION, runtime_defaults, validate_instance
+from cuajone_qa.ppe import validate_ppe_labels
 from cuajone_qa.runtime import RuntimeSettings, RuntimeState, resolve_runtime_path as _resolve_runtime_path
 
 
@@ -104,14 +107,35 @@ PERSON_LABELS = {
 }
 
 EVENT_FIELDS = [
+    "Version_Contrato",
     "Evento_ID",
     "Camara",
     "Fecha",
     "Hora",
     "Tipo_Evento",
-    "Casco",
+    "Guantes",
+    "Botas_Seguridad",
     "Chaleco",
+    "Respirador",
+    "Tapaorejas",
+    "Casco",
+    "Lentes_Protectores",
+    "Faltantes_EPP",
     "Estado_EPP",
+    "Ratio_Guantes",
+    "Ratio_Botas_Seguridad",
+    "Ratio_Chaleco",
+    "Ratio_Respirador",
+    "Ratio_Tapaorejas",
+    "Ratio_Casco",
+    "Ratio_Lentes_Protectores",
+    "Confianza_Guantes",
+    "Confianza_Botas_Seguridad",
+    "Confianza_Chaleco",
+    "Confianza_Respirador",
+    "Confianza_Tapaorejas",
+    "Confianza_Casco",
+    "Confianza_Lentes_Protectores",
     "Confianza_Evento",
     "ID_Seguimiento_Temporal",
     "Estado_Revision",
@@ -164,9 +188,29 @@ def parse_ppe_labels(value: str) -> dict[int, str]:
         labels[class_id] = label
     if list(labels) != list(range(len(labels))):
         raise RuntimePrerequisiteError("PPE_LABELS debe usar IDs consecutivos desde cero.")
-    if not recognized_person_class_ids(labels):
-        raise RuntimePrerequisiteError("PPE_LABELS no contiene una clase Person reconocida.")
+    try:
+        validate_ppe_labels(labels)
+    except ValueError as exc:
+        raise RuntimePrerequisiteError(f"PPE_LABELS no cumple el contrato fijo de ocho clases: {exc}") from exc
     return labels
+
+
+def validate_ppe_manifest(model_path: str, labels: dict[int, str]) -> None:
+    manifest_path = Path(f"{model_path}.manifest.json")
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise RuntimePrerequisiteError(f"No se pudo leer el manifest EPP: {manifest_path}") from exc
+    expected_labels = [labels[index] for index in range(len(labels))]
+    if manifest.get("labels") != expected_labels or manifest.get("label_contract") != "always-all-seven-v2":
+        raise RuntimePrerequisiteError("El manifest EPP no vincula el orden fijo de etiquetas v2.")
+    digest_builder = hashlib.sha256()
+    with Path(model_path).open("rb") as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+            digest_builder.update(chunk)
+    digest = digest_builder.hexdigest()
+    if manifest.get("model_sha256") != digest:
+        raise RuntimePrerequisiteError("El hash del modelo EPP no coincide con su manifest.")
 
 
 def native_runtime_config(mode: str) -> QaRuntimeConfig:
@@ -223,6 +267,7 @@ def validate_native_runtime_prerequisites(mode: str) -> None:
         raise RuntimePrerequisiteError(
             "Faltan modelos ONNX fijos o sus manifests requeridos: " + "; ".join(missing)
         )
+    validate_ppe_manifest(config["ppe_onnx"], config["ppe_labels"])
 
 
 def configure_local_native_binding() -> None:
@@ -292,6 +337,9 @@ def run_native_preflight(mode: str) -> int:
         if not onnx_exists or not manifest_exists:
             errors.append(f"Falta el modelo ONNX o manifest {name}: {path}")
     try:
+        labels = parse_ppe_labels(PPE_LABELS)
+        validate_ppe_manifest(PPE_ONNX_PATH, labels)
+        print("Contrato de etiquetas EPP v2: OK")
         load_native_backend(mode)
         print("Binding cuajone_native: OK")
     except (ImportError, OSError, RuntimeError, ValueError) as exc:
@@ -517,21 +565,30 @@ def make_event(
     temporary_track_id: int,
     event_type: str,
     epp_status: str,
-    helmet: bool | None,
-    vest: bool | None,
+    ppe: dict[str, Any] | None,
     confidence: float,
     photo_path: str,
 ) -> dict[str, Any]:
     now = datetime.now()
 
-    return {
+    items = {item["semantic"]: item for item in (ppe or {}).get("items", [])}
+    columns = {
+        "gloves": "Guantes",
+        "safety_boots": "Botas_Seguridad",
+        "vest": "Chaleco",
+        "respirator": "Respirador",
+        "hearing_protection": "Tapaorejas",
+        "hard_hat": "Casco",
+        "eye_protection": "Lentes_Protectores",
+    }
+    event = {
+        "Version_Contrato": "2.0.0",
         "Evento_ID": event_id,
         "Camara": CAMERA_ID,
         "Fecha": now.strftime("%Y-%m-%d"),
         "Hora": now.strftime("%H:%M:%S.%f")[:-3],
         "Tipo_Evento": event_type,
-        "Casco": "SI" if helmet is True else "NO" if helmet is False else "N/D",
-        "Chaleco": "SI" if vest is True else "NO" if vest is False else "N/D",
+        "Faltantes_EPP": ";".join((ppe or {}).get("missing", [])),
         "Estado_EPP": epp_status,
         "Confianza_Evento": round(confidence, 3),
         "ID_Seguimiento_Temporal": temporary_track_id,
@@ -540,6 +597,17 @@ def make_event(
         "Observaciones_Revision": "",
         "Foto": photo_path,
     }
+    evaluated = (ppe or {}).get("state") != "evaluating"
+    for semantic, column in columns.items():
+        item = items.get(semantic)
+        event[column] = (
+            "SI" if item and evaluated and item["present"]
+            else "NO" if item and evaluated
+            else "N/D"
+        )
+        event[f"Ratio_{column}"] = round(float(item["ratio"]), 3) if item else ""
+        event[f"Confianza_{column}"] = round(float(item["confidence"]), 3) if item else ""
+    return event
 
 
 def recognized_person_class_ids(model_names: Any) -> tuple[int, ...]:
@@ -764,23 +832,16 @@ class LatestFrameCapture:
 def native_event_details(event: dict[str, Any]) -> dict[str, Any]:
     data = event["data"]
     status = data["status"]
-    helmet, vest = {
-        "EPP Completo": (True, True),
-        "Falta Chaleco": (True, False),
-        "Falta Casco": (False, True),
-        "Sin Casco y Chaleco": (False, False),
-    }.get(status, (None, None))
     return {
         "event_id": event["id"],
         "track_id": int(data["track_id"]),
         "type": (
             "INCUMPLIMIENTO_EPP"
-            if event["type"] == "com.cuajone.safety.ppe.violation.v1"
+            if event["type"] == "com.cuajone.safety.ppe.violation.v2"
             else "POSIBLE_CAIDA"
         ),
-        "epp_status": "En evaluación" if status == "Evaluating PPE" else status,
-        "helmet": helmet,
-        "vest": vest,
+        "epp_status": "En evaluación" if status in {"Evaluating PPE", "Evaluando EPP"} else status,
+        "ppe": data["ppe"],
         "confidence": float(data["confidence"]),
     }
 
@@ -792,7 +853,7 @@ def process_native_analytics_frame(
     frame_id: int,
     now_monotonic: float,
 ) -> tuple[np.ndarray, list[dict[str, Any]]]:
-    result = backend.process_frame(
+    result = backend.process_frame_v2(
         frame,
         {
             "contract_version": CONTRACT_VERSION,
@@ -804,11 +865,12 @@ def process_native_analytics_frame(
     )
     for person in result.frame_result["people"]:
         x1, y1, x2, y2 = map(int, person["box"])
-        status = person["ppe_status"]
+        ppe = person["ppe"]
         display_status = {
-            "Evaluating PPE": "Evaluando EPP",
-            "PPE not evaluable": "EPP no evaluable: persona parcial",
-        }.get(status, status)
+            "evaluating": "Evaluando EPP",
+            "compliant": "EPP Completo",
+            "noncompliant": "Falta: " + ", ".join(ppe["missing"]),
+        }[ppe["state"]]
         track_text = f"T{person['track_id']} | " if SHOW_TEMPORARY_TRACK_ID else ""
         fall_text = " | POSIBLE CAIDA" if person["fall_active"] else ""
         if mode == DEFAULT_ANALYTICS_MODE and person["keypoints"]:
@@ -827,6 +889,26 @@ def process_native_analytics_frame(
             2,
             cv2.LINE_AA,
         )
+        line_y = y1 + 18
+        for item in ppe["items"]:
+            state = "..." if ppe["state"] == "evaluating" else "OK" if item["present"] else "FALTA"
+            color = (0, 220, 255) if ppe["state"] == "evaluating" else (0, 220, 0) if item["present"] else (0, 0, 255)
+            cv2.putText(
+                frame,
+                f"{item['label']}: {state}",
+                (x1 + 4, line_y),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.42,
+                color,
+                1,
+                cv2.LINE_AA,
+            )
+            line_y += 17
+            detection = item.get("detection")
+            if detection:
+                dx1, dy1, dx2, dy2 = map(int, detection["box"])
+                cv2.rectangle(frame, (dx1, dy1), (dx2, dy2), (0, 220, 255), 2)
+                cv2.putText(frame, item["label"], (dx1, max(20, dy1 - 6)), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (0, 220, 255), 1, cv2.LINE_AA)
     return frame, [native_event_details(event) for event in result.events]
 
 
@@ -946,8 +1028,7 @@ def _run_monitoring(argv: Sequence[str] | None = None) -> int:
                             temporary_track_id=pending["track_id"],
                             event_type=pending["type"],
                             epp_status=pending["epp_status"],
-                            helmet=pending["helmet"],
-                            vest=pending["vest"],
+                            ppe=pending["ppe"],
                             confidence=pending["confidence"],
                             photo_path=photo_path,
                         )

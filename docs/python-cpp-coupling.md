@@ -43,7 +43,7 @@ flowchart LR
 Los contratos y la semántica compartida conectan experimentación y producción;
 el binding sirve para comprobar esa frontera, pero no entra al MSI.
 
-## Contratos v1
+## Contratos v1 y v2
 
 `contracts/v1/` contiene JSON Schema draft 2020-12 para configuración runtime,
 fuentes autorizadas, manifests de engine, resultados de frame y eventos. Todos
@@ -60,14 +60,19 @@ Los eventos usan el sobre obligatorio de CloudEvents 1.0. Sus tipos canónicos s
 - `com.cuajone.safety.ppe.violation.v1`;
 - `com.cuajone.safety.fall.possible.v1`.
 
+Esos tipos v1 permanecen como proyección explícita para consumidores estrictos.
+El runtime actual serializa los eventos EPP estructurados como
+`com.cuajone.safety.ppe.violation.v2` y usa `contracts/v2/`; consulta el
+[contrato fijo de siete EPP](ppe-contract-v2.md). Los serializers v1 y v2 son vistas
+alternativas del mismo candidato de evento, no publicaciones simultáneas.
+
 Las evidencias se representan mediante referencia y SHA-256. El sobre no admite
 URLs RTSP, userinfo ni campos arbitrarios de contraseña.
 
-La persistencia para operadores tiene un segundo contrato versionado, derivado del
-evento canónico sin reconstruir su ID: el
-[contrato CSV/evidencia v1](operator-evidence-contract-v1.md). Producción MSI y el
-harness Python comparten nombres, orden de 14 campos, tipos de evento y semántica
-`SI`/`NO`/`N/D`. La salida nativa es autoritativa. El XLSX existe únicamente como
+La persistencia activa para operadores deriva del evento v2 sin reconstruir su ID.
+Producción MSI y el harness Python comparten los siete estados, ratios, confianzas,
+faltantes y semántica `SI`/`NO`/`N/D`. El [contrato CSV/evidencia v1](operator-evidence-contract-v1.md)
+queda congelado y separado. La salida nativa es autoritativa. El XLSX existe únicamente como
 exportación local/offline para QA y revisión humana; no se genera ni se incluye una
 biblioteca Excel en el MSI.
 

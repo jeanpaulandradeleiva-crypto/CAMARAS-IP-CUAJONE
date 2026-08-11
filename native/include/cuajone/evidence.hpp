@@ -7,14 +7,20 @@
 #include <opencv2/core/mat.hpp>
 
 #include <filesystem>
+#include <array>
 #include <string>
 #include <string_view>
 
 namespace cuajone {
 
-inline constexpr std::string_view kOperatorEvidenceContractVersion{"1.0.0"};
+inline constexpr std::string_view kOperatorEvidenceContractVersion{"2.0.0"};
 inline constexpr std::string_view kOperatorCsvHeader{
-    "Evento_ID,Camara,Fecha,Hora,Tipo_Evento,Casco,Chaleco,Estado_EPP,"
+    "Version_Contrato,Evento_ID,Camara,Fecha,Hora,Tipo_Evento,Guantes,Botas_Seguridad,"
+    "Chaleco,Respirador,Tapaorejas,Casco,Lentes_Protectores,Faltantes_EPP,Estado_EPP,"
+    "Ratio_Guantes,Ratio_Botas_Seguridad,Ratio_Chaleco,Ratio_Respirador,Ratio_Tapaorejas,"
+    "Ratio_Casco,Ratio_Lentes_Protectores,Confianza_Guantes,Confianza_Botas_Seguridad,"
+    "Confianza_Chaleco,Confianza_Respirador,Confianza_Tapaorejas,Confianza_Casco,"
+    "Confianza_Lentes_Protectores,"
     "Confianza_Evento,ID_Seguimiento_Temporal,Estado_Revision,"
     "Identificacion_Humana,Observaciones_Revision,Foto"};
 
@@ -24,8 +30,10 @@ struct EvidenceRecord {
     std::string date;
     std::string time;
     std::string event_type;
-    std::string helmet;
-    std::string vest;
+    std::array<std::string, kPpeItemCount> ppe_states;
+    std::array<float, kPpeItemCount> ppe_ratios{};
+    std::array<float, kPpeItemCount> ppe_confidences{};
+    std::string missing_items;
     std::string ppe_status;
     float confidence{};
     int track_id{};

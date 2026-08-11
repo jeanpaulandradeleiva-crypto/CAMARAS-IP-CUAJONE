@@ -297,11 +297,20 @@ TensorContract tensorContract(const JsonValue& value, std::string_view name, std
 OnnxModelManifest parseManifest(std::string_view json) {
     const JsonValue parsed = JsonParser(json).parse();
     const auto& root = objectValue(parsed, "ONNX manifest");
-    exactKeys(root, {
+    const std::string role = stringValue(required(root, "role"), "role", 16);
+    if (role == "ppe") {
+        exactKeys(root, {
+            "schema_version", "artifact_type", "role", "model_file", "model_sha256",
+            "model_size_bytes", "external_data", "custom_operators", "input", "output",
+            "provenance", "label_contract", "labels",
+        }, "ONNX manifest");
+    } else {
+        exactKeys(root, {
         "schema_version", "artifact_type", "role", "model_file", "model_sha256",
         "model_size_bytes", "external_data", "custom_operators", "input", "output",
         "provenance",
-    }, "ONNX manifest");
+        }, "ONNX manifest");
+    }
     if (integerValue(required(root, "schema_version"), "schema_version", 1) != 1) {
         throw std::runtime_error("Unsupported ONNX manifest schema_version");
     }
@@ -309,7 +318,6 @@ OnnxModelManifest parseManifest(std::string_view json) {
         throw std::runtime_error("ONNX manifest artifact_type must be onnx");
     }
     OnnxModelManifest result;
-    const std::string role = stringValue(required(root, "role"), "role", 16);
     if (role == "ppe") result.role = ModelRole::Ppe;
     else if (role == "pose") result.role = ModelRole::Pose;
     else throw std::runtime_error("ONNX manifest role must be ppe or pose");
@@ -346,6 +354,15 @@ OnnxModelManifest parseManifest(std::string_view json) {
     }
     result.exporter = stringValue(required(provenance, "exporter"), "exporter", 256);
     result.license = stringValue(required(provenance, "license"), "license", 256);
+    if (result.role == ModelRole::Ppe) {
+        result.label_contract = stringValue(required(root, "label_contract"), "label_contract", 64);
+        for (const auto& label : arrayValue(required(root, "labels"), "PPE labels")) {
+            result.labels.push_back(stringValue(label, "PPE label", 64));
+        }
+        if (result.label_contract != "always-all-seven-v2" || result.labels.size() != 8) {
+            throw std::runtime_error("PPE manifest must bind the always-all-seven-v2 label contract");
+        }
+    }
     return result;
 }
 

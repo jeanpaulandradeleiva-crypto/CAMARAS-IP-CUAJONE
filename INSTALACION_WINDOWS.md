@@ -50,7 +50,7 @@ PowerShell ni escribir comandos.
    ventana si falta un dato.
 
 Cuando ocurre un evento, la carpeta de salida contiene
-`Reporte_Eventos_Seguridad.csv` y las fotos anotadas en `Evidencias/`. Es la salida
+`Reporte_Eventos_Seguridad_v2.csv` y las fotos anotadas en `Evidencias/`. El reporte muestra los siete EPP obligatorios y es la salida
 de producción que debe conservarse para el procedimiento autorizado de revisión.
 La aplicación instalada no crea un archivo Excel. Un XLSX que genere el harness
 Python pertenece únicamente a una revisión local/offline de QA.

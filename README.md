@@ -96,24 +96,17 @@ No se ejecutan pruebas RTSP como parte de la suite automatizada.
 
 ## Contrato de eventos y evidencias
 
-La salida autoritativa de producción es la del runtime nativo instalado por MSI.
-El harness Python conserva el mismo contrato CSV/evidencia para QA local. Dentro de
+La salida activa usa el [contrato EPP v2](docs/ppe-contract-v2.md). El runtime nativo
+y el harness Python conservan el mismo CSV/evidencia de siete elementos. Dentro de
 la carpeta de salida:
 
-- `Reporte_Eventos_Seguridad.csv`: append inmediato de eventos;
+- `Reporte_Eventos_Seguridad_v2.csv`: append inmediato de eventos;
 - `Evidencias/`: imágenes JPEG anotadas.
 
-El orden v1 es:
-
-```csv
-Evento_ID,Camara,Fecha,Hora,Tipo_Evento,Casco,Chaleco,Estado_EPP,Confianza_Evento,ID_Seguimiento_Temporal,Estado_Revision,Identificacion_Humana,Observaciones_Revision,Foto
-```
-
 El MSI no genera XLSX ni necesita una biblioteca Excel.
-`Reporte_Eventos_Seguridad.xlsx` es solo una conveniencia local/offline del harness
-Python para revisión humana. Consulta el
-[contrato v1 completo](docs/operator-evidence-contract-v1.md), incluida la migración
-de `native_events.csv` y `evidence/`.
+`Reporte_Eventos_Seguridad_v2.xlsx` es solo una conveniencia local/offline del harness
+Python para revisión humana. El [contrato v1](docs/operator-evidence-contract-v1.md)
+permanece congelado para consumidores estrictos y no se mezcla con el reporte v2.
 
 Los IDs de seguimiento correlacionan observaciones temporales; no identifican
 personas.
