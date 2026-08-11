@@ -10,7 +10,6 @@ import shutil
 from pathlib import Path
 from typing import Any
 
-import onnx
 from ultralytics import YOLO
 
 
@@ -52,6 +51,16 @@ def _export_options(task: str) -> dict[str, Any]:
 
 
 def export_one(source: Path, target: Path, role: str, task: str) -> None:
+    try:
+        import onnx
+    except ModuleNotFoundError as exc:
+        if exc.name != "onnx":
+            raise
+        raise RuntimeError(
+            "ONNX export validation requires the optional 'onnx' package. "
+            "Install it with `uv pip install onnx` and retry."
+        ) from exc
+
     print(f"Exportando {role}: {source.name} -> {target}")
     model = YOLO(str(source), task=task)
     if task == "detect" and hasattr(model.model.model[-1], "end2end"):
