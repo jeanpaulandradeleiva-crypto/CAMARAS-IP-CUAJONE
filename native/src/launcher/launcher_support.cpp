@@ -10,7 +10,6 @@
 #include <cmath>
 #include <cwctype>
 #include <fstream>
-#include <iomanip>
 #include <map>
 #include <sstream>
 #include <windows.h>
@@ -158,6 +157,55 @@ ManagedModelSet resolveManagedModelSet(
     return result;
 }
 
+float parsePpeConfidenceThreshold(std::wstring_view text) {
+    const auto is_digit = [](wchar_t character) {
+        return character >= L'0' && character <= L'9';
+    };
+    const std::size_t decimal = text.find(L'.');
+    const std::wstring_view whole = text.substr(0, decimal);
+    const std::wstring_view fraction = decimal == std::wstring_view::npos
+        ? std::wstring_view{}
+        : text.substr(decimal + 1);
+    if (whole.empty() || !std::ranges::all_of(whole, is_digit)
+        || (decimal != std::wstring_view::npos
+            && (fraction.empty() || fraction.size() > 2
+                || !std::ranges::all_of(fraction, is_digit)))) {
+        throw std::invalid_argument("PPE class confidence must be a decimal from 0.00 to 1.00");
+    }
+
+    int whole_value{};
+    for (const wchar_t character : whole) {
+        whole_value = whole_value * 10 + (character - L'0');
+        if (whole_value > 1) {
+            throw std::invalid_argument("PPE class confidence must be a decimal from 0.00 to 1.00");
+        }
+    }
+    int fractional_value{};
+    if (!fraction.empty()) {
+        fractional_value = (fraction[0] - L'0') * 10;
+        if (fraction.size() == 2) fractional_value += fraction[1] - L'0';
+    }
+    if (whole_value == 1 && fractional_value != 0) {
+        throw std::invalid_argument("PPE class confidence must be a decimal from 0.00 to 1.00");
+    }
+    return static_cast<float>(whole_value * 100 + fractional_value) / 100.0F;
+}
+
+std::wstring formatPpeConfidenceThreshold(float value) {
+    if (!std::isfinite(value) || value < 0.0F || value > 1.0F) {
+        throw std::invalid_argument("PPE class confidence must be finite and in [0, 1]");
+    }
+    const int hundredths = static_cast<int>(std::lround(value * 100.0F));
+    if (std::abs(value - static_cast<float>(hundredths) / 100.0F) > 0.00001F) {
+        throw std::invalid_argument("PPE class confidence must have at most two decimal places");
+    }
+    std::wstring result = std::to_wstring(hundredths / 100);
+    result += L'.';
+    result += static_cast<wchar_t>(L'0' + hundredths % 100 / 10);
+    result += static_cast<wchar_t>(L'0' + hundredths % 10);
+    return result;
+}
+
 LaunchPlan buildLaunchPlan(const LauncherSettings& settings, bool preflight) {
     if (settings.source.empty()) {
         throw std::invalid_argument("RTSP camera URL is required");
@@ -234,10 +282,9 @@ LaunchPlan buildLaunchPlan(const LauncherSettings& settings, bool preflight) {
     result.arguments.push_back(std::to_wstring(settings.image_size));
     for (std::size_t index = 0; index < kPpeOutputLabels.size(); ++index) {
         result.arguments.emplace_back(L"--ppe-class-conf");
-        std::wostringstream value;
-        value << wideFromUtf8(kPpeOutputLabels[index]) << L'=' << std::fixed
-              << std::setprecision(2) << settings.ppe_class_confidences[index];
-        result.arguments.push_back(value.str());
+        result.arguments.push_back(
+            wideFromUtf8(kPpeOutputLabels[index]) + L'='
+            + formatPpeConfidenceThreshold(settings.ppe_class_confidences[index]));
     }
 
     const bool include_tensor_rt = tensor_rt_candidate && settings.compute_mode != ComputeMode::Cpu;
@@ -276,9 +323,10 @@ OperatorPreferences parseOperatorPreferences(std::string_view text) {
             throw std::invalid_argument("Preferences contain an invalid or duplicate entry");
         }
     }
-    if (values.size() != 5 || !values.contains("schema_version")
+    if ((values.size() != 5 && values.size() != 6) || !values.contains("schema_version")
         || !values.contains("language") || !values.contains("theme")
-        || !values.contains("imgsz") || !values.contains("ppe_class_conf")) {
+        || !values.contains("imgsz") || !values.contains("ppe_class_conf")
+        || (values.size() == 6 && !values.contains("show_window"))) {
         throw std::invalid_argument("Preferences contain missing or unsupported entries");
     }
     OperatorPreferences result;
@@ -312,9 +360,10 @@ OperatorPreferences parseOperatorPreferences(std::string_view text) {
             throw std::invalid_argument("Preferences PPE threshold order is invalid");
         }
         const std::string_view number(entry.data() + separator + 1, entry.size() - separator - 1);
-        const auto parsed = std::from_chars(
-            number.data(), number.data() + number.size(), result.ppe_class_confidences[index]);
-        if (parsed.ec != std::errc{} || parsed.ptr != number.data() + number.size()) {
+        try {
+            result.ppe_class_confidences[index] = parsePpeConfidenceThreshold(
+                std::wstring(number.begin(), number.end()));
+        } catch (const std::invalid_argument&) {
             throw std::invalid_argument("Preferences PPE threshold value is invalid");
         }
         ++index;
@@ -323,6 +372,11 @@ OperatorPreferences parseOperatorPreferences(std::string_view text) {
         throw std::invalid_argument("Preferences require exactly eight PPE thresholds");
     }
     validatePpeClassConfidences(result.ppe_class_confidences);
+    if (const auto show_window = values.find("show_window"); show_window != values.end()) {
+        if (show_window->second == "1") result.show_window = true;
+        else if (show_window->second == "0") result.show_window = false;
+        else throw std::invalid_argument("Preferences show_window must be 0 or 1");
+    }
     return result;
 }
 
@@ -337,11 +391,14 @@ std::string serializeOperatorPreferences(const OperatorPreferences& preferences)
            << "language=" << (preferences.language == UiLanguage::Spanish ? "es" : "en") << '\n'
            << "theme=" << (preferences.theme == ThemeMode::Dark ? "dark" : "light") << '\n'
            << "imgsz=" << preferences.image_size << '\n'
+           << "show_window=" << (preferences.show_window ? "1" : "0") << '\n'
            << "ppe_class_conf=";
     for (std::size_t index = 0; index < kPpeOutputLabels.size(); ++index) {
         if (index != 0) output << ',';
-        output << kPpeOutputLabels[index] << ':' << std::fixed << std::setprecision(2)
-               << preferences.ppe_class_confidences[index];
+        const std::wstring threshold = formatPpeConfidenceThreshold(
+            preferences.ppe_class_confidences[index]);
+        output << kPpeOutputLabels[index] << ':'
+               << std::string(threshold.begin(), threshold.end());
     }
     output << '\n';
     return output.str();

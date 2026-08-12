@@ -42,6 +42,7 @@ struct OperatorPreferences {
     std::array<float, kPpeOutputLabels.size()> ppe_class_confidences{
         0.30F, 0.30F, 0.30F, 0.30F, 0.30F, 0.30F, 0.30F, 0.30F,
     };
+    bool show_window{true};
 };
 
 struct ManagedModelSet {
@@ -66,7 +67,7 @@ struct LauncherSettings {
     std::array<float, kPpeOutputLabels.size()> ppe_class_confidences{
         0.30F, 0.30F, 0.30F, 0.30F, 0.30F, 0.30F, 0.30F, 0.30F,
     };
-    bool show_window{};
+    bool show_window{true};
 };
 
 struct LaunchPlan {
@@ -80,6 +81,8 @@ ManagedModelSet resolveManagedModelSet(
     const std::filesystem::path& root,
     bool pose_required);
 LaunchPlan buildLaunchPlan(const LauncherSettings& settings, bool preflight);
+float parsePpeConfidenceThreshold(std::wstring_view text);
+std::wstring formatPpeConfidenceThreshold(float value);
 OperatorPreferences parseOperatorPreferences(std::string_view text);
 std::string serializeOperatorPreferences(const OperatorPreferences& preferences);
 OperatorPreferences loadOperatorPreferences(const std::filesystem::path& path) noexcept;

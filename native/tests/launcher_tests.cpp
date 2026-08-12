@@ -225,6 +225,18 @@ void testOperationalSettingsAndArguments() {
     require(contains(plan.arguments, L"Gloves=0.01")
             && contains(plan.arguments, L"lentes_protectores=0.78"),
         "Launcher class threshold order or formatting changed");
+    require(contains(plan.arguments, L"--show"),
+        "Launcher did not show annotated video by default");
+
+    settings.show_window = false;
+    require(!contains(buildLaunchPlan(settings, false).arguments, L"--show"),
+        "Launcher emitted --show after the user disabled annotated video");
+    settings.show_window = true;
+
+    settings.ppe_class_confidences[0] = 0.123F;
+    requireThrows([&] { buildLaunchPlan(settings, false); },
+        "Launcher accepted a PPE threshold with more-than-hundredth precision");
+    settings.ppe_class_confidences[0] = 0.01F;
 
     settings.image_size = 800;
     requireThrows([&] { buildLaunchPlan(settings, false); },
@@ -235,26 +247,60 @@ void testOperationalSettingsAndArguments() {
         "Launcher accepted a model-path UI option");
 }
 
+void testPpeConfidenceThresholdParsing() {
+    require(parsePpeConfidenceThreshold(L"0") == 0.0F
+            && parsePpeConfidenceThreshold(L"0.42") == 0.42F
+            && parsePpeConfidenceThreshold(L"1") == 1.0F,
+        "PPE confidence parser rejected valid inclusive values");
+    require(formatPpeConfidenceThreshold(parsePpeConfidenceThreshold(L"0.4")) == L"0.40"
+            && formatPpeConfidenceThreshold(parsePpeConfidenceThreshold(L"1.00")) == L"1.00",
+        "PPE confidence parser did not canonicalize to hundredths");
+    for (const std::wstring_view invalid : {
+             L"", L".42", L"0.", L"0.001", L"1.01", L"-0.01", L"nan", L"1,0", L"1e0"}) {
+        requireThrows([&] { static_cast<void>(parsePpeConfidenceThreshold(invalid)); },
+            "PPE confidence parser accepted invalid manual input");
+    }
+    requireThrows([] { static_cast<void>(formatPpeConfidenceThreshold(0.123F)); },
+        "PPE confidence formatter accepted more-than-hundredth precision");
+}
+
 void testPreferencesPersistenceAndUiContract() {
     TemporaryTree tree;
     const auto path = tree.root() / L"settings" / L"operator-settings-v1.txt";
+    require(OperatorPreferences{}.show_window && LauncherSettings{}.show_window,
+        "Annotated video does not default to enabled");
     OperatorPreferences preferences;
     preferences.language = UiLanguage::Spanish;
     preferences.theme = ThemeMode::Dark;
     preferences.image_size = 1280;
     preferences.ppe_class_confidences[0] = 0.11F;
     preferences.ppe_class_confidences[7] = 0.88F;
+    preferences.show_window = false;
     saveOperatorPreferencesAtomic(path, preferences);
     const auto loaded = loadOperatorPreferences(path);
     require(loaded.language == UiLanguage::Spanish && loaded.theme == ThemeMode::Dark
             && loaded.image_size == 1280
             && loaded.ppe_class_confidences[0] == 0.11F
-            && loaded.ppe_class_confidences[7] == 0.88F,
+            && loaded.ppe_class_confidences[7] == 0.88F
+            && !loaded.show_window,
         "Operator preferences did not roundtrip");
+    std::ofstream(path, std::ios::binary | std::ios::trunc)
+        << "schema_version=1\n"
+        << "language=es\n"
+        << "theme=dark\n"
+        << "imgsz=1280\n"
+        << "ppe_class_conf=Gloves:0.11,Person:0.30,Safety_boots:0.30,Vest:0.30,"
+        << "respirador:0.30,tapaorejas:0.30,Hard_hat:0.30,lentes_protectores:0.88\n";
+    const auto legacy = loadOperatorPreferences(path);
+    require(legacy.language == UiLanguage::Spanish && legacy.theme == ThemeMode::Dark
+            && legacy.image_size == 1280 && legacy.ppe_class_confidences[0] == 0.11F
+            && legacy.ppe_class_confidences[7] == 0.88F && legacy.show_window,
+        "Legacy preferences did not retain settings and default annotated video to enabled");
     std::ofstream(path, std::ios::binary | std::ios::trunc) << "corrupt";
     const auto fallback = loadOperatorPreferences(path);
     require(fallback.language == UiLanguage::English && fallback.theme == ThemeMode::Light
-            && fallback.image_size == 640 && fallback.ppe_class_confidences[0] == 0.30F,
+            && fallback.image_size == 640 && fallback.ppe_class_confidences[0] == 0.30F
+            && fallback.show_window,
         "Corrupt preferences did not fail closed to defaults");
 
     const auto controls = visibleLauncherControlKeys();
@@ -324,6 +370,7 @@ int main() {
         {"launcher model matrix and arguments", testModelMatrixAndArguments},
         {"PPE-only pose omission", testPpeOnlyOmitsPoseArguments},
         {"operational settings and arguments", testOperationalSettingsAndArguments},
+        {"PPE confidence threshold parsing", testPpeConfidenceThresholdParsing},
         {"preferences persistence and UI contract", testPreferencesPersistenceAndUiContract},
         {"Windows command-line quoting", testWindowsQuoting},
         {"RTSP credential redaction", testCredentialRedaction},

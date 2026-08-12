@@ -51,6 +51,9 @@ constexpr ULONGLONG kGracefulStopMilliseconds = 30000;
 struct LauncherWindow;
 std::filesystem::path siblingRuntime();
 void persistPreferences(LauncherWindow& state);
+void showError(LauncherWindow& state, const std::exception& error);
+LRESULT CALLBACK thresholdWheelProcedure(
+    HWND window, UINT message, WPARAM wparam, LPARAM lparam, UINT_PTR, DWORD_PTR reference);
 
 enum ControlId : int {
     SourceEdit = 100,
@@ -494,20 +497,6 @@ void drawButton(const LauncherWindow& state, const DRAWITEMSTRUCT& item) {
     }
     wchar_t text[128]{};
     GetWindowTextW(item.hwndItem, text, static_cast<int>(std::size(text)));
-    if (id == ShowCheck) {
-        RECT box{content.left + 4, content.top + 4, content.left + 20, content.top + 20};
-        HBRUSH box_brush = CreateSolidBrush(colors.border);
-        FrameRect(item.hDC, &box, box_brush);
-        DeleteObject(box_brush);
-        if (SendMessageW(item.hwndItem, BM_GETCHECK, 0, 0) == BST_CHECKED) {
-            MoveToEx(item.hDC, box.left + 3, box.top + 8, nullptr);
-            LineTo(item.hDC, box.left + 7, box.bottom - 3);
-            LineTo(item.hDC, box.right - 2, box.top + 3);
-        }
-        content.left += 27;
-        DrawTextW(item.hDC, text, -1, &content, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
-        return;
-    }
     DrawTextW(item.hDC, text, -1, &content, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
 }
 
@@ -589,9 +578,22 @@ void populateThresholdCombo(HWND combo, float selected) {
         swprintf_s(value, L"%d.%02d", hundredths / 100, hundredths % 100);
         SendMessageW(combo, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(value));
     }
-    const int selection = std::clamp(
-        static_cast<int>(std::lround(selected * 100.0F)), 0, 100);
-    SendMessageW(combo, CB_SETCURSEL, selection, 0);
+    SetWindowTextW(combo, formatPpeConfidenceThreshold(selected).c_str());
+    SendMessageW(combo, CB_SETCURSEL,
+        static_cast<WPARAM>(std::lround(selected * 100.0F)), 0);
+}
+
+void setThresholdComboValue(HWND combo, int hundredths) {
+    const int clamped = std::clamp(hundredths, 0, 100);
+    const std::wstring text = formatPpeConfidenceThreshold(static_cast<float>(clamped) / 100.0F);
+    SendMessageW(combo, CB_SETCURSEL, clamped, 0);
+    SetWindowTextW(combo, text.c_str());
+}
+
+HWND createThresholdCombo(LauncherWindow& state, int id, int x, int y, int width) {
+    return createControl(
+        state, 0, WC_COMBOBOXW, L"", WS_TABSTOP | CBS_DROPDOWN | CBS_AUTOHSCROLL,
+        x, y, width, 300, id);
 }
 
 void createControls(LauncherWindow& state) {
@@ -712,15 +714,31 @@ void createControls(LauncherWindow& state) {
             CP_UTF8, MB_ERR_INVALID_CHARS, kPpeOutputLabels[index].data(),
             static_cast<int>(kPpeOutputLabels[index].size()), label.data(), text_length);
         createLabel(state, label.c_str(), label_positions[index], y, 190);
-        state.ppe_thresholds[index] = createClosedCombo(
+        state.ppe_thresholds[index] = createThresholdCombo(
             state, PpeThresholdBase + static_cast<int>(index), threshold_x[index], y, 100);
         populateThresholdCombo(
             state.ppe_thresholds[index], state.preferences.ppe_class_confidences[index]);
+        if (!SetWindowSubclass(
+                state.ppe_thresholds[index], thresholdWheelProcedure,
+                static_cast<UINT_PTR>(PpeThresholdBase + static_cast<int>(index)),
+                reinterpret_cast<DWORD_PTR>(&state))) {
+            throw std::runtime_error("Could not handle PPE threshold mouse-wheel input");
+        }
+        const HWND edit = GetWindow(state.ppe_thresholds[index], GW_CHILD);
+        if (edit == nullptr || !SetWindowSubclass(
+                edit, thresholdWheelProcedure,
+                static_cast<UINT_PTR>(PpeThresholdBase + static_cast<int>(index)),
+                reinterpret_cast<DWORD_PTR>(&state))) {
+            throw std::runtime_error("Could not handle PPE threshold text input");
+        }
     }
 
     state.show = createControl(
         state, 0, L"BUTTON", L"Show annotated video window",
-        WS_TABSTOP | BS_OWNERDRAW, edit_x, row_y + 358, 340, 24, ShowCheck);
+        WS_TABSTOP | BS_AUTOCHECKBOX, edit_x, row_y + 358, 340, 24, ShowCheck);
+    SendMessageW(
+        state.show, BM_SETCHECK,
+        state.preferences.show_window ? BST_CHECKED : BST_UNCHECKED, 0);
     addLocalizedText(
         state, state.show, L"Show annotated video window", L"Mostrar ventana de video anotada");
 
@@ -822,15 +840,14 @@ void loadEnv(LauncherWindow& state) {
             (*show == L"1" || upper(*show) == L"TRUE") ? BST_CHECKED : BST_UNCHECKED, 0);
     }
     if (const auto confidence = envValue(values, L"PPE_CONF")) {
-        wchar_t* end = nullptr;
-        const float parsed = std::wcstof(confidence->c_str(), &end);
-        if (end != confidence->c_str() + confidence->size() || !std::isfinite(parsed)
-            || parsed < 0.0F || parsed > 1.0F) {
-            throw std::invalid_argument("PPE_CONF must be finite and in [0, 1]");
+        int selection{};
+        try {
+            selection = static_cast<int>(std::lround(parsePpeConfidenceThreshold(*confidence) * 100.0F));
+        } catch (const std::invalid_argument&) {
+            throw std::invalid_argument("PPE_CONF must be a decimal from 0.00 to 1.00");
         }
-        const int selection = static_cast<int>(std::lround(parsed * 100.0F));
         for (HWND threshold : state.ppe_thresholds) {
-            SendMessageW(threshold, CB_SETCURSEL, selection, 0);
+            setThresholdComboValue(threshold, selection);
         }
     }
     const auto ppe_imgsz = envValue(values, L"PPE_IMGSZ");
@@ -947,11 +964,8 @@ LauncherSettings readSettings(const LauncherWindow& state) {
     }
     settings.image_size = kAllowedImageSizes[static_cast<std::size_t>(image_selection)];
     for (std::size_t index = 0; index < settings.ppe_class_confidences.size(); ++index) {
-        const LRESULT selection = SendMessageW(state.ppe_thresholds[index], CB_GETCURSEL, 0, 0);
-        if (selection == CB_ERR || selection < 0 || selection > 100) {
-            throw std::invalid_argument("Select all eight PPE class confidence thresholds");
-        }
-        settings.ppe_class_confidences[index] = static_cast<float>(selection) / 100.0F;
+        settings.ppe_class_confidences[index] = parsePpeConfidenceThreshold(
+            editText(state.ppe_thresholds[index]));
     }
     settings.show_window = SendMessageW(state.show, BM_GETCHECK, 0, 0) == BST_CHECKED;
     return settings;
@@ -963,6 +977,12 @@ void persistPreferences(LauncherWindow& state) {
     state.preferences.theme = state.dark ? ThemeMode::Dark : ThemeMode::Light;
     state.preferences.image_size = current.image_size;
     state.preferences.ppe_class_confidences = current.ppe_class_confidences;
+    state.preferences.show_window = current.show_window;
+    for (std::size_t index = 0; index < current.ppe_class_confidences.size(); ++index) {
+        setThresholdComboValue(
+            state.ppe_thresholds[index],
+            static_cast<int>(std::lround(current.ppe_class_confidences[index] * 100.0F)));
+    }
     saveOperatorPreferencesAtomic(state.preferences_path, state.preferences);
 }
 
@@ -1238,6 +1258,30 @@ void showError(LauncherWindow& state, const std::exception& error) {
     MessageBoxW(state.window, message.c_str(), kProductName, MB_OK | MB_ICONERROR);
 }
 
+LRESULT CALLBACK thresholdWheelProcedure(
+    HWND window, UINT message, WPARAM wparam, LPARAM lparam, UINT_PTR, DWORD_PTR reference) {
+    if (message != WM_MOUSEWHEEL) return DefSubclassProc(window, message, wparam, lparam);
+
+    auto& state = *reinterpret_cast<LauncherWindow*>(reference);
+    HWND combo = GetParent(window) == state.window ? window : GetParent(window);
+    const auto threshold = std::ranges::find(state.ppe_thresholds, combo);
+    if (threshold == state.ppe_thresholds.end()) {
+        return DefSubclassProc(window, message, wparam, lparam);
+    }
+    const int steps = GET_WHEEL_DELTA_WPARAM(wparam) / WHEEL_DELTA;
+    if (steps == 0) return 0;
+    try {
+        const int current = static_cast<int>(std::lround(
+            parsePpeConfidenceThreshold(editText(combo)) * 100.0F));
+        SetFocus(combo);
+        setThresholdComboValue(combo, current + steps * 2);
+        persistPreferences(state);
+    } catch (const std::exception& error) {
+        showError(state, error);
+    }
+    return 0;
+}
+
 void browseInto(LauncherWindow& state, int id) {
     if (id == OutputBrowse) {
         const auto path = pickFolder(state.window);
@@ -1336,17 +1380,15 @@ LRESULT CALLBACK windowProcedure(HWND window, UINT message, WPARAM wparam, LPARA
                 else if (id == OutputBrowse) {
                     browseInto(*state, id);
                 }
-                else if (id == ShowCheck) {
-                    const LRESULT checked = SendMessageW(state->show, BM_GETCHECK, 0, 0);
-                    SendMessageW(
-                        state->show, BM_SETCHECK,
-                        checked == BST_CHECKED ? BST_UNCHECKED : BST_CHECKED, 0);
-                    InvalidateRect(state->show, nullptr, TRUE);
+                else if (id == ShowCheck && HIWORD(wparam) == BN_CLICKED) {
+                    persistPreferences(*state);
                 }
-                else if ((id == ImageSizeCombo
-                    || (id >= PpeThresholdBase
-                        && id < PpeThresholdBase + static_cast<int>(kPpeOutputLabels.size())))
-                    && HIWORD(wparam) == CBN_SELCHANGE) {
+                else if (id == ImageSizeCombo && HIWORD(wparam) == CBN_SELCHANGE) {
+                    persistPreferences(*state);
+                }
+                else if (id >= PpeThresholdBase
+                    && id < PpeThresholdBase + static_cast<int>(kPpeOutputLabels.size())
+                    && (HIWORD(wparam) == CBN_SELCHANGE || HIWORD(wparam) == CBN_KILLFOCUS)) {
                     persistPreferences(*state);
                 }
                 return 0;
