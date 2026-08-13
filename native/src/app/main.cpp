@@ -40,7 +40,7 @@ using namespace cuajone;
 using Clock = std::chrono::steady_clock;
 
 std::atomic_bool stop_requested{};
-constexpr char kLiveAnalyticsWindowTitle[] = "NexoAI Vision — Live Analytics";
+constexpr char kLiveAnalyticsWindowTitle[] = "NexoAI Vision - Live Analytics";
 
 #ifdef _WIN32
 constexpr wchar_t kCudaWarmupChildEnvironment[] = L"CUAJONE_INTERNAL_CUDA_WARMUP_CHILD";
@@ -164,6 +164,7 @@ EnginePipelineConfig enginePipelineConfig(
         config.image_size,
         config.ppe_confidence,
         config.ppe_class_confidences,
+        config.ppe_enabled,
         config.pose_confidence,
         config.nms_iou,
         config.max_det,
@@ -271,9 +272,11 @@ void drawPerson(cv::Mat& frame, const CanonicalPerson& person) {
     if (!person.ppe) return;
     int line_y = static_cast<int>(person.box.y1) + 18;
     for (const auto& item : person.ppe->items) {
-        const std::string state = !person.ppe->evaluated ? "..." : item.present ? "OK" : "MISSING";
-        const cv::Scalar color = !person.ppe->evaluated ? cv::Scalar(0, 220, 255)
-            : item.present ? cv::Scalar(0, 220, 0) : cv::Scalar(0, 0, 255);
+        if (!item.enabled) continue;
+        const std::string state = !person.ppe->evaluated ? "..." : std::string(ppeWearStateName(item.wear_state));
+        const cv::Scalar color = !person.ppe->evaluated || item.wear_state == PpeWearState::NotVerifiable
+            ? cv::Scalar(0, 220, 255) : item.wear_state == PpeWearState::PresentCorrectly
+            ? cv::Scalar(0, 220, 0) : cv::Scalar(0, 0, 255);
         cv::putText(frame,
             std::string(ppeItemLabel(item.item)) + ": " + state,
             cv::Point(static_cast<int>(person.box.x1) + 4, line_y),
@@ -309,6 +312,7 @@ int monitor(
     const RuntimeConfig& config,
     NativeEnginePipeline& pipeline) {
     EvidenceWriter evidence(config.output);
+    EvidenceWriterV3 evidence_v3(config.output);
     LatestFrameCapture capture(
         config.source,
         std::chrono::duration<double>(config.reconnect_delay_seconds),
@@ -366,6 +370,7 @@ int monitor(
             drawPerson(frame, person);
             const auto& association = processed.associations.at(person.track_id);
             for (const PpeItem item : requiredPpeItems()) {
+                if (!config.ppe_enabled[static_cast<std::size_t>(item)]) continue;
                 drawAssociatedItem(frame, association.detection(item), std::string(ppeItemLabel(item)));
             }
         }
@@ -373,6 +378,7 @@ int monitor(
         for (const auto& event : processed.canonical.events) {
             try {
                 const auto record = evidence.append(frame, config.source_label, event);
+                if (event.type == "com.cuajone.safety.ppe.violation.v2") evidence_v3.append(event);
                 std::cout << "Event: " << record.event_type << " | track " << record.track_id
                           << " | " << record.date << 'T' << record.time << "Z\n";
             } catch (const std::exception& error) {

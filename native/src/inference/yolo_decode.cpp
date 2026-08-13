@@ -350,7 +350,22 @@ std::vector<Detection> decodeDetections(
     float iou_threshold,
     const LetterboxTransform& transform,
     DecodeLimits limits) {
+    return decodeDetections(tensor, class_count, class_confidence_thresholds,
+        std::vector<std::uint8_t>(class_count, 1), iou_threshold, transform, limits);
+}
+
+std::vector<Detection> decodeDetections(
+    const TensorView& tensor,
+    std::size_t class_count,
+    std::span<const float> class_confidence_thresholds,
+    std::span<const std::uint8_t> class_enabled,
+    float iou_threshold,
+    const LetterboxTransform& transform,
+    DecodeLimits limits) {
     validateClassConfidenceThresholds(class_confidence_thresholds, class_count);
+    if (class_enabled.size() != class_count) {
+        throw std::invalid_argument("PPE enabled-class mask must match the class count");
+    }
     validateDecodeOptions(0.0F, iou_threshold, transform, limits);
     const YoloSchema schema = validateDetectSchema(tensor.shape, class_count);
     const PredictionAccessor values(tensor, schema);
@@ -360,6 +375,7 @@ std::vector<Detection> decodeDetections(
         const auto confidence = confidenceFor(values, schema, prediction);
         if (!raw_box || !confidence
             || confidence->value < class_confidence_thresholds[static_cast<std::size_t>(confidence->class_id)]
+            || !class_enabled[static_cast<std::size_t>(confidence->class_id)]
             || raw_box->width <= 0.0F || raw_box->height <= 0.0F) continue;
         const Box box = modelBox(*raw_box);
         const Detection candidate{box, confidence->value, confidence->class_id};

@@ -393,4 +393,20 @@ EvidenceRecord EvidenceWriter::append(
     return record;
 }
 
+EvidenceWriterV3::EvidenceWriterV3(std::filesystem::path output)
+    : report_(std::move(output) / "Reporte_Eventos_Seguridad_v3.jsonl") {
+    validateWritableOutput(report_.parent_path());
+}
+
+void EvidenceWriterV3::append(const CanonicalEvent& event) {
+    if (event.type != "com.cuajone.safety.ppe.violation.v2") {
+        throw std::invalid_argument("V3 operator report accepts only PPE violation events");
+    }
+    std::ofstream output(report_, std::ios::binary | std::ios::app);
+    if (!output) throw std::runtime_error("Cannot append v3 operator report: " + report_.string());
+    output << canonicalJsonV3(event) << '\n';
+    output.flush();
+    if (!output) throw std::runtime_error("Cannot flush v3 operator report: " + report_.string());
+}
+
 }  // namespace cuajone

@@ -90,24 +90,57 @@ bool groupVisible(std::span<const Keypoint> keypoints,
     });
 }
 
+bool faceItem(PpeItem item) noexcept {
+    return item == PpeItem::Respirator || item == PpeItem::EyeProtection;
+}
+
 PpeEvaluation evaluate(const std::array<std::deque<float>, kPpeItemCount>& histories,
-    const std::array<std::optional<Detection>, kPpeItemCount>& detections, const PpeConfig& config) {
+    const std::array<std::deque<PpeWearState>, kPpeItemCount>& wear_histories,
+    const std::array<std::optional<Detection>, kPpeItemCount>& detections,
+    const std::array<PpeWearState, kPpeItemCount>& latest_states,
+    const std::array<std::string, kPpeItemCount>& latest_reasons,
+    const PpeConfig& config) {
     PpeEvaluation result;
-    result.samples = histories.front().size();
+    for (const auto& history : histories) result.samples = std::max(result.samples, history.size());
     result.evaluated = result.samples >= config.minimum_samples;
     result.compliant = result.evaluated;
     result.items.reserve(kPpeItemCount);
     for (const PpeItem item : kRequiredItems) {
-        const auto& values = histories[static_cast<std::size_t>(item)];
+        const auto index = static_cast<std::size_t>(item);
+        const auto& values = histories[index];
+        const auto& states = wear_histories[index];
         const auto present_count = static_cast<float>(std::count_if(values.begin(), values.end(),
             [](float confidence) { return confidence > 0.0F; }));
         const float ratio = values.empty() ? 0.0F : present_count / static_cast<float>(values.size());
         const float confidence_sum = std::accumulate(values.begin(), values.end(), 0.0F);
         const float confidence = present_count == 0.0F ? 0.0F : confidence_sum / present_count;
-        const bool present = result.evaluated && ratio >= config.present_ratio;
-        result.items.push_back({item, true, present, ratio, confidence,
-            detections[static_cast<std::size_t>(item)]});
-        result.compliant = result.compliant && present;
+        const auto count = [&](PpeWearState wanted) {
+            return static_cast<float>(std::count(states.begin(), states.end(), wanted));
+        };
+        const float denominator = static_cast<float>(states.size());
+        const bool enabled = config.enabled[index];
+        PpeWearState wear_state = PpeWearState::NotVerifiable;
+        std::string reason;
+        if (!enabled) {
+            reason = "DISABLED_BY_POLICY";
+        } else if (states.size() < config.minimum_samples) {
+            wear_state = latest_states[index];
+            reason = latest_reasons[index];
+        } else if (count(PpeWearState::PresentCorrectly) / denominator >= config.present_ratio) {
+            wear_state = PpeWearState::PresentCorrectly;
+            reason = "ASSOCIATED_REGION";
+        } else if (count(PpeWearState::PresentIncorrectly) / denominator >= config.present_ratio) {
+            wear_state = PpeWearState::PresentIncorrectly;
+            reason = "SPATIALLY_INCOMPATIBLE_REGION";
+        } else {
+            wear_state = PpeWearState::Absent;
+            reason = "NO_ASSOCIATED_DETECTION";
+        }
+        const bool present = wear_state == PpeWearState::PresentCorrectly;
+        result.items.push_back({item, enabled, present, ratio, confidence, detections[index],
+            enabled, wear_state, std::move(reason)});
+        result.compliant = result.compliant && (!enabled || present
+            || wear_state == PpeWearState::NotVerifiable);
     }
     return result;
 }
@@ -131,6 +164,16 @@ std::string_view ppeItemSemantic(PpeItem item) noexcept {
 std::string_view ppeItemLabel(PpeItem item) noexcept {
     for (const auto& value : kDefinitions) if (value.item == item) return value.label;
     return "Unknown";
+}
+
+std::string_view ppeWearStateName(PpeWearState state) noexcept {
+    switch (state) {
+    case PpeWearState::PresentCorrectly: return "PRESENTE_CORRECTAMENTE";
+    case PpeWearState::PresentIncorrectly: return "PRESENTE_INCORRECTAMENTE";
+    case PpeWearState::Absent: return "AUSENTE";
+    case PpeWearState::NotVerifiable: return "NO_VERIFICABLE";
+    }
+    return "NO_VERIFICABLE";
 }
 
 std::string normalizeLabel(std::string label) {
@@ -182,14 +225,21 @@ std::optional<Detection> PpeAssociation::detection(PpeItem item) const {
     return found == detections.end() ? std::nullopt : std::optional<Detection>(found->second);
 }
 
+std::optional<Detection> PpeAssociation::incompatibleDetection(PpeItem item) const {
+    const auto found = incompatible_detections.find(item);
+    return found == incompatible_detections.end() ? std::nullopt : std::optional<Detection>(found->second);
+}
+
 std::map<int, PpeAssociation> associatePpe(std::span<const TrackedPerson> people,
-    std::span<const Detection> detections, const PpeClassMap& classes) {
+    std::span<const Detection> detections, const PpeClassMap& classes,
+    const std::array<bool, kPpeItemCount>& enabled) {
     std::map<int, PpeAssociation> associations;
     for (const auto& person : people) associations.try_emplace(person.track_id);
     for (const auto& item : detections) {
         const auto semantic = std::find_if(classes.item_ids.begin(), classes.item_ids.end(),
             [&](const auto& value) { return value.second == item.class_id; });
         if (semantic == classes.item_ids.end()) continue;
+        if (!enabled[static_cast<std::size_t>(semantic->first)]) continue;
         const auto& strategy = definition(semantic->first).region;
         const float center_x = (item.box.x1 + item.box.x2) / 2.0F;
         const float center_y = (item.box.y1 + item.box.y2) / 2.0F;
@@ -205,9 +255,22 @@ std::map<int, PpeAssociation> associatePpe(std::span<const TrackedPerson> people
                 best_track_id = person.track_id;
             }
         }
-        if (best_track_id < 0 || best_score < 0.35F) continue;
-        auto& selected = associations.at(best_track_id).detections[semantic->first];
-        if (selected.confidence == 0.0F || item.confidence > selected.confidence) selected = item;
+        if (best_track_id >= 0 && best_score >= 0.35F) {
+            auto& selected = associations.at(best_track_id).detections[semantic->first];
+            if (selected.confidence == 0.0F || item.confidence > selected.confidence) selected = item;
+            continue;
+        }
+        std::vector<const TrackedPerson*> enclosing;
+        for (const auto& person : people) {
+            if (center_x >= person.box.x1 && center_x <= person.box.x2
+                && center_y >= person.box.y1 && center_y <= person.box.y2) {
+                enclosing.push_back(&person);
+            }
+        }
+        if (enclosing.size() == 1) {
+            auto& selected = associations.at(enclosing.front()->track_id).incompatible_detections[semantic->first];
+            if (selected.confidence == 0.0F || item.confidence > selected.confidence) selected = item;
+        }
     }
     return associations;
 }
@@ -225,18 +288,29 @@ bool arePoseKeypointsPpeEvaluable(std::span<const Keypoint> keypoints,
         && groupVisible(keypoints, {11, 12}, keypoint_threshold);
 }
 
+bool hasFrontalFaceEvidence(std::span<const Keypoint> keypoints, float keypoint_threshold) noexcept {
+    if (keypoints.size() < 5) return false;
+    const bool nose = keypoints[0].confidence >= keypoint_threshold;
+    const bool left_eye = keypoints[1].confidence >= keypoint_threshold;
+    const bool right_eye = keypoints[2].confidence >= keypoint_threshold;
+    const bool left_ear = keypoints[3].confidence >= keypoint_threshold;
+    const bool right_ear = keypoints[4].confidence >= keypoint_threshold;
+    return nose && left_eye && right_eye && left_ear && right_ear;
+}
+
 std::string ppeStatus(const PpeEvaluation& evaluation) {
     if (!evaluation.evaluated) return "Evaluando EPP";
     if (evaluation.compliant) return "EPP Completo";
     std::string status{"Falta: "};
     bool first = true;
     for (const auto& item : evaluation.items) {
-        if (item.present) continue;
+        if (!item.enabled || item.wear_state == PpeWearState::PresentCorrectly
+            || item.wear_state == PpeWearState::NotVerifiable) continue;
         if (!first) status += ", ";
         status += ppeItemLabel(item.item);
         first = false;
     }
-    return status;
+    return first ? "EPP No verificable" : status;
 }
 
 std::string legacyPpeStatus(const PpeEvaluation& evaluation) {
@@ -263,34 +337,75 @@ PpeAnalyzer::PpeAnalyzer(PpeConfig config) : config_(config) {
 }
 
 std::optional<EventCandidate> PpeAnalyzer::update(int track_id, const PpeAssociation& association,
-    bool, std::chrono::steady_clock::time_point now) {
+    bool evaluable, std::chrono::steady_clock::time_point now) {
     auto& state = states_[track_id];
     state.last_seen = now;
     for (const PpeItem item : kRequiredItems) {
-        auto& history = state.histories[static_cast<std::size_t>(item)];
+        const auto index = static_cast<std::size_t>(item);
+        auto& history = state.histories[index];
+        auto& wear_history = state.wear_histories[index];
         const auto detection = association.detection(item);
-        state.detections[static_cast<std::size_t>(item)] = detection;
-        history.push_back(detection ? detection->confidence : 0.0F);
-        while (history.size() > config_.window) history.pop_front();
+        const auto incompatible = association.incompatibleDetection(item);
+        PpeWearState wear_state = PpeWearState::NotVerifiable;
+        std::string reason = "VISIBILITY_INSUFFICIENT";
+        if (!config_.enabled[index]) {
+            reason = "DISABLED_BY_POLICY";
+        } else if (faceItem(item) && !evaluable) {
+            reason = "VISIBILITY_INSUFFICIENT";
+        } else if (detection) {
+            wear_state = PpeWearState::PresentCorrectly;
+            reason = "ASSOCIATED_REGION";
+        } else if (incompatible) {
+            wear_state = PpeWearState::PresentIncorrectly;
+            reason = "SPATIALLY_INCOMPATIBLE_REGION";
+        } else {
+            wear_state = PpeWearState::Absent;
+            reason = "NO_ASSOCIATED_DETECTION";
+        }
+        state.latest_states[index] = wear_state;
+        state.latest_reasons[index] = reason;
+        state.detections[index] = detection ? detection : incompatible;
+        if (wear_state != PpeWearState::NotVerifiable) {
+            history.push_back(detection ? detection->confidence : 0.0F);
+            wear_history.push_back(wear_state);
+            while (history.size() > config_.window) history.pop_front();
+            while (wear_history.size() > config_.window) wear_history.pop_front();
+        }
     }
-    const PpeEvaluation evaluation = evaluate(state.histories, state.detections, config_);
+    const PpeEvaluation evaluation = evaluate(
+        state.histories, state.wear_histories, state.detections,
+        state.latest_states, state.latest_reasons, config_);
     if (!evaluation.evaluated) return std::nullopt;
     const std::string status = ppeStatus(evaluation);
     const bool changed = status != state.last_status;
     const bool cooldown_elapsed = !state.has_alerted || now - state.last_alert >= config_.alert_cooldown;
     state.last_status = status;
-    if (evaluation.compliant || (!changed && !cooldown_elapsed)) return std::nullopt;
+    const bool violating = std::ranges::any_of(evaluation.items, [](const PpeItemState& item) {
+        return item.enabled && (item.wear_state == PpeWearState::Absent
+            || item.wear_state == PpeWearState::PresentIncorrectly);
+    });
+    if (!violating || (!changed && !cooldown_elapsed)) return std::nullopt;
     state.last_alert = now;
     state.has_alerted = true;
     float confidence{};
-    for (const auto& item : evaluation.items) if (!item.present) confidence = std::max(confidence, 1.0F - item.ratio);
+    for (const auto& item : evaluation.items) {
+        if (item.wear_state == PpeWearState::Absent
+            || item.wear_state == PpeWearState::PresentIncorrectly) {
+            confidence = std::max(confidence, 1.0F - item.ratio);
+        }
+    }
     return EventCandidate{track_id, "INCUMPLIMIENTO_EPP", status, confidence, evaluation};
 }
 
 std::optional<PpeEvaluation> PpeAnalyzer::currentEvaluation(int track_id) const {
     const auto found = states_.find(track_id);
-    if (found == states_.end() || found->second.histories.front().empty()) return std::nullopt;
-    return evaluate(found->second.histories, found->second.detections, config_);
+    if (found == states_.end()) return std::nullopt;
+    std::size_t samples{};
+    for (const auto& history : found->second.histories) samples = std::max(samples, history.size());
+    if (samples == 0) return std::nullopt;
+    return evaluate(found->second.histories, found->second.wear_histories,
+        found->second.detections, found->second.latest_states,
+        found->second.latest_reasons, config_);
 }
 
 void PpeAnalyzer::prune(std::chrono::steady_clock::time_point now) {

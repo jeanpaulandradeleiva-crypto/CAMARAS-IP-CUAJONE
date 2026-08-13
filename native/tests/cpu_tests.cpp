@@ -344,6 +344,15 @@ void testCliUrlsAndInvariantDefense() {
             && parsed_inference.ppe_class_confidences[1] == 0.25F
             && parsed_inference.ppe_class_confidences[7] == 0.88F,
         "CLI did not apply global fallback plus exact class overrides");
+    auto disabled_ppe = base;
+    disabled_ppe.insert(disabled_ppe.end(), {"--ppe-enabled", "Gloves=0", "--ppe-enabled", "Hard_hat=0"});
+    const RuntimeConfig parsed_disabled = parse(disabled_ppe);
+    require(!parsed_disabled.ppe_enabled[0] && !parsed_disabled.ppe_enabled[5]
+            && !parsed_disabled.ppe.enabled[0] && parsed_disabled.ppe_enabled[1],
+        "CLI did not preserve operational PPE switches");
+    auto person_switch = base;
+    person_switch.insert(person_switch.end(), {"--ppe-enabled", "Person=0"});
+    requireThrows([&] { parse(person_switch); }, "CLI allowed Person to be disabled");
     for (const std::string invalid_size : {"0", "639", "800", "1281"}) {
         auto invalid = base;
         invalid.insert(invalid.end(), {"--imgsz", invalid_size});
@@ -738,11 +747,18 @@ void testPpeAssociationVotingAndCooldown() {
     const auto classes = resolvePpeClasses(fixedPpeLabels());
     const TrackedPerson person{7, {100, 50, 300, 450}, 0.9F, {}, true};
     const auto items = allPpeDetections();
-    const auto associations = associatePpe(std::span(&person, 1), items, classes);
+    const auto associations = associatePpe(std::span(&person, 1), items, classes,
+        {true, true, true, true, true, true, true});
     for (const PpeItem item : requiredPpeItems()) {
         require(associations.at(7).present(item),
             "PPE regional association failed for " + std::string(ppeItemLabel(item)));
     }
+    const Detection misplaced_vest{{110, 55, 150, 95}, 0.9F, 3};
+    const auto misplaced = associatePpe(std::span(&person, 1), std::span(&misplaced_vest, 1), classes,
+        {true, true, true, true, true, true, true});
+    require(!misplaced.at(7).present(PpeItem::Vest)
+            && misplaced.at(7).incompatibleDetection(PpeItem::Vest).has_value(),
+        "Unique out-of-region PPE detection was not retained as incompatible evidence");
 
     PpeAnalyzer analyzer({4, 3, 0.5F, std::chrono::seconds(10), std::chrono::seconds(5)});
     const PpeAssociation missing{};
@@ -757,14 +773,14 @@ void testPpeAssociationVotingAndCooldown() {
         PpeAnalyzer per_item({1, 1, 0.5F, std::chrono::seconds(60), std::chrono::seconds(5)});
         PpeAssociation association = associations.at(7);
         association.detections.erase(omitted);
-        const auto event = per_item.update(static_cast<int>(omitted) + 20, association, false, start);
+        const auto event = per_item.update(static_cast<int>(omitted) + 20, association, true, start);
         require(event && event->ppe && !event->ppe->compliant
                 && event->status.find(ppeItemLabel(omitted)) != std::string::npos,
             "Independently missing PPE item did not cause noncompliance");
     }
 
     PpeAnalyzer compliant({1, 1, 0.5F, std::chrono::seconds(60), std::chrono::seconds(5)});
-    require(!compliant.update(99, associations.at(7), false, start),
+    require(!compliant.update(99, associations.at(7), true, start),
         "All-seven compliant person emitted a violation");
     require(compliant.currentEvaluation(99)->compliant,
         "All-seven PPE state was not compliant");
@@ -779,13 +795,38 @@ void testPpeAssociationVotingAndCooldown() {
         "Multiple missing PPE items were not retained");
 
     PpeAnalyzer temporal({4, 4, 0.5F, std::chrono::seconds(60), std::chrono::seconds(5)});
-    temporal.update(101, missing, false, start);
-    temporal.update(101, missing, false, start + std::chrono::seconds(1));
-    temporal.update(101, associations.at(7), false, start + std::chrono::seconds(2));
-    require(!temporal.update(101, associations.at(7), false, start + std::chrono::seconds(3)),
+    temporal.update(101, missing, true, start);
+    temporal.update(101, missing, true, start + std::chrono::seconds(1));
+    temporal.update(101, associations.at(7), true, start + std::chrono::seconds(2));
+    require(!temporal.update(101, associations.at(7), true, start + std::chrono::seconds(3)),
         "Temporal voting emitted despite every PPE item reaching the present ratio");
     require(temporal.currentEvaluation(101)->compliant,
         "Temporal voting did not apply the existing present-ratio policy to all items");
+
+    PpeConfig disabled_config{1, 1, 0.5F, std::chrono::seconds(60), std::chrono::seconds(5)};
+    disabled_config.enabled[static_cast<std::size_t>(PpeItem::Gloves)] = false;
+    PpeAnalyzer disabled(disabled_config);
+    disabled.update(102, missing, true, start);
+    const auto disabled_evaluation = disabled.currentEvaluation(102);
+    require(disabled_evaluation
+            && disabled_evaluation->items[0].wear_state == PpeWearState::NotVerifiable
+            && disabled_evaluation->items[0].reason == "DISABLED_BY_POLICY",
+        "Disabled PPE item affected four-state evaluation");
+
+    PpeAnalyzer face_not_verifiable({1, 1, 0.5F, std::chrono::seconds(60), std::chrono::seconds(5)});
+    face_not_verifiable.update(103, missing, false, start);
+    const auto face_evaluation = face_not_verifiable.currentEvaluation(103);
+    require(face_evaluation
+            && face_evaluation->items[3].wear_state == PpeWearState::NotVerifiable
+            && face_evaluation->items[6].wear_state == PpeWearState::NotVerifiable
+            && face_evaluation->items[0].wear_state == PpeWearState::Absent,
+        "Face-dependent PPE absence was not conservative without frontal evidence");
+
+    PpeAnalyzer incorrect({1, 1, 0.5F, std::chrono::seconds(60), std::chrono::seconds(5)});
+    require(incorrect.update(104, misplaced.at(7), true, start).has_value(),
+        "Spatially incompatible PPE detection did not emit a violation");
+    require(incorrect.currentEvaluation(104)->items[2].wear_state == PpeWearState::PresentIncorrectly,
+        "Spatially incompatible PPE detection was not classified as incorrectly present");
 
     requireThrows([] { resolvePpeClasses({{0, "Gloves"}, {1, "Person"}}); },
         "Missing PPE semantics were accepted");
@@ -933,6 +974,20 @@ void testCanonicalContractsAndDeterministicPipeline() {
             && frame_v2.find("\"required\":[\"gloves\",\"safety_boots\",\"vest\",\"respirator\",\"hearing_protection\",\"hard_hat\",\"eye_protection\"]") != std::string::npos
             && event_v2.find("com.cuajone.safety.ppe.violation.v2") != std::string::npos,
         "Structured PPE v2 frame/event serialization is incomplete");
+
+    PpeConfig disabled_gloves{1, 1, 0.5F, std::chrono::seconds(60), std::chrono::seconds(5)};
+    disabled_gloves.enabled[static_cast<std::size_t>(PpeItem::Gloves)] = false;
+    PpeAnalyzer disabled_analyzer(disabled_gloves);
+    const auto disabled_event = disabled_analyzer.update(200, {}, true, Clock::time_point{});
+    require(disabled_event && disabled_event->ppe,
+        "Enabled PPE violations were suppressed when another PPE item was disabled");
+    CanonicalEvent disabled_canonical = second.canonical.events.front();
+    disabled_canonical.ppe = disabled_event->ppe;
+    disabled_canonical.status = disabled_event->status;
+    const std::string disabled_v2 = canonicalJsonV2(disabled_canonical);
+    require(disabled_v2.find("\"missing\":[\"gloves\"") == std::string::npos
+            && disabled_v2.find("\"missing\":[\"safety_boots\"") != std::string::npos,
+        "Disabled PPE was emitted as missing in the v2 projection");
     require(event_json.find("com.cuajone.safety.ppe.violation.v1") != std::string::npos
             && event_json.find("Sin Casco y Chaleco") != std::string::npos,
         "Explicit v1 helmet/vest projection was not preserved");

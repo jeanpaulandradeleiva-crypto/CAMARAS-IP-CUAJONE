@@ -59,6 +59,21 @@ std::pair<std::string, std::vector<std::string>> processObservationBundleV2(
     return {canonicalJsonV2(result.canonical), std::move(events)};
 }
 
+std::pair<std::string, std::vector<std::string>> processObservationBundleV3(
+    AnalyticsPipeline& pipeline, const ObservationFrame& frame) {
+    ProcessedFrame result;
+    {
+        py::gil_scoped_release release;
+        result = pipeline.process(frame);
+    }
+    std::vector<std::string> events;
+    events.reserve(result.canonical.events.size());
+    for (const auto& event : result.canonical.events) {
+        if (event.type == "com.cuajone.safety.ppe.violation.v2") events.push_back(canonicalJsonV3(event));
+    }
+    return {canonicalJsonV3(result.canonical), std::move(events)};
+}
+
 void applyFrameDimensions(const py::array& bgr_frame, ObservationFrame& observations) {
     // Reject layouts that would require a hidden copy before exposing borrowed memory.
     if (!bgr_frame.dtype().is(py::dtype::of<std::uint8_t>())) {
@@ -222,6 +237,7 @@ PYBIND11_MODULE(cuajone_native, module) {
         .def_property("minimum_samples", [](const PpeConfig& value) { return value.minimum_samples; },
             [](PpeConfig& value, std::size_t input) { value.minimum_samples = input; })
         .def_readwrite("present_ratio", &PpeConfig::present_ratio)
+        .def_readwrite("enabled", &PpeConfig::enabled)
         .def_property("alert_cooldown_ms",
             [](const PpeConfig& value) { return value.alert_cooldown.count() * 1000.0; },
             [](PpeConfig& value, double input) { value.alert_cooldown = std::chrono::duration<double>(input / 1000.0); })
@@ -268,6 +284,7 @@ PYBIND11_MODULE(cuajone_native, module) {
         .def("process_observations", &processObservations, py::arg("observations"))
         .def("process_observations_bundle", &processObservationBundle, py::arg("observations"))
         .def("process_observations_bundle_v2", &processObservationBundleV2, py::arg("observations"))
+        .def("process_observations_bundle_v3", &processObservationBundleV3, py::arg("observations"))
         .def("process_frame", &processFrame, py::arg("frame"), py::arg("observations"))
         .def("process_frame_bundle", &processFrameBundle, py::arg("frame"), py::arg("observations"))
         .def("process_frame_bundle_v2", &processFrameBundleV2, py::arg("frame"), py::arg("observations"))
@@ -304,6 +321,7 @@ PYBIND11_MODULE(cuajone_native, module) {
         .def_readwrite("image_size", &EnginePipelineConfig::image_size)
         .def_readwrite("ppe_confidence", &EnginePipelineConfig::ppe_confidence)
         .def_readwrite("ppe_class_confidences", &EnginePipelineConfig::ppe_class_confidences)
+        .def_readwrite("ppe_enabled", &EnginePipelineConfig::ppe_enabled)
         .def_readwrite("pose_confidence", &EnginePipelineConfig::pose_confidence)
         .def_readwrite("nms_iou", &EnginePipelineConfig::nms_iou)
         .def_readwrite("maximum_detections", &EnginePipelineConfig::maximum_detections)

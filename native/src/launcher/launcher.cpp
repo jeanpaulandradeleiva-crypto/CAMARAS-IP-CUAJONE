@@ -68,6 +68,7 @@ enum ControlId : int {
     ComputeCombo,
     ImageSizeCombo,
     PpeThresholdBase = 200,
+    PpeEnabledBase = 220,
     ShowCheck = 300,
     ValidateButton,
     StartButton,
@@ -101,6 +102,7 @@ struct LauncherWindow {
     HWND compute{};
     HWND image_size{};
     std::array<HWND, kPpeOutputLabels.size()> ppe_thresholds{};
+    std::array<HWND, cuajone::kPpeItemCount> ppe_enabled{};
     HWND show{};
     HWND validate{};
     HWND start{};
@@ -733,9 +735,31 @@ void createControls(LauncherWindow& state) {
         }
     }
 
+    const HWND enabled_heading = createLabel(state, L"Evaluate PPE items", label_x, row_y + 354, 320);
+    addLocalizedText(state, enabled_heading, L"Evaluate PPE items", L"Evaluar elementos EPP");
+    constexpr std::array<std::size_t, cuajone::kPpeItemCount> item_class_ids{0, 2, 3, 4, 5, 6, 7};
+    for (std::size_t index = 0; index < item_class_ids.size(); ++index) {
+        const std::size_t class_id = item_class_ids[index];
+        const int row = static_cast<int>(index % 4);
+        const int column = index < 4 ? 0 : 1;
+        const int x = column == 0 ? 146 : 500;
+        const int y = row_y + 378 + row * 28;
+        const auto* label_utf8 = kPpeOutputLabels[class_id].data();
+        const int label_length = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, label_utf8,
+            static_cast<int>(kPpeOutputLabels[class_id].size()), nullptr, 0);
+        if (label_length <= 0) throw std::runtime_error("Could not convert PPE switch label");
+        std::wstring label(static_cast<std::size_t>(label_length), L'\0');
+        MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, label_utf8,
+            static_cast<int>(kPpeOutputLabels[class_id].size()), label.data(), label_length);
+        state.ppe_enabled[index] = createControl(state, 0, L"BUTTON", label.c_str(),
+            WS_TABSTOP | BS_AUTOCHECKBOX, x, y, 220, 22, PpeEnabledBase + static_cast<int>(index));
+        SendMessageW(state.ppe_enabled[index], BM_SETCHECK,
+            state.preferences.ppe_enabled[index] ? BST_CHECKED : BST_UNCHECKED, 0);
+    }
+
     state.show = createControl(
         state, 0, L"BUTTON", L"Show annotated video window",
-        WS_TABSTOP | BS_AUTOCHECKBOX, edit_x, row_y + 358, 340, 24, ShowCheck);
+        WS_TABSTOP | BS_AUTOCHECKBOX, edit_x, row_y + 494, 340, 24, ShowCheck);
     SendMessageW(
         state.show, BM_SETCHECK,
         state.preferences.show_window ? BST_CHECKED : BST_UNCHECKED, 0);
@@ -744,31 +768,31 @@ void createControls(LauncherWindow& state) {
 
     state.validate = createControl(
         state, 0, L"BUTTON", L"Validate", WS_TABSTOP | BS_OWNERDRAW,
-        edit_x, row_y + 396, 110, 32, ValidateButton);
+        edit_x, row_y + 532, 110, 32, ValidateButton);
     addLocalizedText(state, state.validate, L"Validate", L"Validar");
     state.start = createControl(
         state, 0, L"BUTTON", L"Start", WS_TABSTOP | BS_OWNERDRAW,
-        270, row_y + 396, 110, 32, StartButton);
+        270, row_y + 532, 110, 32, StartButton);
     addLocalizedText(state, state.start, L"Start", L"Iniciar");
     state.stop = createControl(
         state, 0, L"BUTTON", L"Stop", WS_TABSTOP | BS_OWNERDRAW,
-        394, row_y + 396, 110, 32, StopButton);
+        394, row_y + 532, 110, 32, StopButton);
     addLocalizedText(state, state.stop, L"Stop", L"Detener");
     EnableWindow(state.stop, FALSE);
 
     addLocalizedText(
-        state, createLabel(state, L"Status", label_x, row_y + 448, 120),
+        state, createLabel(state, L"Status", label_x, row_y + 584, 120),
         L"Status", L"Estado");
     state.status = createControl(
         state, WS_EX_CLIENTEDGE, L"STATIC", L"Ready", SS_LEFT | SS_CENTERIMAGE,
-        edit_x, row_y + 444, 724, 32, StatusText);
+        edit_x, row_y + 580, 724, 32, StatusText);
     addLocalizedText(
-        state, createLabel(state, L"Log path", label_x, row_y + 492, 120),
+        state, createLabel(state, L"Log path", label_x, row_y + 628, 120),
         L"Log path", L"Ruta del log");
-    state.log_path = createEdit(state, LogPathEdit, edit_x, row_y + 488, 620, true);
+    state.log_path = createEdit(state, LogPathEdit, edit_x, row_y + 624, 620, true);
     const HWND open_log = createControl(
         state, 0, L"BUTTON", L"Open log", WS_TABSTOP | BS_OWNERDRAW,
-        778, row_y + 488, 92, 25, OpenLogButton);
+        778, row_y + 624, 92, 25, OpenLogButton);
     addLocalizedText(state, open_log, L"Open log", L"Abrir log");
 
     state.program_data = knownProgramData();
@@ -967,6 +991,10 @@ LauncherSettings readSettings(const LauncherWindow& state) {
         settings.ppe_class_confidences[index] = parsePpeConfidenceThreshold(
             editText(state.ppe_thresholds[index]));
     }
+    for (std::size_t index = 0; index < settings.ppe_enabled.size(); ++index) {
+        settings.ppe_enabled[index] = SendMessageW(
+            state.ppe_enabled[index], BM_GETCHECK, 0, 0) == BST_CHECKED;
+    }
     settings.show_window = SendMessageW(state.show, BM_GETCHECK, 0, 0) == BST_CHECKED;
     return settings;
 }
@@ -977,6 +1005,7 @@ void persistPreferences(LauncherWindow& state) {
     state.preferences.theme = state.dark ? ThemeMode::Dark : ThemeMode::Light;
     state.preferences.image_size = current.image_size;
     state.preferences.ppe_class_confidences = current.ppe_class_confidences;
+    state.preferences.ppe_enabled = current.ppe_enabled;
     state.preferences.show_window = current.show_window;
     for (std::size_t index = 0; index < current.ppe_class_confidences.size(); ++index) {
         setThresholdComboValue(

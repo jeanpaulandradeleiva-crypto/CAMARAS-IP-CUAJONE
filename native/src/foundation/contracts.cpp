@@ -90,8 +90,10 @@ std::string ppeJson(const std::optional<PpeEvaluation>& value) {
     for (std::size_t index = 0; index < value->items.size(); ++index) {
         const auto& item = value->items[index];
         const std::string semantic(ppeItemSemantic(item.item));
-        if (item.required) required.push_back(semantic);
-        if (value->evaluated) (item.present ? present : missing).push_back(semantic);
+        // V2 has no disabled state; retain its historical fixed required set while
+        // excluding disabled policy items from compliance projections.
+        required.push_back(semantic);
+        if (value->evaluated && item.enabled) (item.present ? present : missing).push_back(semantic);
         if (index != 0) items += ',';
         items += "{\"confidence\":" + number(item.confidence)
             + ",\"detection\":" + (item.detection
@@ -101,7 +103,7 @@ std::string ppeJson(const std::optional<PpeEvaluation>& value) {
             + ",\"label\":" + quote(ppeItemLabel(item.item))
             + ",\"present\":" + (item.present ? "true" : "false")
             + ",\"ratio\":" + number(item.ratio)
-            + ",\"required\":" + (item.required ? "true" : "false")
+            + ",\"required\":true"
             + ",\"semantic\":" + quote(semantic) + "}";
     }
     items += ']';
@@ -112,6 +114,28 @@ std::string ppeJson(const std::optional<PpeEvaluation>& value) {
         + ",\"required\":" + stringArrayJson(required)
         + ",\"samples\":" + std::to_string(value->samples)
         + ",\"state\":" + quote(state) + "}";
+}
+
+std::string ppeJsonV3(const std::optional<PpeEvaluation>& value) {
+    if (!value) return "null";
+    std::string items{"["};
+    for (std::size_t index = 0; index < value->items.size(); ++index) {
+        const auto& item = value->items[index];
+        if (index != 0) items += ',';
+        items += "{\"confidence\":" + number(item.confidence)
+            + ",\"detection\":" + (item.detection
+                ? "{\"box\":" + boxJson(item.detection->box) + ",\"confidence\":"
+                    + number(item.detection->confidence) + "}"
+                : "null")
+            + ",\"enabled\":" + (item.enabled ? "true" : "false")
+            + ",\"label\":" + quote(ppeItemLabel(item.item))
+            + ",\"reason\":" + quote(item.reason)
+            + ",\"semantic\":" + quote(ppeItemSemantic(item.item))
+            + ",\"wear_state\":" + quote(ppeWearStateName(item.wear_state)) + "}";
+    }
+    return "{\"items\":" + items + ",\"samples\":" + std::to_string(value->samples)
+        + ",\"state\":" + quote(value->evaluated
+            ? (value->compliant ? "compliant" : "noncompliant") : "evaluating") + "}";
 }
 
 std::string legacyEventType(std::string_view type) {
@@ -228,6 +252,48 @@ std::string canonicalJsonV2(const CanonicalFrameResult& result) {
             + number(person.confidence) + ",\"fall_active\":"
             + (person.fall_active ? "true" : "false") + ",\"keypoints\":"
             + keypointsJson(person.keypoints) + ",\"ppe\":" + ppeJson(person.ppe)
+            + ",\"ppe_visibility_sufficient\":" + (person.ppe_evaluable ? "true" : "false")
+            + ",\"track_id\":" + std::to_string(person.track_id) + "}";
+    }
+    return output + "],\"source_id\":" + quote(result.source_id) + "}";
+}
+
+std::string canonicalJsonV3(const CanonicalEvent& event) {
+    if (event.type != "com.cuajone.safety.ppe.violation.v2") {
+        throw std::invalid_argument("V3 PPE event serializer accepts only PPE violation events");
+    }
+    return "{\"contractversion\":\"3.0.0\",\"data\":{\"confidence\":"
+        + number(event.confidence) + ",\"contract_version\":\"3.0.0\",\"evidence\":[],\"frame_id\":"
+        + std::to_string(event.frame_id) + ",\"monotonic_timestamp_ms\":"
+        + std::to_string(event.monotonic_timestamp_ms) + ",\"ppe\":" + ppeJsonV3(event.ppe)
+        + ",\"status\":" + quote(event.status) + ",\"track_id\":" + std::to_string(event.track_id)
+        + "},\"datacontenttype\":\"application/json\",\"dataschema\":\"https://cuajone.example/contracts/v3/event.schema.json\",\"id\":"
+        + quote(event.id) + ",\"source\":" + quote(event.source)
+        + ",\"specversion\":\"1.0\",\"subject\":" + quote(event.subject)
+        + ",\"time\":" + quote(event.time) + ",\"type\":\"com.cuajone.safety.ppe.violation.v3\"}";
+}
+
+std::string canonicalJsonV3(const CanonicalFrameResult& result) {
+    validateCanonicalMetadata(result);
+    std::string output = "{\"contract_version\":\"3.0.0\",\"events\":[";
+    bool first_event = true;
+    for (const auto& event : result.events) {
+        if (event.type != "com.cuajone.safety.ppe.violation.v2") continue;
+        if (!first_event) output += ',';
+        output += quote(event.id);
+        first_event = false;
+    }
+    output += "],\"frame\":{\"height\":" + std::to_string(result.frame_height)
+        + ",\"width\":" + std::to_string(result.frame_width) + "},\"frame_id\":"
+        + std::to_string(result.frame_id) + ",\"monotonic_timestamp_ms\":"
+        + std::to_string(result.monotonic_timestamp_ms) + ",\"observed_at\":"
+        + quote(result.observed_at) + ",\"people\":[";
+    for (std::size_t index = 0; index < result.people.size(); ++index) {
+        if (index != 0) output += ',';
+        const auto& person = result.people[index];
+        output += "{\"box\":" + boxJson(person.box) + ",\"confidence\":" + number(person.confidence)
+            + ",\"fall_active\":" + (person.fall_active ? "true" : "false")
+            + ",\"keypoints\":" + keypointsJson(person.keypoints) + ",\"ppe\":" + ppeJsonV3(person.ppe)
             + ",\"ppe_visibility_sufficient\":" + (person.ppe_evaluable ? "true" : "false")
             + ",\"track_id\":" + std::to_string(person.track_id) + "}";
     }

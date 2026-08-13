@@ -62,6 +62,13 @@ enum class PpeItem : std::size_t {
 
 inline constexpr std::size_t kPpeItemCount = static_cast<std::size_t>(PpeItem::Count);
 
+enum class PpeWearState {
+    PresentCorrectly,
+    PresentIncorrectly,
+    Absent,
+    NotVerifiable,
+};
+
 struct PpeItemState {
     PpeItem item{};
     bool required{true};
@@ -69,6 +76,9 @@ struct PpeItemState {
     float ratio{};
     float confidence{};
     std::optional<Detection> detection;
+    bool enabled{true};
+    PpeWearState wear_state{PpeWearState::NotVerifiable};
+    std::string reason;
 };
 
 struct PpeEvaluation {

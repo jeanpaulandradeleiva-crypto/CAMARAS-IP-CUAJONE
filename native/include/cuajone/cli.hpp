@@ -43,6 +43,7 @@ struct RuntimeConfig {
     std::array<float, kPpeOutputLabels.size()> ppe_class_confidences{
         0.30F, 0.30F, 0.30F, 0.30F, 0.30F, 0.30F, 0.30F, 0.30F,
     };
+    std::array<bool, kPpeItemCount> ppe_enabled{true, true, true, true, true, true, true};
     float pose_confidence{0.35F};
     float nms_iou{0.45F};
     float tracker_high_threshold{0.35F};

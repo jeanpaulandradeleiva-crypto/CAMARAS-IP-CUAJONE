@@ -89,6 +89,24 @@ std::pair<std::size_t, float> parsePpeClassConfidence(
     return {static_cast<std::size_t>(found - kPpeOutputLabels.begin()), value};
 }
 
+std::pair<std::size_t, bool> parsePpeEnabled(std::string_view text, std::string_view option) {
+    const auto separator = text.find('=');
+    if (separator == std::string_view::npos || separator == 0 || separator + 1 == text.size()
+        || text.find('=', separator + 1) != std::string_view::npos) {
+        throw std::invalid_argument(std::string(option) + " requires semantic=0 or semantic=1");
+    }
+    const std::string_view semantic = text.substr(0, separator);
+    const auto found = std::ranges::find(kPpeOutputLabels, semantic);
+    if (found == kPpeOutputLabels.end() || semantic == "Person") {
+        throw std::invalid_argument(std::string(option) + " contains an unknown or non-switchable class");
+    }
+    const std::string_view value = text.substr(separator + 1);
+    if (value != "0" && value != "1") {
+        throw std::invalid_argument(std::string(option) + " requires semantic=0 or semantic=1");
+    }
+    return {static_cast<std::size_t>(found - kPpeOutputLabels.begin()), value == "1"};
+}
+
 std::chrono::milliseconds parseMilliseconds(
     const std::string& text,
     std::string_view option) {
@@ -261,6 +279,7 @@ void validate(RuntimeConfig& config) {
 RuntimeConfig parseCommandLine(int argc, char** argv) {
     RuntimeConfig config;
     std::array<std::optional<float>, kPpeOutputLabels.size()> class_confidence_overrides;
+    std::array<std::optional<bool>, kPpeOutputLabels.size()> ppe_enabled_overrides;
     for (int index = 1; index < argc; ++index) {
         const std::string_view option = argv[index];
         if (option == "--help" || option == "-h") config.help = true;
@@ -295,6 +314,14 @@ RuntimeConfig parseCommandLine(int argc, char** argv) {
                     + std::string(kPpeOutputLabels[class_index]));
             }
             class_confidence_overrides[class_index] = value;
+        }
+        else if (option == "--ppe-enabled") {
+            const auto [class_index, value] = parsePpeEnabled(requireValue(index, argc, argv, option), option);
+            if (ppe_enabled_overrides[class_index]) {
+                throw std::invalid_argument("Duplicate --ppe-enabled semantic: "
+                    + std::string(kPpeOutputLabels[class_index]));
+            }
+            ppe_enabled_overrides[class_index] = value;
         }
         else if (option == "--pose-conf") config.pose_confidence = parseNumber<float>(requireValue(index, argc, argv, option), option);
         else if (option == "--nms-iou") config.nms_iou = parseNumber<float>(requireValue(index, argc, argv, option), option);
@@ -332,6 +359,13 @@ RuntimeConfig parseCommandLine(int argc, char** argv) {
             config.ppe_class_confidences[index] = *class_confidence_overrides[index];
         }
     }
+    constexpr std::array<std::size_t, kPpeItemCount> item_class_ids{0, 2, 3, 4, 5, 6, 7};
+    for (std::size_t index = 0; index < item_class_ids.size(); ++index) {
+        if (ppe_enabled_overrides[item_class_ids[index]]) {
+            config.ppe_enabled[index] = *ppe_enabled_overrides[item_class_ids[index]];
+        }
+    }
+    config.ppe.enabled = config.ppe_enabled;
     validate(config);
     return config;
 }
@@ -363,6 +397,7 @@ void printHelp(std::ostream& output) {
         "  --imgsz <size>               Inference size: 640, 768, 960, or 1280 (default: 640)\n"
         "  --ppe-conf <0..1>            PPE confidence (default: 0.30)\n"
         "  --ppe-class-conf <name=value> Repeatable exact PPE class threshold override\n"
+        "  --ppe-enabled <name=0|1>    Repeatable operational PPE switch; Person is always enabled\n"
         "  --pose-conf <0..1>           Pose confidence (default: 0.35)\n"
         "  --nms-iou <0..1>             Class-aware NMS IoU (default: 0.45)\n"
         "  --max-det <number>           Final detections per engine (default: 300)\n"

@@ -14,6 +14,7 @@ namespace cuajone {
 
 inline constexpr std::string_view kContractVersion{"1.0.0"};
 inline constexpr std::string_view kContractVersionV2{"2.0.0"};
+inline constexpr std::string_view kContractVersionV3{"3.0.0"};
 inline constexpr std::string_view kRuntimeVersion{"0.1.0-internal.4-dev"};
 inline constexpr int kCanonicalDecimalDigits{6};
 
@@ -59,6 +60,8 @@ std::string canonicalJson(const CanonicalEvent& event);
 std::string canonicalJson(const CanonicalFrameResult& result);
 std::string canonicalJsonV2(const CanonicalEvent& event);
 std::string canonicalJsonV2(const CanonicalFrameResult& result);
+std::string canonicalJsonV3(const CanonicalEvent& event);
+std::string canonicalJsonV3(const CanonicalFrameResult& result);
 std::string runtimeDefaultsJson();
 
 }  // namespace cuajone

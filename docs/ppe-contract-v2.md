@@ -1,5 +1,7 @@
 # Fixed seven-item PPE contract v2
 
+> v2 remains frozen for existing consumers. The operational four-state policy and launcher switches are published separately through `contracts/v3/` and `Reporte_Eventos_Seguridad_v3.jsonl`.
+
 Every tracked person is evaluated against the same seven required PPE items. Camera-specific PPE policies are intentionally out of scope.
 
 ## Runtime behavior

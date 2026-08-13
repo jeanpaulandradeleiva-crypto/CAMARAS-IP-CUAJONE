@@ -222,6 +222,8 @@ void testOperationalSettingsAndArguments() {
         "Launcher did not emit the selected imgsz");
     require(std::count(plan.arguments.begin(), plan.arguments.end(), L"--ppe-class-conf") == 8,
         "Launcher did not emit exactly eight PPE class thresholds");
+    require(std::count(plan.arguments.begin(), plan.arguments.end(), L"--ppe-enabled") == 7,
+        "Launcher did not emit exactly seven PPE switches");
     require(contains(plan.arguments, L"Gloves=0.01")
             && contains(plan.arguments, L"lentes_protectores=0.78"),
         "Launcher class threshold order or formatting changed");
@@ -232,6 +234,9 @@ void testOperationalSettingsAndArguments() {
     require(!contains(buildLaunchPlan(settings, false).arguments, L"--show"),
         "Launcher emitted --show after the user disabled annotated video");
     settings.show_window = true;
+    settings.ppe_enabled[0] = false;
+    require(contains(buildLaunchPlan(settings, false).arguments, L"Gloves=0"),
+        "Launcher did not emit a disabled PPE switch");
 
     settings.ppe_class_confidences[0] = 0.123F;
     requireThrows([&] { buildLaunchPlan(settings, false); },
@@ -276,13 +281,15 @@ void testPreferencesPersistenceAndUiContract() {
     preferences.ppe_class_confidences[0] = 0.11F;
     preferences.ppe_class_confidences[7] = 0.88F;
     preferences.show_window = false;
+    preferences.ppe_enabled[0] = false;
+    preferences.ppe_enabled[6] = false;
     saveOperatorPreferencesAtomic(path, preferences);
     const auto loaded = loadOperatorPreferences(path);
     require(loaded.language == UiLanguage::Spanish && loaded.theme == ThemeMode::Dark
             && loaded.image_size == 1280
             && loaded.ppe_class_confidences[0] == 0.11F
             && loaded.ppe_class_confidences[7] == 0.88F
-            && !loaded.show_window,
+            && !loaded.show_window && !loaded.ppe_enabled[0] && !loaded.ppe_enabled[6],
         "Operator preferences did not roundtrip");
     std::ofstream(path, std::ios::binary | std::ios::trunc)
         << "schema_version=1\n"
@@ -294,7 +301,8 @@ void testPreferencesPersistenceAndUiContract() {
     const auto legacy = loadOperatorPreferences(path);
     require(legacy.language == UiLanguage::Spanish && legacy.theme == ThemeMode::Dark
             && legacy.image_size == 1280 && legacy.ppe_class_confidences[0] == 0.11F
-            && legacy.ppe_class_confidences[7] == 0.88F && legacy.show_window,
+            && legacy.ppe_class_confidences[7] == 0.88F && legacy.show_window
+            && std::ranges::all_of(legacy.ppe_enabled, [](bool enabled) { return enabled; }),
         "Legacy preferences did not retain settings and default annotated video to enabled");
     std::ofstream(path, std::ios::binary | std::ios::trunc) << "corrupt";
     const auto fallback = loadOperatorPreferences(path);

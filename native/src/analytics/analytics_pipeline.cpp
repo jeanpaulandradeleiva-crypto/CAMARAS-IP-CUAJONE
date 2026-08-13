@@ -100,12 +100,16 @@ ProcessedFrame AnalyticsPipeline::process(const ObservationFrame& frame) {
             candidates[index].box, frame.frame_width, frame.frame_height)
             && (config_.mode == AnalyticsMode::PpeOnly
                 || arePoseKeypointsPpeEvaluable(candidates[index].keypoints, keypoint_threshold));
+        const bool face_evaluable = config_.mode == AnalyticsMode::PpeFall
+            && isBoxPpeEvaluable(candidates[index].box, frame.frame_width, frame.frame_height)
+            && hasFrontalFaceEvidence(candidates[index].keypoints, keypoint_threshold);
         tracked.push_back({
             track_ids[index], candidates[index].box, candidates[index].confidence,
-            candidates[index].keypoints, evaluable,
+            candidates[index].keypoints, evaluable, face_evaluable,
         });
     }
-    const auto associations = associatePpe(tracked, frame.ppe_detections, frame.ppe_classes);
+    const auto associations = associatePpe(
+        tracked, frame.ppe_detections, frame.ppe_classes, config_.ppe.enabled);
     const auto now = std::chrono::steady_clock::time_point(
         std::chrono::milliseconds(frame.monotonic_timestamp_ms));
     std::size_t event_index{};
@@ -115,7 +119,7 @@ ProcessedFrame AnalyticsPipeline::process(const ObservationFrame& frame) {
         std::optional<PpeEvaluation> ppe;
         std::vector<EventCandidate> candidates_for_person;
         if (auto event = ppe_analyzer_.update(
-                person.track_id, association, person.ppe_evaluable, now)) {
+                person.track_id, association, person.face_evaluable, now)) {
             status = event->status;
             candidates_for_person.push_back(std::move(*event));
         }

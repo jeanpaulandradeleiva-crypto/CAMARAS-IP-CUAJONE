@@ -60,4 +60,13 @@ private:
     std::uint64_t sequence_{};
 };
 
+class EvidenceWriterV3 {
+public:
+    explicit EvidenceWriterV3(std::filesystem::path output);
+    void append(const CanonicalEvent& event);
+
+private:
+    std::filesystem::path report_;
+};
+
 }  // namespace cuajone

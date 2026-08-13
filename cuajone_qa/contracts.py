@@ -11,8 +11,10 @@ from jsonschema import Draft202012Validator, FormatChecker
 
 CONTRACT_VERSION = "1.0.0"
 CONTRACT_VERSION_V2 = "2.0.0"
+CONTRACT_VERSION_V3 = "3.0.0"
 CONTRACT_ROOT = Path(__file__).resolve().parents[1] / "contracts" / "v1"
 CONTRACT_ROOT_V2 = Path(__file__).resolve().parents[1] / "contracts" / "v2"
+CONTRACT_ROOT_V3 = Path(__file__).resolve().parents[1] / "contracts" / "v3"
 SCHEMA_NAMES = (
     "runtime-config",
     "camera-config",
@@ -82,6 +84,28 @@ def validate_instance_v2(name: str, instance: dict[str, Any]) -> dict[str, Any]:
             f"{'/'.join(map(str, error.path)) or '<root>'}: {error.message}" for error in errors
         )
         raise ContractValidationError(f"{name} v2 validation failed: {details}")
+    return instance
+
+
+@lru_cache(maxsize=None)
+def load_schema_v3(name: str) -> dict[str, Any]:
+    if name not in {"frame-result", "event"}:
+        raise KeyError(f"Unknown v3 contract schema: {name}")
+    schema = load_json(CONTRACT_ROOT_V3 / f"{name}.schema.json")
+    Draft202012Validator.check_schema(schema)
+    return schema
+
+
+def validate_instance_v3(name: str, instance: dict[str, Any]) -> dict[str, Any]:
+    errors = sorted(
+        Draft202012Validator(load_schema_v3(name), format_checker=FormatChecker()).iter_errors(instance),
+        key=lambda error: list(error.path),
+    )
+    if errors:
+        details = "; ".join(
+            f"{'/'.join(map(str, error.path)) or '<root>'}: {error.message}" for error in errors
+        )
+        raise ContractValidationError(f"{name} v3 validation failed: {details}")
     return instance
 
 

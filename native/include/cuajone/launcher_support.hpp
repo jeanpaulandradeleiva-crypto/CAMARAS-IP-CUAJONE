@@ -3,6 +3,7 @@
 #pragma once
 
 #include "cuajone/inference_settings.hpp"
+#include "cuajone/types.hpp"
 
 #include <array>
 #include <filesystem>
@@ -42,6 +43,7 @@ struct OperatorPreferences {
     std::array<float, kPpeOutputLabels.size()> ppe_class_confidences{
         0.30F, 0.30F, 0.30F, 0.30F, 0.30F, 0.30F, 0.30F, 0.30F,
     };
+    std::array<bool, kPpeItemCount> ppe_enabled{true, true, true, true, true, true, true};
     bool show_window{true};
 };
 
@@ -67,6 +69,7 @@ struct LauncherSettings {
     std::array<float, kPpeOutputLabels.size()> ppe_class_confidences{
         0.30F, 0.30F, 0.30F, 0.30F, 0.30F, 0.30F, 0.30F, 0.30F,
     };
+    std::array<bool, kPpeItemCount> ppe_enabled{true, true, true, true, true, true, true};
     bool show_window{true};
 };
 

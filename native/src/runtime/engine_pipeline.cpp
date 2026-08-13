@@ -256,7 +256,7 @@ struct NativeEnginePipeline::Impl {
         const auto ppe_output = ppe_session->infer(ppe_input.nchw);
         auto ppe_detections = decodeDetections(
             {ppe_output.values, ppe_output.shape},
-            ppe_names.size(), config.ppe_class_confidences, config.nms_iou,
+            ppe_names.size(), config.ppe_class_confidences, ppeClassEnabledMask(), config.nms_iou,
             ppe_input.transform,
             {DecodeLimits{}.max_nms_candidates, config.maximum_detections});
         std::vector<PoseDetection> poses;
@@ -276,6 +276,15 @@ struct NativeEnginePipeline::Impl {
             monotonic_timestamp_ms, std::move(observed_at), frame.cols, frame.rows,
             std::move(ppe_detections), std::move(poses), ppe_classes,
         });
+    }
+
+    std::array<std::uint8_t, kPpeOutputLabels.size()> ppeClassEnabledMask() const {
+        std::array<std::uint8_t, kPpeOutputLabels.size()> enabled{};
+        enabled[1] = 1;
+        for (const auto& [item, class_id] : ppe_classes.item_ids) {
+            enabled[static_cast<std::size_t>(class_id)] = config.ppe_enabled[static_cast<std::size_t>(item)] ? 1 : 0;
+        }
+        return enabled;
     }
 
     EnginePipelineConfig config;

@@ -286,6 +286,12 @@ LaunchPlan buildLaunchPlan(const LauncherSettings& settings, bool preflight) {
             wideFromUtf8(kPpeOutputLabels[index]) + L'='
             + formatPpeConfidenceThreshold(settings.ppe_class_confidences[index]));
     }
+    constexpr std::array<std::size_t, kPpeItemCount> item_class_ids{0, 2, 3, 4, 5, 6, 7};
+    for (std::size_t index = 0; index < item_class_ids.size(); ++index) {
+        result.arguments.emplace_back(L"--ppe-enabled");
+        result.arguments.push_back(wideFromUtf8(kPpeOutputLabels[item_class_ids[index]])
+            + L'=' + (settings.ppe_enabled[index] ? L"1" : L"0"));
+    }
 
     const bool include_tensor_rt = tensor_rt_candidate && settings.compute_mode != ComputeMode::Cpu;
     const bool include_onnx = cpu_candidate;
@@ -323,10 +329,11 @@ OperatorPreferences parseOperatorPreferences(std::string_view text) {
             throw std::invalid_argument("Preferences contain an invalid or duplicate entry");
         }
     }
-    if ((values.size() != 5 && values.size() != 6) || !values.contains("schema_version")
+    if ((values.size() != 5 && values.size() != 6 && values.size() != 7) || !values.contains("schema_version")
         || !values.contains("language") || !values.contains("theme")
         || !values.contains("imgsz") || !values.contains("ppe_class_conf")
-        || (values.size() == 6 && !values.contains("show_window"))) {
+        || (values.size() >= 6 && !values.contains("show_window"))
+        || (values.size() == 7 && !values.contains("ppe_enabled"))) {
         throw std::invalid_argument("Preferences contain missing or unsupported entries");
     }
     OperatorPreferences result;
@@ -377,6 +384,22 @@ OperatorPreferences parseOperatorPreferences(std::string_view text) {
         else if (show_window->second == "0") result.show_window = false;
         else throw std::invalid_argument("Preferences show_window must be 0 or 1");
     }
+    if (const auto enabled = values.find("ppe_enabled"); enabled != values.end()) {
+        std::istringstream switches(enabled->second);
+        std::string entry;
+        constexpr std::array<std::size_t, kPpeItemCount> item_class_ids{0, 2, 3, 4, 5, 6, 7};
+        for (std::size_t index = 0; index < item_class_ids.size(); ++index) {
+            const std::size_t class_id = item_class_ids[index];
+            if (!std::getline(switches, entry, ',')) throw std::invalid_argument("Preferences PPE switches are incomplete");
+            const auto separator = entry.find(':');
+            if (separator == std::string::npos || entry.substr(0, separator) != kPpeOutputLabels[class_id]
+                || (entry.substr(separator + 1) != "0" && entry.substr(separator + 1) != "1")) {
+                throw std::invalid_argument("Preferences PPE switch order or value is invalid");
+            }
+            result.ppe_enabled[index] = entry.substr(separator + 1) == "1";
+        }
+        if (std::getline(switches, entry, ',')) throw std::invalid_argument("Preferences PPE switches are excessive");
+    }
     return result;
 }
 
@@ -399,6 +422,14 @@ std::string serializeOperatorPreferences(const OperatorPreferences& preferences)
             preferences.ppe_class_confidences[index]);
         output << kPpeOutputLabels[index] << ':'
                << std::string(threshold.begin(), threshold.end());
+    }
+    output << '\n';
+    output << "ppe_enabled=";
+    constexpr std::array<std::size_t, kPpeItemCount> item_class_ids{0, 2, 3, 4, 5, 6, 7};
+    for (std::size_t index = 0; index < item_class_ids.size(); ++index) {
+        if (index != 0) output << ',';
+        output << kPpeOutputLabels[item_class_ids[index]] << ':'
+               << (preferences.ppe_enabled[index] ? '1' : '0');
     }
     output << '\n';
     return output.str();

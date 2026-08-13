@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: AGPL-3.0-only
-"""Entrena el detector de EPP usando YOLO26 con split 90/10 aleatorio.
+"""Entrena el detector de EPP usando YOLO26 con split 85/15 aleatorio.
 
 Uso rapido:
     python tools\\train_ppe.py
@@ -36,7 +36,7 @@ import numpy as np
 import yaml
 
 DISCLAIMER = (
-    "Este script realiza un split 90/10 aleatorio del dataset de EPP, "
+    "Este script realiza un split 85/15 aleatorio del dataset de EPP, "
     "entrena YOLO26 desde yolo26n.pt y guarda el mejor modelo con el nombre solicitado."
 )
 
@@ -879,11 +879,11 @@ def main() -> None:
     split_dir = dataset_dir / "split_90_10_gpu"
     split_dir.mkdir(parents=True, exist_ok=True)
 
-    # 1. Crear split 90/10
-    print("\n--- Paso 1: Creando split 90/10 aleatorio ---")
+    # 1. Crear split 85/15
+    print("\n--- Paso 1: Creando split 85/15 aleatorio ---")
     data_yaml = create_split_yaml(
         dataset_dir=dataset_dir,
-        train_ratio=0.9,
+        train_ratio=0.85,
         seed=args.seed,
         split_dir=split_dir,
         epochs=args.epochs,
