@@ -183,6 +183,7 @@ target_compile_features(cuajone_inference PUBLIC cxx_std_20)
 add_library(cuajone_core
     src/app/cli.cpp
     src/app/runtime_execution_plan.cpp
+    src/foundation/performance_telemetry.cpp
 )
 target_include_directories(cuajone_core PUBLIC include)
 target_link_libraries(cuajone_core PUBLIC cuajone_contracts cuajone_analytics cuajone_inference cuajone_compute)
@@ -414,8 +415,9 @@ if(CUAJONE_BUILD_RUNTIME)
     endif()
 
     if(CUAJONE_ENABLE_ONNX_CUDA_INTEGRATION_TESTS)
-        set(CUAJONE_ONNX_CUDA_RUNTIME_DIR "" CACHE PATH
-            "Directory containing the staged ONNX Runtime CUDA provider DLL closure")
+        unset(CUAJONE_ONNX_CUDA_RUNTIME_DIR CACHE)
+        set(CUAJONE_ONNX_CUDA_DEPENDENCY_ROOTS "" CACHE STRING
+            "Semicolon-separated trusted local roots for the ONNX Runtime CUDA DLL closure")
         set(CUAJONE_ONNX_CUDA_PPE_MODEL "" CACHE FILEPATH
             "Verified PPE ONNX model used by the opt-in CUDA pipeline integration test")
         set(CUAJONE_ONNX_CUDA_POSE_MODEL "" CACHE FILEPATH
@@ -424,8 +426,9 @@ if(CUAJONE_BUILD_RUNTIME)
             "${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/person_regression.jpg"
             CACHE FILEPATH "Offline person image used by the native real-model regression")
         foreach(required_file
-                "${CUAJONE_ONNX_CUDA_RUNTIME_DIR}/onnxruntime_providers_cuda.dll"
-                "${CUAJONE_ONNX_CUDA_RUNTIME_DIR}/onnxruntime_providers_shared.dll"
+                "${ONNXRUNTIME_ROOT}/lib/onnxruntime.dll"
+                "${ONNXRUNTIME_ROOT}/lib/onnxruntime_providers_cuda.dll"
+                "${ONNXRUNTIME_ROOT}/lib/onnxruntime_providers_shared.dll"
                 "${CUAJONE_ONNX_CUDA_PPE_MODEL}"
                 "${CUAJONE_ONNX_CUDA_PPE_MODEL}.manifest.json"
                 "${CUAJONE_ONNX_CUDA_POSE_MODEL}"
@@ -436,19 +439,30 @@ if(CUAJONE_BUILD_RUNTIME)
                     "ONNX CUDA integration prerequisite is missing: ${required_file}")
             endif()
         endforeach()
+        if(NOT CUAJONE_ONNX_CUDA_DEPENDENCY_ROOTS)
+            message(FATAL_ERROR
+                "CUAJONE_ONNX_CUDA_DEPENDENCY_ROOTS must list trusted local CUDA dependency roots")
+        endif()
+        find_program(CUAJONE_DUMPBIN_EXECUTABLE dumpbin
+            HINTS "$ENV{VCToolsInstallDir}/bin/Hostx64/x64"
+            NO_DEFAULT_PATH)
+        if(NOT CUAJONE_DUMPBIN_EXECUTABLE)
+            message(FATAL_ERROR "MSVC dumpbin is required to resolve the local ONNX CUDA runtime closure")
+        endif()
+        function(cuajone_copy_onnx_cuda_runtime_closure target)
+            add_custom_command(TARGET ${target} POST_BUILD
+                COMMAND ${CMAKE_COMMAND}
+                    "-DDESTINATION_DIR=$<TARGET_FILE_DIR:${target}>"
+                    "-DDUMPBIN=${CUAJONE_DUMPBIN_EXECUTABLE}"
+                    "-DSEEDS=${ONNXRUNTIME_ROOT}/lib/onnxruntime.dll;${ONNXRUNTIME_ROOT}/lib/onnxruntime_providers_cuda.dll;${ONNXRUNTIME_ROOT}/lib/onnxruntime_providers_shared.dll"
+                    "-DSEARCH_ROOTS=${CUAJONE_ONNX_CUDA_DEPENDENCY_ROOTS}"
+                    -P "${CMAKE_CURRENT_SOURCE_DIR}/cmake/CopyOnnxCudaRuntimeClosure.cmake")
+        endfunction()
         add_executable(cuajone_onnx_cuda_integration_tests tests/onnx_cuda_integration_tests.cpp)
         target_link_libraries(cuajone_onnx_cuda_integration_tests PRIVATE cuajone_runtime cuajone_onnxruntime)
         target_compile_options(cuajone_onnx_cuda_integration_tests PRIVATE /W4 /permissive- /EHsc)
-        add_custom_command(TARGET cuajone_onnx_cuda_integration_tests POST_BUILD
-            COMMAND ${CMAKE_COMMAND} -E copy_if_different
-                $<TARGET_FILE:cuajone_onnxruntime>
-                $<TARGET_FILE_DIR:cuajone_onnx_cuda_integration_tests>
-            COMMAND ${CMAKE_COMMAND} -E copy_if_different
-                "${CUAJONE_ONNX_CUDA_RUNTIME_DIR}/onnxruntime_providers_cuda.dll"
-                $<TARGET_FILE_DIR:cuajone_onnx_cuda_integration_tests>
-            COMMAND ${CMAKE_COMMAND} -E copy_if_different
-                "${CUAJONE_ONNX_CUDA_RUNTIME_DIR}/onnxruntime_providers_shared.dll"
-                $<TARGET_FILE_DIR:cuajone_onnx_cuda_integration_tests>)
+        cuajone_copy_onnx_cuda_runtime_closure(cuajone_onnx_cuda_integration_tests)
+        cuajone_copy_onnx_cuda_runtime_closure(cuajone_native)
         add_test(NAME cuajone_onnx_pose_cpu_standalone_tests
             COMMAND cuajone_onnx_cuda_integration_tests
                 standalone-pose-cpu "${CUAJONE_ONNX_CUDA_POSE_MODEL}")
@@ -464,9 +478,9 @@ if(CUAJONE_BUILD_RUNTIME)
             cuajone_onnx_cuda_ppe_only_tests
             cuajone_onnx_cuda_hybrid_pipeline_tests
             PROPERTIES
-            ENVIRONMENT "CUAJONE_ONNX_CUDA_RUNTIME_DIR=${CUAJONE_ONNX_CUDA_RUNTIME_DIR}"
+            ENVIRONMENT "CUAJONE_ONNX_CUDA_RUNTIME_DIR=$<TARGET_FILE_DIR:cuajone_onnx_cuda_integration_tests>"
             ENVIRONMENT_MODIFICATION
-                "PATH=path_list_prepend:$<TARGET_FILE_DIR:opencv_core>;PATH=path_list_prepend:${ONNXRUNTIME_ROOT}/lib")
+                "PATH=path_list_prepend:$<TARGET_FILE_DIR:opencv_core>")
         set_tests_properties(cuajone_onnx_pose_cpu_standalone_tests PROPERTIES
             LABELS "onnx;acceptance;pose-cpu;hybrid-rationale-ort-cuda-1.25-gtx1650ti")
         set_tests_properties(

@@ -65,9 +65,10 @@
         "CUAJONE_BUILD_TESTS": "ON",
         "CUAJONE_ENABLE_TENSORRT": "OFF",
         "CUAJONE_ENABLE_ONNX_CUDA_INTEGRATION_TESTS": "ON",
-        "CUAJONE_ONNX_CUDA_RUNTIME_DIR": "${sourceDir}/../.tools/native/installer/stage/bin",
-        "CUAJONE_ONNX_CUDA_PPE_MODEL": "${sourceDir}/../.tools/native/installer/stage/bin/models/ppe.onnx",
-        "CUAJONE_ONNX_CUDA_POSE_MODEL": "${sourceDir}/../.tools/native/installer/stage/bin/models/pose.onnx"
+        "ONNXRUNTIME_ROOT": "${sourceDir}/../.tools/native/onnxruntime-win-x64-gpu-1.25.0",
+        "CUAJONE_ONNX_CUDA_DEPENDENCY_ROOTS": "${sourceDir}/../.tools/native/onnxruntime-win-x64-gpu-1.25.0/lib;${sourceDir}/../.tools/native/cuda-runtime/nvidia/cuda_runtime/bin;${sourceDir}/../.tools/native/nvidia-libraries/cublas/nvidia/cublas/bin;${sourceDir}/../.tools/native/nvidia-libraries/cudnn/nvidia/cudnn/bin;${sourceDir}/../.tools/native/nvidia-libraries/cufft/nvidia/cufft/bin;${sourceDir}/../.tools/native/vs/VC/Redist/MSVC/14.44.35112/x64/Microsoft.VC143.CRT",
+        "CUAJONE_ONNX_CUDA_PPE_MODEL": "${sourceDir}/../.tools/native/build/presets/windows-msvc/models/ppe.onnx",
+        "CUAJONE_ONNX_CUDA_POSE_MODEL": "${sourceDir}/../.tools/native/build/presets/windows-msvc/models/pose.onnx"
       }
     }
   ],

@@ -6,6 +6,7 @@
 #include "cuajone/contracts.hpp"
 #include "cuajone/engine_pipeline.hpp"
 #include "cuajone/onnx_session.hpp"
+#include "cuajone/performance_telemetry.hpp"
 #include "cuajone/yolo_decode.hpp"
 
 #include "onnx_fixture.hpp"
@@ -231,6 +232,8 @@ void verifyNativePipeline(
     config.pose_keypoint_shape = {17, 3};
     config.device = device;
     config.analytics.mode = AnalyticsMode::PpeFall;
+    PerformanceTelemetry telemetry("image");
+    config.telemetry = &telemetry;
 
     std::cout << "INFO: constructing NativeEnginePipeline with staged PPE and pose ONNX models"
               << std::endl;
@@ -247,27 +250,35 @@ void verifyNativePipeline(
     cv::Mat frame = cv::imread(person_image.string(), cv::IMREAD_COLOR);
     require(!frame.empty() && frame.type() == CV_8UC3,
         "Could not load the offline person regression image");
-    const ProcessedFrame processed = pipeline.processFrame(
-        frame, "cuda-integration", 1, 1000, "2026-08-01T00:00:00Z");
-    require(processed.canonical.source_id == "cuda-integration"
-            && processed.canonical.frame_id == 1
-            && processed.canonical.monotonic_timestamp_ms == 1000
-            && processed.canonical.frame_width == frame.cols
-            && processed.canonical.frame_height == frame.rows,
-        "NativeEnginePipeline returned invalid canonical frame metadata");
-    const std::string canonical = canonicalJson(processed.canonical);
-    require(!canonical.empty()
-            && canonical.find(R"("contract_version":"1.0.0")") != std::string::npos
-            && canonical.find(R"("source_id":"cuda-integration")") != std::string::npos,
-        "NativeEnginePipeline did not serialize valid canonical output");
-    require(!processed.canonical.people.empty(),
-        "Real staged pose model produced no native Person output for the known person image");
-    require(std::all_of(
-                processed.canonical.people.begin(), processed.canonical.people.end(),
-                [](const auto& person) { return person.keypoints.size() == 17; }),
-        "Real staged pose output did not preserve all 17 keypoints");
+    std::string canonical;
+    std::size_t people_count{};
+    for (std::uint64_t frame_id = 1; frame_id <= 3; ++frame_id) {
+        const ProcessedFrame processed = pipeline.processFrame(
+            frame, "cuda-integration", frame_id, 1000 + static_cast<std::int64_t>(frame_id),
+            "2026-08-01T00:00:00Z");
+        require(processed.canonical.source_id == "cuda-integration"
+                && processed.canonical.frame_id == frame_id
+                && processed.canonical.monotonic_timestamp_ms == 1000 + static_cast<std::int64_t>(frame_id)
+                && processed.canonical.frame_width == frame.cols
+                && processed.canonical.frame_height == frame.rows,
+            "NativeEnginePipeline returned invalid canonical frame metadata");
+        canonical = canonicalJson(processed.canonical);
+        require(!canonical.empty()
+                && canonical.find(R"("contract_version":"1.0.0")") != std::string::npos
+                && canonical.find(R"("source_id":"cuda-integration")") != std::string::npos,
+            "NativeEnginePipeline did not serialize valid canonical output");
+        require(!processed.canonical.people.empty(),
+            "Real staged pose model produced no native Person output for the known person image");
+        require(std::all_of(
+                    processed.canonical.people.begin(), processed.canonical.people.end(),
+                    [](const auto& person) { return person.keypoints.size() == 17; }),
+            "Real staged pose output did not preserve all 17 keypoints");
+        people_count = processed.canonical.people.size();
+    }
+    require(telemetry.jsonReport().find(R"("pipeline_total":{"samples":3)") != std::string::npos,
+        "Hybrid pipeline did not emit one pipeline wall-clock sample per processed frame");
     std::cout << "PASS: NativeEnginePipeline ppe-fall processed a deterministic BGR frame with "
-              << summary.provider << "; people=" << processed.canonical.people.size()
+              << summary.provider << "; people=" << people_count
               << "; pose loaded; canonical bytes=" << canonical.size() << '\n';
 }
 
