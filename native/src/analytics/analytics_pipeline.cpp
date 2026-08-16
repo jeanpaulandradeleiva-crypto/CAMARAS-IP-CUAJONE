@@ -108,7 +108,7 @@ ProcessedFrame AnalyticsPipeline::process(const ObservationFrame& frame) {
             candidates[index].keypoints, evaluable, face_evaluable,
         });
     }
-    const auto associations = associatePpe(
+    auto associations = associatePpe(
         tracked, frame.ppe_detections, frame.ppe_classes, config_.ppe.enabled);
     const auto now = std::chrono::steady_clock::time_point(
         std::chrono::milliseconds(frame.monotonic_timestamp_ms));
@@ -173,7 +173,7 @@ ProcessedFrame AnalyticsPipeline::process(const ObservationFrame& frame) {
     // Commit sequence state only after the frame has been fully and canonically processed.
     last_frame_id_ = frame.frame_id;
     last_monotonic_timestamp_ms_ = frame.monotonic_timestamp_ms;
-    return {std::move(canonical), associations};
+    return {std::move(canonical), std::move(associations)};
 }
 
 void AnalyticsPipeline::reset() noexcept {

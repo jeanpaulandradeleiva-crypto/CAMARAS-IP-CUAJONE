@@ -447,6 +447,9 @@ std::vector<PoseDetection> decodePoses(
             confidence = confidenceFor(values, schema, prediction);
             if (raw_box) decoded_box = modelBox(*raw_box);
         }
+        if ((!end_to_end && !raw_box) || !confidence
+            || confidence->value < confidence_threshold
+            || (!end_to_end && (raw_box->width <= 0.0F || raw_box->height <= 0.0F))) continue;
         PoseDetection detection;
         bool finite_keypoints = true;
         detection.keypoints.reserve(keypoint_count);
@@ -461,9 +464,7 @@ std::vector<PoseDetection> decodePoses(
             }
             detection.keypoints.push_back({x, y, point_confidence});
         }
-        if ((!end_to_end && !raw_box) || !confidence || !finite_keypoints
-            || confidence->value < confidence_threshold
-            || (!end_to_end && (raw_box->width <= 0.0F || raw_box->height <= 0.0F))) continue;
+        if (!finite_keypoints) continue;
         detection.box = decoded_box;
         detection.confidence = confidence->value;
         detection.class_id = confidence->class_id;
