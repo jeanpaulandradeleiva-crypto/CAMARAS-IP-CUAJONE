@@ -118,9 +118,10 @@ TensorRtSession::TensorRtSession(
         if (engine_->getTensorLocation(name) != nvinfer1::TensorLocation::kDEVICE) {
             throw std::runtime_error("TensorRT I/O tensor '" + std::string(name) + "' must be device-located");
         }
+        const int components_per_element = engine_->getTensorComponentsPerElement(name);
         if (engine_->getTensorFormat(name) != nvinfer1::TensorFormat::kLINEAR
             || engine_->getTensorVectorizedDim(name) != -1
-            || engine_->getTensorComponentsPerElement(name) != 1) {
+            || (components_per_element != -1 && components_per_element != 1)) {
             throw std::runtime_error(
                 "TensorRT I/O tensor '" + std::string(name)
                 + "' must be linear, non-vectorized, and have one component per element");
