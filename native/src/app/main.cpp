@@ -201,6 +201,16 @@ EnginePipelineConfig enginePipelineConfig(
     pipeline_config.force_serial_hybrid = !config.benchmark_image.empty()
         && serial_hybrid_benchmark != nullptr && std::string_view(serial_hybrid_benchmark) == "1";
     std::free(serial_hybrid_benchmark);
+    char* separate_hybrid_preprocessing{};
+    std::size_t separate_hybrid_preprocessing_length{};
+    if (_dupenv_s(
+            &separate_hybrid_preprocessing, &separate_hybrid_preprocessing_length,
+            "CUAJONE_INTERNAL_SEPARATE_HYBRID_PREPROCESSING") != 0) {
+        throw std::runtime_error("Could not read the internal separate hybrid preprocessing switch");
+    }
+    pipeline_config.force_separate_hybrid_preprocessing = !config.benchmark_image.empty()
+        && separate_hybrid_preprocessing != nullptr && std::string_view(separate_hybrid_preprocessing) == "1";
+    std::free(separate_hybrid_preprocessing);
 #endif
     return pipeline_config;
 }

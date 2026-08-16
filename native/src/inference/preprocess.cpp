@@ -19,11 +19,12 @@ LetterboxPreprocessor::LetterboxPreprocessor(int model_width, int model_height)
         || model_height > resource_limits::kMaximumImageDimension) {
         throw std::invalid_argument("Model dimensions exceed the supported image limit");
     }
-    const std::size_t pixels = resource_limits::checkedMultiply(
-        static_cast<std::size_t>(model_width), static_cast<std::size_t>(model_height),
-        resource_limits::kMaximumInputElements, "Preprocessed image");
-    packed_.resize(resource_limits::checkedMultiply(
-        3, pixels, resource_limits::kMaximumInputElements, "Preprocessed input"));
+}
+
+bool canSharePreprocessedInput(
+    int ppe_width, int ppe_height, int pose_width, int pose_height) noexcept {
+    return ppe_width > 0 && ppe_height > 0
+        && ppe_width == pose_width && ppe_height == pose_height;
 }
 
 PreprocessedFrame LetterboxPreprocessor::process(const cv::Mat& bgr_frame) {
@@ -44,18 +45,20 @@ PreprocessedFrame LetterboxPreprocessor::process(const cv::Mat& bgr_frame) {
 
     const std::size_t width = static_cast<std::size_t>(model_width_);
     const std::size_t plane = width * static_cast<std::size_t>(model_height_);
+    auto packed = std::make_shared<std::vector<float>>(resource_limits::checkedMultiply(
+        3, plane, resource_limits::kMaximumInputElements, "Preprocessed input"));
     for (int y = 0; y < model_height_; ++y) {
         const auto* row = canvas_.ptr<cv::Vec3b>(y);
         for (int x = 0; x < model_width_; ++x) {
             const std::size_t offset = static_cast<std::size_t>(y) * width + static_cast<std::size_t>(x);
-            packed_[offset] = static_cast<float>(row[x][2]) / 255.0F;
-            packed_[plane + offset] = static_cast<float>(row[x][1]) / 255.0F;
-            packed_[2 * plane + offset] = static_cast<float>(row[x][0]) / 255.0F;
+            (*packed)[offset] = static_cast<float>(row[x][2]) / 255.0F;
+            (*packed)[plane + offset] = static_cast<float>(row[x][1]) / 255.0F;
+            (*packed)[2 * plane + offset] = static_cast<float>(row[x][0]) / 255.0F;
         }
     }
 
     return {
-        packed_,
+        std::move(packed),
         transform,
     };
 }

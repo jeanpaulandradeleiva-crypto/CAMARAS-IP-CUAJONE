@@ -6,15 +6,21 @@
 
 #include <opencv2/core/mat.hpp>
 
+#include <memory>
 #include <span>
 #include <vector>
 
 namespace cuajone {
 
 struct PreprocessedFrame {
-    std::span<const float> nchw;
+    std::shared_ptr<const std::vector<float>> packed;
     LetterboxTransform transform;
+
+    [[nodiscard]] std::span<const float> nchw() const noexcept { return *packed; }
 };
+
+[[nodiscard]] bool canSharePreprocessedInput(
+    int ppe_width, int ppe_height, int pose_width, int pose_height) noexcept;
 
 class LetterboxPreprocessor {
 public:
@@ -27,7 +33,6 @@ private:
     int model_height_;
     cv::Mat resized_;
     cv::Mat canvas_;
-    std::vector<float> packed_;
 };
 
 }  // namespace cuajone

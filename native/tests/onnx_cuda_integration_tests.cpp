@@ -141,12 +141,14 @@ std::string associationSnapshot(const std::map<int, PpeAssociation>& association
 
 void requireHybridTelemetrySamples(const std::string& report, std::size_t frame_count) {
     for (const std::string_view stage : {
-             "pipeline_total", "ppe_preprocess", "ppe_inference", "ppe_decode",
-             "pose_preprocess", "pose_inference", "pose_decode", "analytics"}) {
+              "pipeline_total", "ppe_preprocess", "ppe_inference", "ppe_decode",
+              "pose_inference", "pose_decode", "analytics"}) {
         require(report.find("\"" + std::string(stage) + "\":{\"samples\":"
                 + std::to_string(frame_count)) != std::string::npos,
             "Hybrid telemetry did not retain one " + std::string(stage) + " sample per frame");
     }
+    require(report.find("\"pose_preprocess\":{\"samples\":0") != std::string::npos,
+        "Equal resolved PPE and pose input dimensions did not record one shared preprocess stage");
     require(report.find("\"captured_frames\":0,\"processed_frames\":0,") != std::string::npos,
         "Direct pipeline telemetry unexpectedly changed capture or processed-frame counters");
 }

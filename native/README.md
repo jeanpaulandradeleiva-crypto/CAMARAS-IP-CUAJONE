@@ -37,7 +37,7 @@ tensores. Para ONNX CUDA ejecuta además un warmup aislado con un frame BGR real
 | `model_manifest` | Verifica tipo, rol, tamaño, SHA-256, procedencia, I/O y protobuf ONNX antes de crear una sesión. |
 | `onnx_session` | Sesión ONNX Runtime CPU o CUDA creada desde bytes verificados, con forma concreta seleccionada y salida real acotada por ejecución. |
 | `tensorrt_runtime` | Backend opcional: RAII para runtime, contexto, stream y buffers CUDA. |
-| `preprocess` | Letterbox OpenCV, BGR a RGB, normalización y empaquetado NCHW FP32; conserva escala y padding exactos. |
+| `preprocess` | Letterbox OpenCV, BGR a RGB, normalización y empaquetado NCHW FP32; conserva escala y padding exactos. En `ppe-fall`, comparte un resultado inmutable sólo si las dimensiones resueltas de ambas sesiones son positivas e idénticas. |
 | `yolo_decode` | Valida y decodifica PPE raw, pose raw y pose end-to-end `[1,300,57]`; rechaza valores no finitos y limita candidatos. |
 | `byte_tracker` | Adapter privado sobre ByteTrack-Eigen: Kalman/Hungarian, segunda asociación de baja confianza, IDs alineados, edad y capacidad acotadas. |
 | `ppe_analytics` | Anclas `Person`, asociación anatómica casco/chaleco, votación temporal y cooldown. |
@@ -429,6 +429,11 @@ analítica. No es la suma de las ramas PPE y pose: permite comparar directamente
 percentiles p50/p95/p99 seriales y del solapamiento híbrido, y excluye render y
 evidencia.
 
+Cuando `ppe-fall` comparte preprocesamiento, `ppe_preprocess` conserva una muestra
+por frame y `pose_preprocess` queda en cero; no se fabrican dos duraciones para una
+sola operación. Si las dimensiones resueltas de sesión difieren o no son válidas,
+ambas etapas conservan el camino separado sin reinterpretar, redimensionar ni recortar.
+
 Los benchmarks offline informan progreso sin datos de la fuente al terminar el
 warmup y cada diez frames medidos. El reporte de telemetría JSON sigue siendo la
 única línea final de la salida.
@@ -437,6 +442,8 @@ Los builds de diagnóstico interno de la integración ONNX CUDA aceptan exclusiv
 para comparación local `CUAJONE_INTERNAL_SERIAL_HYBRID_BENCHMARK=1` junto con
 `--benchmark-image`. Fuerza la referencia serial PPE-CUDA/pose-CPU; no aparece en
 la ayuda, no existe en la configuración pública y los binarios normales lo ignoran.
+`CUAJONE_INTERNAL_SEPARATE_HYBRID_PREPROCESSING=1` aplica bajo las mismas condiciones
+el camino legado de dos preprocessors, para benchmarks pareados solamente.
 
 La prueba TensorRT es deliberadamente opt-in y solo inspecciona un engine real:
 

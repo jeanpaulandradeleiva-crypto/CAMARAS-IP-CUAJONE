@@ -47,6 +47,8 @@ struct EnginePipelineConfig {
 #ifdef CUAJONE_INTERNAL_DIAGNOSTICS
     // Compiled only into diagnostic targets to compare the hybrid serial reference.
     bool force_serial_hybrid{};
+    // Compiled only into diagnostic targets to benchmark the legacy separate preprocess path.
+    bool force_separate_hybrid_preprocessing{};
 #endif
 };
 

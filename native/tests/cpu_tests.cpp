@@ -13,12 +13,16 @@
 #include "cuajone/yolo_decode.hpp"
 
 #include <opencv2/core.hpp>
+#include <opencv2/imgproc.hpp>
 
 #include <chrono>
+#include <array>
 #include <cmath>
+#include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <functional>
+#include <future>
 #include <iostream>
 #include <limits>
 #include <stdexcept>
@@ -144,14 +148,95 @@ void testLetterboxMappingAndPacking() {
     cv::Mat frame(720, 1280, CV_8UC3, cv::Scalar(10, 20, 30));
     LetterboxPreprocessor preprocessor(640, 640);
     const PreprocessedFrame result = preprocessor.process(frame);
-    require(result.nchw.size() == 3U * 640U * 640U, "Unexpected NCHW length");
+    require(result.nchw().size() == 3U * 640U * 640U, "Unexpected NCHW length");
     require(result.transform.padding_left == 0, "Unexpected horizontal padding");
     require(result.transform.padding_top == 140, "Unexpected vertical padding");
     const Box restored = result.transform.restore(Box{0.0F, 140.0F, 640.0F, 500.0F});
     requireNear(restored.x2, 1280.0F, 0.01F, "Box x mapping failed");
     requireNear(restored.y2, 720.0F, 0.01F, "Box y mapping failed");
     const std::size_t image_offset = 140U * 640U;
-    requireNear(result.nchw[image_offset], 30.0F / 255.0F, 0.0001F, "BGR to RGB failed");
+    requireNear(result.nchw()[image_offset], 30.0F / 255.0F, 0.0001F, "BGR to RGB failed");
+}
+
+std::vector<float> legacyPreprocess(const cv::Mat& frame, int width, int height) {
+    const LetterboxTransform transform = makeLetterboxTransform(frame.cols, frame.rows, width, height);
+    const int resized_width = static_cast<int>(std::round(frame.cols * transform.scale_x));
+    const int resized_height = static_cast<int>(std::round(frame.rows * transform.scale_y));
+    cv::Mat resized;
+    cv::Mat canvas(height, width, CV_8UC3, cv::Scalar(114, 114, 114));
+    cv::resize(frame, resized, cv::Size(resized_width, resized_height), 0.0, 0.0, cv::INTER_LINEAR);
+    resized.copyTo(canvas(cv::Rect(transform.padding_left, transform.padding_top, resized_width, resized_height)));
+    const std::size_t plane = static_cast<std::size_t>(width) * static_cast<std::size_t>(height);
+    std::vector<float> packed(3 * plane);
+    for (int y = 0; y < height; ++y) {
+        const auto* row = canvas.ptr<cv::Vec3b>(y);
+        for (int x = 0; x < width; ++x) {
+            const std::size_t offset = static_cast<std::size_t>(y) * static_cast<std::size_t>(width)
+                + static_cast<std::size_t>(x);
+            packed[offset] = static_cast<float>(row[x][2]) / 255.0F;
+            packed[plane + offset] = static_cast<float>(row[x][1]) / 255.0F;
+            packed[2 * plane + offset] = static_cast<float>(row[x][0]) / 255.0F;
+        }
+    }
+    return packed;
+}
+
+void testPreprocessOwnershipParityAndSharingGuard() {
+    require(canSharePreprocessedInput(640, 640, 640, 640), "Equal resolved dimensions did not enable sharing");
+    require(!canSharePreprocessedInput(640, 640, 640, 768)
+            && !canSharePreprocessedInput(0, 640, 0, 640)
+            && !canSharePreprocessedInput(640, -1, 640, -1),
+        "Mismatched or unsupported resolved dimensions enabled sharing");
+
+    for (const auto& [frame_width, frame_height, model_width, model_height] : {
+             std::array{7, 5, 640, 640}, std::array{1280, 720, 640, 640},
+             std::array{11, 17, 768, 640}}) {
+        cv::Mat frame(frame_height, frame_width, CV_8UC3);
+        for (int y = 0; y < frame.rows; ++y) {
+            for (int x = 0; x < frame.cols; ++x) {
+                frame.at<cv::Vec3b>(y, x) = cv::Vec3b(
+                    static_cast<unsigned char>((x * 29 + y * 7) % 256),
+                    static_cast<unsigned char>((x * 11 + y * 31) % 256),
+                    static_cast<unsigned char>((x * 43 + y * 13) % 256));
+            }
+        }
+        LetterboxPreprocessor preprocessor(model_width, model_height);
+        const PreprocessedFrame current = preprocessor.process(frame);
+        const std::vector<float> legacy = legacyPreprocess(frame, model_width, model_height);
+        const LetterboxTransform legacy_transform = makeLetterboxTransform(
+            frame_width, frame_height, model_width, model_height);
+        require(current.transform.source_width == legacy_transform.source_width
+                && current.transform.source_height == legacy_transform.source_height
+                && current.transform.model_width == legacy_transform.model_width
+                && current.transform.model_height == legacy_transform.model_height
+                && current.transform.scale_x == legacy_transform.scale_x
+                && current.transform.scale_y == legacy_transform.scale_y
+                && current.transform.padding_left == legacy_transform.padding_left
+                && current.transform.padding_top == legacy_transform.padding_top,
+            "Owned preprocessing changed the legacy letterbox transform");
+        require(current.nchw().size() == legacy.size()
+                && std::memcmp(current.nchw().data(), legacy.data(), legacy.size() * sizeof(float)) == 0,
+            "Owned preprocessing diverged byte-for-byte from legacy NCHW packing");
+    }
+
+    cv::Mat first(9, 13, CV_8UC3, cv::Scalar(1, 2, 3));
+    cv::Mat second(9, 13, CV_8UC3, cv::Scalar(200, 201, 202));
+    PreprocessedFrame shared;
+    std::vector<float> expected;
+    {
+        LetterboxPreprocessor preprocessor(640, 640);
+        shared = preprocessor.process(first);
+        expected.assign(shared.nchw().begin(), shared.nchw().end());
+        auto delayed_pose = std::async(std::launch::async, [shared] {
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+            return std::vector<float>(shared.nchw().begin(), shared.nchw().end());
+        });
+        static_cast<void>(preprocessor.process(second));
+        require(delayed_pose.get() == expected,
+            "Shared preprocessing backing changed while the delayed pose worker was running");
+    }
+    require(std::equal(shared.nchw().begin(), shared.nchw().end(), expected.begin()),
+        "Shared preprocessing backing did not outlive its preprocessor");
 }
 
 void testDetectSchemaDecodeAndNms() {
@@ -1180,6 +1265,7 @@ int main() {
     const std::vector<std::pair<std::string, std::function<void()>>> tests{
         {"engine metadata prefix", testEngineRawAndMetadataPrefix},
         {"letterbox mapping", testLetterboxMappingAndPacking},
+        {"owned preprocessing parity and sharing guard", testPreprocessOwnershipParityAndSharingGuard},
         {"detect decode and NMS", testDetectSchemaDecodeAndNms},
         {"pose decode", testPoseSchemaAndDecode},
         {"CLI URLs and invariants", testCliUrlsAndInvariantDefense},

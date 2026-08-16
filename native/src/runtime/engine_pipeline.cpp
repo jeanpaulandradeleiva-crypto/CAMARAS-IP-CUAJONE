@@ -144,6 +144,15 @@ struct NativeEnginePipeline::Impl {
 
     ~Impl() { pose_executor.shutdown(); }
 
+    void resolveSharedPreprocessing() noexcept {
+        shared_preprocessing = pose_session != nullptr && canSharePreprocessedInput(
+            ppe_session->inputWidth(), ppe_session->inputHeight(),
+            pose_session->inputWidth(), pose_session->inputHeight());
+#ifdef CUAJONE_INTERNAL_DIAGNOSTICS
+        shared_preprocessing = shared_preprocessing && !config.force_separate_hybrid_preprocessing;
+#endif
+    }
+
     void loadCpu() {
         summary.backend = ComputeBackend::Cpu;
         summary.provider = "ONNX Runtime CPUExecutionProvider";
@@ -185,6 +194,7 @@ struct NativeEnginePipeline::Impl {
             pose_preprocessor = std::make_unique<LetterboxPreprocessor>(
                 pose_session->inputWidth(), pose_session->inputHeight());
             summary.pose_loaded = true;
+            resolveSharedPreprocessing();
         }
     }
 
@@ -251,6 +261,7 @@ struct NativeEnginePipeline::Impl {
                 pose_session->inputWidth(), pose_session->inputHeight());
             summary.pose_loaded = true;
             summary.pose_metadata_prefix = pose_file->hasMetadataPrefix();
+            resolveSharedPreprocessing();
         }
 #else
         throw std::runtime_error("CUDA mode is unavailable in this CPU-only build");
@@ -309,6 +320,7 @@ struct NativeEnginePipeline::Impl {
             pose_preprocessor = std::make_unique<LetterboxPreprocessor>(
                 pose_session->inputWidth(), pose_session->inputHeight());
             summary.pose_loaded = true;
+            resolveSharedPreprocessing();
             hybrid_pose_executor = true;
 #ifdef CUAJONE_INTERNAL_DIAGNOSTICS
             hybrid_pose_executor = !config.force_serial_hybrid;
@@ -337,17 +349,20 @@ struct NativeEnginePipeline::Impl {
         }
         std::future<std::vector<PoseDetection>> pose_future;
         if (hybrid_pose_executor) {
-            const auto pose_preprocess_started = config.telemetry == nullptr
-                ? std::chrono::steady_clock::time_point{} : std::chrono::steady_clock::now();
-            auto pose_input = pose_preprocessor->process(frame);
-            if (config.telemetry != nullptr) {
-                config.telemetry->addSample(PerformanceStage::PosePreprocess,
-                    std::chrono::steady_clock::now() - pose_preprocess_started);
+            PreprocessedFrame pose_input = ppe_input;
+            if (!shared_preprocessing) {
+                const auto pose_preprocess_started = config.telemetry == nullptr
+                    ? std::chrono::steady_clock::time_point{} : std::chrono::steady_clock::now();
+                pose_input = pose_preprocessor->process(frame);
+                if (config.telemetry != nullptr) {
+                    config.telemetry->addSample(PerformanceStage::PosePreprocess,
+                        std::chrono::steady_clock::now() - pose_preprocess_started);
+                }
             }
             pose_future = pose_executor.submit([this, pose_input = std::move(pose_input)]() mutable {
                 const auto pose_inference_started = config.telemetry == nullptr
                     ? std::chrono::steady_clock::time_point{} : std::chrono::steady_clock::now();
-                const auto pose_output = pose_session->infer(pose_input.nchw);
+                const auto pose_output = pose_session->infer(pose_input.nchw());
                 if (config.telemetry != nullptr) {
                     config.telemetry->addSample(PerformanceStage::PoseInference,
                         std::chrono::steady_clock::now() - pose_inference_started);
@@ -372,7 +387,7 @@ struct NativeEnginePipeline::Impl {
         try {
             const auto ppe_inference_started = config.telemetry == nullptr
                 ? std::chrono::steady_clock::time_point{} : std::chrono::steady_clock::now();
-            const auto ppe_output = ppe_session->infer(ppe_input.nchw);
+            const auto ppe_output = ppe_session->infer(ppe_input.nchw());
             if (config.telemetry != nullptr) {
                 config.telemetry->addSample(PerformanceStage::PpeInference,
                     std::chrono::steady_clock::now() - ppe_inference_started);
@@ -398,16 +413,19 @@ struct NativeEnginePipeline::Impl {
         if (hybrid_pose_executor) {
             poses = pose_future.get();
         } else if (pose_session) {
-            const auto pose_preprocess_started = config.telemetry == nullptr
-                ? std::chrono::steady_clock::time_point{} : std::chrono::steady_clock::now();
-            const auto pose_input = pose_preprocessor->process(frame);
-            if (config.telemetry != nullptr) {
-                config.telemetry->addSample(PerformanceStage::PosePreprocess,
-                    std::chrono::steady_clock::now() - pose_preprocess_started);
+            PreprocessedFrame pose_input = ppe_input;
+            if (!shared_preprocessing) {
+                const auto pose_preprocess_started = config.telemetry == nullptr
+                    ? std::chrono::steady_clock::time_point{} : std::chrono::steady_clock::now();
+                pose_input = pose_preprocessor->process(frame);
+                if (config.telemetry != nullptr) {
+                    config.telemetry->addSample(PerformanceStage::PosePreprocess,
+                        std::chrono::steady_clock::now() - pose_preprocess_started);
+                }
             }
             const auto pose_inference_started = config.telemetry == nullptr
                 ? std::chrono::steady_clock::time_point{} : std::chrono::steady_clock::now();
-            const auto pose_output = pose_session->infer(pose_input.nchw);
+            const auto pose_output = pose_session->infer(pose_input.nchw());
             if (config.telemetry != nullptr) {
                 config.telemetry->addSample(PerformanceStage::PoseInference,
                     std::chrono::steady_clock::now() - pose_inference_started);
@@ -468,6 +486,7 @@ struct NativeEnginePipeline::Impl {
     AnalyticsPipeline analytics;
     std::mutex process_mutex;
     bool hybrid_pose_executor{};
+    bool shared_preprocessing{};
     PoseExecutor pose_executor;
 };
 
