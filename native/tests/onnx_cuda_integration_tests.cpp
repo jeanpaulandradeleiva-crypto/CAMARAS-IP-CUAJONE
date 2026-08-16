@@ -11,17 +11,20 @@
 
 #include "onnx_fixture.hpp"
 
+#include <BaseTrack.h>
 #include <onnxruntime_cxx_api.h>
 #include <opencv2/core.hpp>
 #include <opencv2/imgcodecs.hpp>
 
 #include <algorithm>
 #include <array>
+#include <bit>
 #include <chrono>
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <iomanip>
 #include <iterator>
 #include <map>
 #include <numeric>
@@ -30,6 +33,7 @@
 #include <stdexcept>
 #include <string>
 #include <string_view>
+#include <sstream>
 #include <utility>
 #include <vector>
 
@@ -106,6 +110,45 @@ std::map<int, std::string> stagedPpeLabels() {
         {6, "Hard_hat"},
         {7, "lentes_protectores"},
     };
+}
+
+std::string associationSnapshot(const std::map<int, PpeAssociation>& associations) {
+    std::ostringstream output;
+    const auto append_detection = [&](const Detection& detection) {
+        output << std::hex
+               << std::bit_cast<std::uint32_t>(detection.box.x1) << ':'
+               << std::bit_cast<std::uint32_t>(detection.box.y1) << ':'
+               << std::bit_cast<std::uint32_t>(detection.box.x2) << ':'
+               << std::bit_cast<std::uint32_t>(detection.box.y2) << ':'
+               << std::bit_cast<std::uint32_t>(detection.confidence) << ':'
+               << detection.class_id << ';';
+    };
+    for (const auto& [track_id, association] : associations) {
+        output << std::dec << track_id << '|';
+        for (const auto& [item, detection] : association.detections) {
+            output << static_cast<int>(item) << ':';
+            append_detection(detection);
+        }
+        output << '|';
+        for (const auto& [item, detection] : association.incompatible_detections) {
+            output << static_cast<int>(item) << ':';
+            append_detection(detection);
+        }
+        output << '\n';
+    }
+    return output.str();
+}
+
+void requireHybridTelemetrySamples(const std::string& report, std::size_t frame_count) {
+    for (const std::string_view stage : {
+             "pipeline_total", "ppe_preprocess", "ppe_inference", "ppe_decode",
+             "pose_preprocess", "pose_inference", "pose_decode", "analytics"}) {
+        require(report.find("\"" + std::string(stage) + "\":{\"samples\":"
+                + std::to_string(frame_count)) != std::string::npos,
+            "Hybrid telemetry did not retain one " + std::string(stage) + " sample per frame");
+    }
+    require(report.find("\"captured_frames\":0,\"processed_frames\":0,") != std::string::npos,
+        "Direct pipeline telemetry unexpectedly changed capture or processed-frame counters");
 }
 
 void verifyCudaProfile(
@@ -222,64 +265,95 @@ void verifyNativePipeline(
     const std::filesystem::path& pose_model,
     const std::filesystem::path& person_image,
     int device) {
-    EnginePipelineConfig config;
-    config.backend = ComputeBackend::Cuda;
-    config.provider = InferenceProvider::OnnxRuntimeCuda;
-    config.ppe_onnx = ppe_model;
-    config.pose_onnx = pose_model;
-    config.ppe_labels = stagedPpeLabels();
-    config.pose_class_count = 1;
-    config.pose_keypoint_shape = {17, 3};
-    config.device = device;
-    config.analytics.mode = AnalyticsMode::PpeFall;
-    PerformanceTelemetry telemetry("image");
-    config.telemetry = &telemetry;
+    const auto make_config = [&](PerformanceTelemetry& telemetry, bool force_serial_hybrid) {
+        EnginePipelineConfig config;
+        config.backend = ComputeBackend::Cuda;
+        config.provider = InferenceProvider::OnnxRuntimeCuda;
+        config.ppe_onnx = ppe_model;
+        config.pose_onnx = pose_model;
+        config.ppe_labels = stagedPpeLabels();
+        config.pose_class_count = 1;
+        config.pose_keypoint_shape = {17, 3};
+        config.device = device;
+        config.analytics.mode = AnalyticsMode::PpeFall;
+        config.telemetry = &telemetry;
+#ifdef CUAJONE_INTERNAL_DIAGNOSTICS
+        config.force_serial_hybrid = force_serial_hybrid;
+#else
+        static_cast<void>(force_serial_hybrid);
+#endif
+        return config;
+    };
+    PerformanceTelemetry concurrent_telemetry("image");
+    PerformanceTelemetry serial_telemetry("image");
 
     std::cout << "INFO: constructing NativeEnginePipeline with staged PPE and pose ONNX models"
               << std::endl;
-    NativeEnginePipeline pipeline(std::move(config));
-    const auto& summary = pipeline.summary();
-    require(summary.backend == ComputeBackend::Cuda,
-        "NativeEnginePipeline did not report the CUDA backend");
-    require(summary.provider
-            == "ONNX Runtime CUDAExecutionProvider (PPE) + CPUExecutionProvider (pose)",
-        "NativeEnginePipeline did not report the PPE-CUDA/pose-CPU hybrid provider split");
-    require(summary.pose_loaded, "NativeEnginePipeline did not load the pose model in ppe-fall mode");
-
     std::cout << "INFO: processing offline person image: " << person_image.string() << std::endl;
     cv::Mat frame = cv::imread(person_image.string(), cv::IMREAD_COLOR);
     require(!frame.empty() && frame.type() == CV_8UC3,
         "Could not load the offline person regression image");
-    std::string canonical;
+    struct FrameSnapshot {
+        std::string canonical;
+        std::string associations;
+    };
+    constexpr std::uint64_t frame_count = 5;
+    std::vector<FrameSnapshot> concurrent_frames;
+    concurrent_frames.reserve(frame_count);
     std::size_t people_count{};
-    for (std::uint64_t frame_id = 1; frame_id <= 3; ++frame_id) {
-        const ProcessedFrame processed = pipeline.processFrame(
-            frame, "cuda-integration", frame_id, 1000 + static_cast<std::int64_t>(frame_id),
-            "2026-08-01T00:00:00Z");
+    {
+        NativeEnginePipeline concurrent_pipeline(make_config(concurrent_telemetry, false));
+        const auto& summary = concurrent_pipeline.summary();
+        require(summary.backend == ComputeBackend::Cuda,
+            "NativeEnginePipeline did not report the CUDA backend");
+        require(summary.provider
+                == "ONNX Runtime CUDAExecutionProvider (PPE) + CPUExecutionProvider (pose)",
+            "NativeEnginePipeline did not report the PPE-CUDA/pose-CPU hybrid provider split");
+        require(summary.pose_loaded, "NativeEnginePipeline did not load the pose model in ppe-fall mode");
+        for (std::uint64_t frame_id = 1; frame_id <= frame_count; ++frame_id) {
+            const ProcessedFrame processed = concurrent_pipeline.processFrame(
+                frame, "cuda-integration", frame_id, 1000 + static_cast<std::int64_t>(frame_id),
+                "2026-08-01T00:00:00Z");
         require(processed.canonical.source_id == "cuda-integration"
                 && processed.canonical.frame_id == frame_id
                 && processed.canonical.monotonic_timestamp_ms == 1000 + static_cast<std::int64_t>(frame_id)
                 && processed.canonical.frame_width == frame.cols
                 && processed.canonical.frame_height == frame.rows,
             "NativeEnginePipeline returned invalid canonical frame metadata");
-        canonical = canonicalJson(processed.canonical);
-        require(!canonical.empty()
+            const std::string canonical = canonicalJson(processed.canonical);
+            require(!canonical.empty()
                 && canonical.find(R"("contract_version":"1.0.0")") != std::string::npos
                 && canonical.find(R"("source_id":"cuda-integration")") != std::string::npos,
-            "NativeEnginePipeline did not serialize valid canonical output");
-        require(!processed.canonical.people.empty(),
-            "Real staged pose model produced no native Person output for the known person image");
-        require(std::all_of(
-                    processed.canonical.people.begin(), processed.canonical.people.end(),
-                    [](const auto& person) { return person.keypoints.size() == 17; }),
-            "Real staged pose output did not preserve all 17 keypoints");
-        people_count = processed.canonical.people.size();
+                "NativeEnginePipeline did not serialize valid canonical output");
+            require(!processed.canonical.people.empty(),
+                "Real staged pose model produced no native Person output for the known person image");
+            require(std::all_of(
+                        processed.canonical.people.begin(), processed.canonical.people.end(),
+                        [](const auto& person) { return person.keypoints.size() == 17; }),
+                "Real staged pose output did not preserve all 17 keypoints");
+            people_count = processed.canonical.people.size();
+            concurrent_frames.push_back({canonical, associationSnapshot(processed.associations)});
+        }
     }
-    require(telemetry.jsonReport().find(R"("pipeline_total":{"samples":3)") != std::string::npos,
-        "Hybrid pipeline did not emit one pipeline wall-clock sample per processed frame");
+    requireHybridTelemetrySamples(concurrent_telemetry.jsonReport(), frame_count);
+
+    // ByteTrack IDs are process-global upstream state; reset it only between isolated test runs.
+    BaseTrack::reset_count();
+    NativeEnginePipeline serial_pipeline(make_config(serial_telemetry, true));
+    for (std::uint64_t frame_id = 1; frame_id <= frame_count; ++frame_id) {
+        const ProcessedFrame serial = serial_pipeline.processFrame(
+            frame, "cuda-integration", frame_id, 1000 + static_cast<std::int64_t>(frame_id),
+            "2026-08-01T00:00:00Z");
+        const FrameSnapshot& concurrent = concurrent_frames.at(static_cast<std::size_t>(frame_id - 1));
+        require(concurrent.canonical == canonicalJson(serial.canonical),
+            "Serial and concurrent hybrid pipelines diverged in canonical metadata, people, events, tracker IDs, or decoded keypoints");
+        require(concurrent.associations == associationSnapshot(serial.associations),
+            "Serial and concurrent hybrid pipelines diverged in decoded PPE detections or associations");
+    }
+    requireHybridTelemetrySamples(serial_telemetry.jsonReport(), frame_count);
     std::cout << "PASS: NativeEnginePipeline ppe-fall processed a deterministic BGR frame with "
-              << summary.provider << "; people=" << people_count
-              << "; pose loaded; canonical bytes=" << canonical.size() << '\n';
+              << serial_pipeline.summary().provider << "; people=" << people_count
+              << "; pose loaded; frames=" << frame_count << '\n';
 }
 
 int cudaDeviceOrSkip() {

@@ -310,6 +310,9 @@ struct NativeEnginePipeline::Impl {
                 pose_session->inputWidth(), pose_session->inputHeight());
             summary.pose_loaded = true;
             hybrid_pose_executor = true;
+#ifdef CUAJONE_INTERNAL_DIAGNOSTICS
+            hybrid_pose_executor = !config.force_serial_hybrid;
+#endif
         }
     }
 

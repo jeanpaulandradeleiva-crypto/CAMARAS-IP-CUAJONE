@@ -44,6 +44,10 @@ struct EnginePipelineConfig {
     std::size_t maximum_detections{300};
     AnalyticsPipelineConfig analytics;
     PerformanceTelemetry* telemetry{};
+#ifdef CUAJONE_INTERNAL_DIAGNOSTICS
+    // Compiled only into diagnostic targets to compare the hybrid serial reference.
+    bool force_serial_hybrid{};
+#endif
 };
 
 struct EnginePipelineSummary {

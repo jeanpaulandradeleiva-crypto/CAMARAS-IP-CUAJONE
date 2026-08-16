@@ -21,6 +21,7 @@
 #include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <cstdlib>
 #include <csignal>
 #include <ctime>
 #include <cwchar>
@@ -152,7 +153,7 @@ EnginePipelineConfig enginePipelineConfig(
     const RuntimeConfig& config,
     const ComputeSelection& selection,
     PerformanceTelemetry* telemetry) {
-    return {
+    EnginePipelineConfig pipeline_config{
         selection.backend,
         selection.provider,
         config.ppe_engine,
@@ -188,6 +189,20 @@ EnginePipelineConfig enginePipelineConfig(
         },
         telemetry,
     };
+#ifdef CUAJONE_INTERNAL_DIAGNOSTICS
+    // This is deliberately unavailable in production binaries and only applies to offline benchmarks.
+    char* serial_hybrid_benchmark{};
+    std::size_t serial_hybrid_benchmark_length{};
+    if (_dupenv_s(
+            &serial_hybrid_benchmark, &serial_hybrid_benchmark_length,
+            "CUAJONE_INTERNAL_SERIAL_HYBRID_BENCHMARK") != 0) {
+        throw std::runtime_error("Could not read the internal serial hybrid benchmark switch");
+    }
+    pipeline_config.force_serial_hybrid = !config.benchmark_image.empty()
+        && serial_hybrid_benchmark != nullptr && std::string_view(serial_hybrid_benchmark) == "1";
+    std::free(serial_hybrid_benchmark);
+#endif
+    return pipeline_config;
 }
 
 std::unique_ptr<NativeEnginePipeline> runBasePreflight(

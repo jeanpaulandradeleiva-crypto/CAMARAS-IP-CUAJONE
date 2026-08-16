@@ -433,6 +433,11 @@ Los benchmarks offline informan progreso sin datos de la fuente al terminar el
 warmup y cada diez frames medidos. El reporte de telemetría JSON sigue siendo la
 única línea final de la salida.
 
+Los builds de diagnóstico interno de la integración ONNX CUDA aceptan exclusivamente
+para comparación local `CUAJONE_INTERNAL_SERIAL_HYBRID_BENCHMARK=1` junto con
+`--benchmark-image`. Fuerza la referencia serial PPE-CUDA/pose-CPU; no aparece en
+la ayuda, no existe en la configuración pública y los binarios normales lo ignoran.
+
 La prueba TensorRT es deliberadamente opt-in y solo inspecciona un engine real:
 
 ```powershell
