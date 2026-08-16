@@ -119,7 +119,7 @@ no busca ni enlaza CUDA/TensorRT. El preset completo habilita ambos backends.
 ### Integración ONNX CUDA real
 
 La prueba `gpu-onnx-integration` permanece desactivada por defecto. Perfila el
-modelo PPE real del stage y exige que ONNX Runtime registre su ejecución mediante
+modelo PPE ONNX local y exige que ONNX Runtime registre su ejecución mediante
 `CUDAExecutionProvider`. Después prueba el pose real de forma aislada mediante
 `CPUExecutionProvider` y crea el `NativeEnginePipeline` real con ambos modelos,
 backend CUDA y proveedor híbrido
@@ -135,14 +135,18 @@ grafo PPE pasa en CUDA. Por eso la aceptación predeterminada NO ejecuta pose
 aislado en CUDA. Los labels de CTest documentan esta excepción; un fallo del pose
 en CPU o del PPE en CUDA sigue siendo un fallo real, no un skip.
 
-La prueba consume el cierre de DLL ya preparado para la aplicación final en
-`.tools\native\installer\stage\bin`: `onnxruntime_providers_cuda.dll`,
-`onnxruntime_providers_shared.dll`, CUDA, cuDNN, cuBLAS y cuFFT. Ese directorio es
-generado y verificado por `installer\native\build-installer.ps1`; reutiliza un stage
-local existente para esta prueba, sin reconstruir ni instalar un MSI. El preset
-resuelve `models\ppe.onnx`, `models\pose.onnx` y sus manifests desde ese stage. Si
-están en otro lugar, reemplaza `CUAJONE_ONNX_CUDA_RUNTIME_DIR`,
-`CUAJONE_ONNX_CUDA_PPE_MODEL` y `CUAJONE_ONNX_CUDA_POSE_MODEL` al configurar.
+La prueba es estrictamente local: usa el paquete GPU oficial ONNX Runtime 1.25.0
+en `.tools\native\onnxruntime-win-x64-gpu-1.25.0`, los roots locales CUDA, cuBLAS,
+cuDNN, cuFFT y CRT declarados por el preset, y los modelos bajo
+`.tools\native\build\presets\windows-msvc\models`. El post-build resuelve cada
+dependencia PE mediante `dumpbin /dependents`, exige binarios x64, permite solo
+dependencias Windows/API-set externas y falla ante dependencias faltantes o
+ambiguas. También incluye los módulos `cudnn*.dll` del root local porque cuDNN 9
+los carga dinámicamente y no los declara como imports PE. Copia el cierre resuelto
+junto al ejecutable de prueba. No usa,
+modifica, genera ni instala `installer\stage` ni ningún MSI. Si los modelos están
+en otro root local, reemplaza `CUAJONE_ONNX_CUDA_PPE_MODEL` y
+`CUAJONE_ONNX_CUDA_POSE_MODEL` al configurar.
 
 ```powershell
 . .\activate-native.ps1 -CpuOnly
@@ -152,10 +156,9 @@ cmake --build --preset gpu-onnx-integration-release
 ctest --preset gpu-onnx-integration-release
 ```
 
-El binario incluye el core `onnxruntime.dll` 1.25.0, el provider CUDA y su DLL
-compartida junto al ejecutable, como el layout final; agrega el resto del stage al
-search path de DLL de Windows sin anteponerlo a `PATH`. Así el core no puede ser
-reemplazado por una copia del stage o del sistema. Un host sin GPU NVIDIA/driver
+El binario incluye el core `onnxruntime.dll` 1.25.0, el provider CUDA, su DLL
+compartida y el cierre local resuelto junto al ejecutable. El CTest no agrega roots
+de CUDA u ONNX Runtime al `PATH`, por lo que valida el layout autocontenido. Un host sin GPU NVIDIA/driver
 compatible termina
 como `Skipped` (código 77); una GPU compatible con provider, modelo o DLLs
 incorrectos termina como fallo. El resultado exitoso informa el nombre real de la
@@ -419,6 +422,16 @@ fallback. Un fallo nativo todavía queda aislado y permite a `Auto` reconstruir 
 Baseline actual verificada: CTest CPU `4/4` e integración GPU `3/3`. En una GTX
 1650 Ti SM 7.5, la integración ejecutó pose staged de forma aislada en CPU, PPE en
 CUDA y el pipeline híbrido `ppe-fall` con PPE en CUDA y pose en CPU.
+
+Cuando se habilita `--performance-report`, `stages_ms.pipeline_total` agrega el
+tiempo de pared del pipeline desde el inicio de `processFrame` hasta terminar la
+analítica. No es la suma de las ramas PPE y pose: permite comparar directamente
+percentiles p50/p95/p99 seriales y del solapamiento híbrido, y excluye render y
+evidencia.
+
+Los benchmarks offline informan progreso sin datos de la fuente al terminar el
+warmup y cada diez frames medidos. El reporte de telemetría JSON sigue siendo la
+única línea final de la salida.
 
 La prueba TensorRT es deliberadamente opt-in y solo inspecciona un engine real:
 

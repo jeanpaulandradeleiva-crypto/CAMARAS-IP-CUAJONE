@@ -4,9 +4,11 @@
 #include "cuajone/cli.hpp"
 #include "cuajone/engine_pipeline.hpp"
 #include "cuajone/evidence.hpp"
+#include "cuajone/performance_telemetry.hpp"
 #include "cuajone/runtime_execution_plan.hpp"
 
 #include <opencv2/highgui.hpp>
+#include <opencv2/imgcodecs.hpp>
 #include <opencv2/imgproc.hpp>
 
 #ifdef _WIN32
@@ -148,7 +150,8 @@ void validateSourceWithoutOpening(const std::string& source) {
 
 EnginePipelineConfig enginePipelineConfig(
     const RuntimeConfig& config,
-    const ComputeSelection& selection) {
+    const ComputeSelection& selection,
+    PerformanceTelemetry* telemetry) {
     return {
         selection.backend,
         selection.provider,
@@ -183,20 +186,27 @@ EnginePipelineConfig enginePipelineConfig(
             config.pose_confidence,
             config.nms_iou,
         },
+        telemetry,
     };
 }
 
 std::unique_ptr<NativeEnginePipeline> runBasePreflight(
     const RuntimeConfig& config,
-    const ComputeSelection& selection) {
-    validateSourceWithoutOpening(config.source);
-    validateWritableOutput(config.output);
+    const ComputeSelection& selection,
+    PerformanceTelemetry* telemetry) {
+    if (config.benchmark_image.empty()) {
+        validateSourceWithoutOpening(config.source);
+        validateWritableOutput(config.output);
+    } else if (!std::filesystem::is_regular_file(config.benchmark_image)) {
+        throw std::runtime_error("Benchmark image does not exist: " + config.benchmark_image.string());
+    }
 #ifdef _WIN32
-    if (selection.provider == InferenceProvider::OnnxRuntimeCuda && !isCudaWarmupChild()) {
+    if (selection.provider == InferenceProvider::OnnxRuntimeCuda && !isCudaWarmupChild()
+        && config.benchmark_image.empty()) {
         runIsolatedCudaWarmup();
     }
 #endif
-    auto pipeline = std::make_unique<NativeEnginePipeline>(enginePipelineConfig(config, selection));
+    auto pipeline = std::make_unique<NativeEnginePipeline>(enginePipelineConfig(config, selection, telemetry));
 #ifdef _WIN32
     if (selection.provider == InferenceProvider::OnnxRuntimeCuda && isCudaWarmupChild()) {
         cv::Mat frame(480, 640, CV_8UC3, cv::Scalar(32, 64, 96));
@@ -228,8 +238,12 @@ std::unique_ptr<NativeEnginePipeline> runBasePreflight(
         std::cout << "PPE ONNX: " << config.ppe_onnx.string() << '\n';
         if (summary.pose_loaded) std::cout << "Pose ONNX: " << config.pose_onnx.string() << '\n';
     }
-    std::cout << "Source: " << redactSource(config.source) << " | label: " << config.source_label << '\n';
-    std::cout << "Output: " << config.output.string() << '\n';
+    if (config.benchmark_image.empty()) {
+        std::cout << "Source: " << redactSource(config.source) << " | label: " << config.source_label << '\n';
+        std::cout << "Output: " << config.output.string() << '\n';
+    } else {
+        std::cout << "Source: benchmark-image\n";
+    }
     return pipeline;
 }
 
@@ -310,7 +324,8 @@ void drawAssociatedItem(cv::Mat& frame, const std::optional<Detection>& item, co
 
 int monitor(
     const RuntimeConfig& config,
-    NativeEnginePipeline& pipeline) {
+    NativeEnginePipeline& pipeline,
+    PerformanceTelemetry* telemetry) {
     EvidenceWriter evidence(config.output);
     EvidenceWriterV3 evidence_v3(config.output);
     LatestFrameCapture capture(
@@ -319,7 +334,7 @@ int monitor(
         std::chrono::duration<double>(config.maximum_reconnect_delay_seconds),
         config.capture_open_timeout,
         config.capture_read_timeout,
-        config.rtsp_transport);
+        config.rtsp_transport, telemetry);
 
     capture.start();
     std::uint64_t sequence{};
@@ -336,7 +351,8 @@ int monitor(
     while (!stop_requested.load(std::memory_order_relaxed)) {
         cv::Mat frame;
         std::uint64_t latest_sequence = sequence;
-        if (!capture.waitForLatest(sequence, frame, latest_sequence, std::chrono::milliseconds(100))) {
+        Clock::time_point published_at;
+        if (!capture.waitForLatest(sequence, frame, latest_sequence, published_at, std::chrono::milliseconds(100))) {
             if (capture.ended()) break;
             const auto error = capture.lastError();
             if (error && error != last_capture_error) {
@@ -345,9 +361,14 @@ int monitor(
             }
             continue;
         }
+        if (telemetry != nullptr) telemetry->recordLatestSlotSequence(sequence, latest_sequence);
         sequence = latest_sequence;
         const auto now = Clock::now();
-        if (config.target_fps > 0.0 && now < next_inference) continue;
+        if (telemetry != nullptr) telemetry->addSample(PerformanceStage::FrameAge, now - published_at);
+        if (config.target_fps > 0.0 && now < next_inference) {
+            if (telemetry != nullptr) telemetry->skippedForTargetFps();
+            continue;
+        }
         if (config.target_fps > 0.0) {
             next_inference = now + std::chrono::duration_cast<Clock::duration>(
                 std::chrono::duration<double>(1.0 / config.target_fps));
@@ -357,11 +378,13 @@ int monitor(
             now.time_since_epoch()).count();
         const ProcessedFrame processed = pipeline.processFrame(
             frame, config.source_label, sequence, monotonic_ms, observedAtUtc());
+        if (telemetry != nullptr) telemetry->processedFrame();
         if (!first_inference_logged) {
             std::cout << "Inference: first frame processed | people: "
                       << processed.canonical.people.size() << '\n';
             first_inference_logged = true;
         }
+        const auto render_started = telemetry == nullptr ? Clock::time_point{} : Clock::now();
         const float keypoint_threshold = std::clamp(config.pose_confidence, 0.25F, 0.50F);
         for (const auto& person : processed.canonical.people) {
             if (config.analytics_mode == AnalyticsMode::PpeFall) {
@@ -374,14 +397,18 @@ int monitor(
                 drawAssociatedItem(frame, association.detection(item), std::string(ppeItemLabel(item)));
             }
         }
+        if (telemetry != nullptr) telemetry->addSample(PerformanceStage::Render, Clock::now() - render_started);
 
         for (const auto& event : processed.canonical.events) {
             try {
+                if (telemetry != nullptr) telemetry->evidenceAppendAttempted();
                 const auto record = evidence.append(frame, config.source_label, event);
                 if (event.type == "com.cuajone.safety.ppe.violation.v2") evidence_v3.append(event);
+                if (telemetry != nullptr) telemetry->evidenceAppendWritten();
                 std::cout << "Event: " << record.event_type << " | track " << record.track_id
                           << " | " << record.date << 'T' << record.time << "Z\n";
             } catch (const std::exception& error) {
+                if (telemetry != nullptr) telemetry->evidenceAppendFailed();
                 std::cerr << "Evidence write failed: " << error.what() << '\n';
             }
         }
@@ -397,6 +424,49 @@ int monitor(
     }
     capture.stop();
     cv::destroyAllWindows();
+    return 0;
+}
+
+std::string benchmarkObservedAt(std::uint64_t frame_id) {
+    const std::uint64_t seconds = frame_id / 1000;
+    const std::uint64_t milliseconds = frame_id % 1000;
+    std::ostringstream output;
+    output << "1970-01-01T00:00:" << std::setfill('0') << std::setw(2) << seconds
+           << '.' << std::setw(3) << milliseconds << 'Z';
+    return output.str();
+}
+
+int benchmark(
+    const RuntimeConfig& config,
+    NativeEnginePipeline& pipeline,
+    PerformanceTelemetry& telemetry) {
+    const cv::Mat image = cv::imread(config.benchmark_image.string(), cv::IMREAD_COLOR);
+    if (image.empty()) throw std::runtime_error("Could not decode benchmark image");
+    telemetry.setBenchmarkMetadata({
+        config.benchmark_warmup,
+        config.benchmark_iterations,
+        image.cols,
+        image.rows,
+    });
+    runBenchmarkIterations(
+        config.benchmark_warmup, config.benchmark_iterations, telemetry,
+        [&](std::size_t iteration) {
+            const std::uint64_t frame_id = static_cast<std::uint64_t>(iteration) + 1;
+            const auto timestamp_ms = static_cast<std::int64_t>(frame_id);
+            static_cast<void>(pipeline.processFrame(
+                image, "benchmark-image", frame_id, timestamp_ms, benchmarkObservedAt(frame_id)));
+            telemetry.processedFrame();
+        },
+        [](const BenchmarkProgress& progress) {
+            if (progress.warmup_complete) {
+                std::cout << "Benchmark progress: warmup complete; measured frames 0/"
+                          << progress.measured_iterations << '\n';
+                return;
+            }
+            std::cout << "Benchmark progress: measured frames "
+                      << progress.completed_measured_frames << '/'
+                      << progress.measured_iterations << '\n';
+        });
     return 0;
 }
 
@@ -446,23 +516,32 @@ int main(int argc, char** argv) {
         std::cout << "Compute: " << computeBackendName(plan.selection.backend)
                   << " | " << plan.selection.reason << '\n';
         std::unique_ptr<NativeEnginePipeline> pipeline;
+        std::unique_ptr<PerformanceTelemetry> telemetry;
+        if (config.performance_report) {
+            telemetry = std::make_unique<PerformanceTelemetry>(
+                config.benchmark_image.empty() ? performanceSourceMode(config.source) : "benchmark-image");
+        }
         ComputeSelection effective_selection = plan.selection;
         try {
-            pipeline = runBasePreflight(config, effective_selection);
+            pipeline = runBasePreflight(config, effective_selection, telemetry.get());
         } catch (const std::exception& cuda_error) {
             if (!plan.preflight_failure_fallback) {
                 throw;
             }
             std::cerr << "Auto CUDA validation failed; selecting CPU: " << cuda_error.what() << '\n';
             effective_selection = *plan.preflight_failure_fallback;
-            pipeline = runBasePreflight(config, effective_selection);
+            pipeline = runBasePreflight(config, effective_selection, telemetry.get());
         }
         std::cout << "Preflight: OK\n";
 #ifdef _WIN32
         if (isCudaWarmupChild()) return 0;
 #endif
         if (config.preflight) return 0;
-        return monitor(config, *pipeline);
+        const int result = config.benchmark_image.empty()
+            ? monitor(config, *pipeline, telemetry.get())
+            : benchmark(config, *pipeline, *telemetry);
+        if (telemetry) std::cout << telemetry->jsonReport() << '\n';
+        return result;
     } catch (const std::invalid_argument& error) {
         std::cerr << "Configuration error: " << error.what() << "\nUse --help for usage.\n";
         return 2;

@@ -4,6 +4,8 @@
 
 #include "cuajone/types.hpp"
 
+namespace cuajone { class PerformanceTelemetry; }
+
 #include <opencv2/core/mat.hpp>
 
 #include <chrono>
@@ -25,7 +27,8 @@ public:
         std::chrono::duration<double> maximum_reconnect_delay,
         std::chrono::milliseconds open_timeout,
         std::chrono::milliseconds read_timeout,
-        RtspTransport rtsp_transport);
+        RtspTransport rtsp_transport,
+        PerformanceTelemetry* telemetry = nullptr);
     ~LatestFrameCapture();
 
     LatestFrameCapture(const LatestFrameCapture&) = delete;
@@ -37,6 +40,7 @@ public:
         std::uint64_t previous_sequence,
         cv::Mat& frame,
         std::uint64_t& sequence,
+        std::chrono::steady_clock::time_point& published_at,
         std::chrono::milliseconds timeout);
     [[nodiscard]] bool ended() const;
     [[nodiscard]] std::optional<std::string> lastError() const;
@@ -53,10 +57,12 @@ private:
     std::chrono::milliseconds open_timeout_;
     std::chrono::milliseconds read_timeout_;
     RtspTransport rtsp_transport_;
+    PerformanceTelemetry* telemetry_{};
     mutable std::mutex mutex_;
     std::condition_variable_any condition_;
     cv::Mat latest_;
     std::uint64_t sequence_{};
+    std::chrono::steady_clock::time_point published_at_{};
     bool ended_{};
     std::optional<std::string> error_;
     std::jthread reader_;

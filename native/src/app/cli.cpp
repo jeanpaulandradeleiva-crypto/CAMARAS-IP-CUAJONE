@@ -202,7 +202,24 @@ ParsedRtspSource parseRtspSource(const std::string& source) {
 
 void validate(RuntimeConfig& config) {
     if (config.help || config.hardware_probe_json) return;
-    if (config.source.empty() || config.output.empty()) {
+    const bool benchmark = !config.benchmark_image.empty();
+    if (benchmark && !config.performance_report) {
+        throw std::invalid_argument("--benchmark-image requires --performance-report");
+    }
+    if (benchmark && !config.source.empty()) {
+        throw std::invalid_argument("--benchmark-image cannot be combined with --source");
+    }
+    if (benchmark && (config.show_window || config.preflight || config.target_fps_explicit
+            || config.rtsp_transport_explicit || config.reconnect_delay_explicit
+            || config.maximum_reconnect_delay_explicit || config.capture_open_timeout_explicit
+            || config.capture_read_timeout_explicit)) {
+        throw std::invalid_argument("--benchmark-image cannot be combined with monitor, RTSP, capture, --target-fps, or --preflight options");
+    }
+    if (config.benchmark_warmup > 10000 || config.benchmark_iterations == 0
+        || config.benchmark_iterations > 10000) {
+        throw std::invalid_argument("Benchmark warmup must be in [0, 10000] and iterations in [1, 10000]");
+    }
+    if (!benchmark && (config.source.empty() || config.output.empty())) {
         throw std::invalid_argument(
             "--source and --output are required");
     }
@@ -224,8 +241,10 @@ void validate(RuntimeConfig& config) {
         throw std::invalid_argument(
             "Auto mode requires a complete TensorRT engine pair, ONNX model pair, or both");
     }
-    validateRtspSource(config.source);
-    if (config.source_label.empty()) config.source_label = defaultSourceLabel(config.source);
+    if (!benchmark) {
+        validateRtspSource(config.source);
+        if (config.source_label.empty()) config.source_label = defaultSourceLabel(config.source);
+    }
     const auto ratio = [](float value, std::string_view name) {
         if (!std::isfinite(value) || value < 0.0F || value > 1.0F) {
             throw std::invalid_argument(std::string(name) + " must be finite and in [0, 1]");
@@ -285,11 +304,15 @@ RuntimeConfig parseCommandLine(int argc, char** argv) {
         if (option == "--help" || option == "-h") config.help = true;
         else if (option == "--preflight") config.preflight = true;
         else if (option == "--hardware-probe-json") config.hardware_probe_json = true;
+        else if (option == "--performance-report") config.performance_report = true;
         else if (option == "--show") config.show_window = true;
         else if (option == "--allow-nonperson-pose-class") config.allow_nonperson_pose_class = true;
         else if (option == "--mode") config.analytics_mode = parseAnalyticsMode(requireValue(index, argc, argv, option));
         else if (option == "--source") config.source = requireValue(index, argc, argv, option);
         else if (option == "--source-label") config.source_label = requireValue(index, argc, argv, option);
+        else if (option == "--benchmark-image") config.benchmark_image = requireValue(index, argc, argv, option);
+        else if (option == "--benchmark-warmup") config.benchmark_warmup = parseNumber<std::size_t>(requireValue(index, argc, argv, option), option);
+        else if (option == "--benchmark-iterations") config.benchmark_iterations = parseNumber<std::size_t>(requireValue(index, argc, argv, option), option);
         else if (option == "--compute") {
             config.compute_backend = parseComputeBackend(requireValue(index, argc, argv, option));
             config.compute_explicit = true;
@@ -332,12 +355,12 @@ RuntimeConfig parseCommandLine(int argc, char** argv) {
         else if (option == "--tracker-max-age") config.tracker_max_age = parseNumber<std::size_t>(requireValue(index, argc, argv, option), option);
         else if (option == "--tracker-max-tracks") config.tracker_max_tracks = parseNumber<std::size_t>(requireValue(index, argc, argv, option), option);
         else if (option == "--tracker-frame-rate") config.tracker_frame_rate = parseNumber<int>(requireValue(index, argc, argv, option), option);
-        else if (option == "--target-fps") config.target_fps = parseNumber<double>(requireValue(index, argc, argv, option), option);
-        else if (option == "--reconnect-delay") config.reconnect_delay_seconds = parseNumber<double>(requireValue(index, argc, argv, option), option);
-        else if (option == "--max-reconnect-delay") config.maximum_reconnect_delay_seconds = parseNumber<double>(requireValue(index, argc, argv, option), option);
-        else if (option == "--capture-open-timeout-ms") config.capture_open_timeout = parseMilliseconds(requireValue(index, argc, argv, option), option);
-        else if (option == "--capture-read-timeout-ms") config.capture_read_timeout = parseMilliseconds(requireValue(index, argc, argv, option), option);
-        else if (option == "--rtsp-transport") config.rtsp_transport = parseRtspTransport(requireValue(index, argc, argv, option));
+        else if (option == "--target-fps") { config.target_fps = parseNumber<double>(requireValue(index, argc, argv, option), option); config.target_fps_explicit = true; }
+        else if (option == "--reconnect-delay") { config.reconnect_delay_seconds = parseNumber<double>(requireValue(index, argc, argv, option), option); config.reconnect_delay_explicit = true; }
+        else if (option == "--max-reconnect-delay") { config.maximum_reconnect_delay_seconds = parseNumber<double>(requireValue(index, argc, argv, option), option); config.maximum_reconnect_delay_explicit = true; }
+        else if (option == "--capture-open-timeout-ms") { config.capture_open_timeout = parseMilliseconds(requireValue(index, argc, argv, option), option); config.capture_open_timeout_explicit = true; }
+        else if (option == "--capture-read-timeout-ms") { config.capture_read_timeout = parseMilliseconds(requireValue(index, argc, argv, option), option); config.capture_read_timeout_explicit = true; }
+        else if (option == "--rtsp-transport") { config.rtsp_transport = parseRtspTransport(requireValue(index, argc, argv, option)); config.rtsp_transport_explicit = true; }
         else if (option == "--ppe-window") config.ppe.window = parseNumber<std::size_t>(requireValue(index, argc, argv, option), option);
         else if (option == "--ppe-min-samples") config.ppe.minimum_samples = parseNumber<std::size_t>(requireValue(index, argc, argv, option), option);
         else if (option == "--ppe-present-ratio") config.ppe.present_ratio = parseNumber<float>(requireValue(index, argc, argv, option), option);
@@ -385,6 +408,10 @@ void printHelp(std::ostream& output) {
         "Diagnostics and identity:\n"
         "  --help                       Show this help without runtime startup\n"
         "  --hardware-probe-json        Print stable NVIDIA/CUDA probe JSON and exit\n"
+        "  --performance-report         Print one shutdown-only performance JSON report\n"
+        "  --benchmark-image <path>    Run a bounded in-process benchmark on one local image\n"
+        "  --benchmark-warmup <n>      Benchmark warmup calls (default: 10; 0..10000)\n"
+        "  --benchmark-iterations <n>  Measured benchmark calls (default: 100; 1..10000)\n"
         "  --preflight                  Validate everything without opening the source\n"
         "  --mode <mode>                ppe-only or ppe-fall (default: ppe-fall)\n"
         "  --device <index>             CUDA device index (default: first compatible)\n"

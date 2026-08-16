@@ -24,6 +24,12 @@ struct OnnxSession::Impl {
         session_options.SetGraphOptimizationLevel(GraphOptimizationLevel::ORT_ENABLE_ALL);
         session_options.SetExecutionMode(ExecutionMode::ORT_SEQUENTIAL);
         session_options.DisableMemPattern();
+        if (options.intra_op_num_threads) {
+            if (*options.intra_op_num_threads <= 0) {
+                throw std::invalid_argument("ONNX intra-op thread count must be positive");
+            }
+            session_options.SetIntraOpNumThreads(*options.intra_op_num_threads);
+        }
         if (options.execution_provider == OnnxExecutionProvider::Cuda) {
             if (!options.cuda_device) {
                 throw std::invalid_argument("ONNX CUDA execution provider requires a CUDA device index");

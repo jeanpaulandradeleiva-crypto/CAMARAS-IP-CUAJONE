@@ -20,6 +20,7 @@ enum class OnnxExecutionProvider {
 struct OnnxSessionOptions {
     OnnxExecutionProvider execution_provider{OnnxExecutionProvider::Cpu};
     std::optional<int> cuda_device;
+    std::optional<int> intra_op_num_threads;
 };
 
 class OnnxSession final : public InferenceSession {

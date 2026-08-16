@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
 #include "cuajone/capture.hpp"
+#include "cuajone/performance_telemetry.hpp"
 
 #include <opencv2/imgcodecs.hpp>
 #include <opencv2/videoio.hpp>
@@ -23,13 +24,15 @@ LatestFrameCapture::LatestFrameCapture(
     std::chrono::duration<double> maximum_reconnect_delay,
     std::chrono::milliseconds open_timeout,
     std::chrono::milliseconds read_timeout,
-    RtspTransport rtsp_transport)
+    RtspTransport rtsp_transport,
+    PerformanceTelemetry* telemetry)
     : source_(std::move(source)),
       reconnect_delay_(reconnect_delay),
-      maximum_reconnect_delay_(maximum_reconnect_delay),
-      open_timeout_(open_timeout),
-      read_timeout_(read_timeout),
-      rtsp_transport_(rtsp_transport) {
+       maximum_reconnect_delay_(maximum_reconnect_delay),
+       open_timeout_(open_timeout),
+       read_timeout_(read_timeout),
+       rtsp_transport_(rtsp_transport),
+       telemetry_(telemetry) {
     if (source_.empty()) throw std::invalid_argument("Capture source must not be empty");
     if (!std::isfinite(reconnect_delay_.count()) || reconnect_delay_.count() < 0.0
         || !std::isfinite(maximum_reconnect_delay_.count())
@@ -53,6 +56,7 @@ void LatestFrameCapture::start() {
         std::scoped_lock lock(mutex_);
         latest_.release();
         sequence_ = 0;
+        published_at_ = {};
         ended_ = false;
         error_.reset();
     }
@@ -81,6 +85,7 @@ bool LatestFrameCapture::waitForLatest(
     std::uint64_t previous_sequence,
     cv::Mat& frame,
     std::uint64_t& sequence,
+    std::chrono::steady_clock::time_point& published_at,
     std::chrono::milliseconds timeout) {
     if (timeout.count() < 0) throw std::invalid_argument("Frame wait timeout must be non-negative");
     std::unique_lock lock(mutex_);
@@ -90,6 +95,7 @@ bool LatestFrameCapture::waitForLatest(
     if (sequence_ == previous_sequence) return false;
     frame = latest_;
     sequence = sequence_;
+    if (telemetry_ != nullptr) published_at = published_at_;
     return true;
 }
 
@@ -120,8 +126,10 @@ void LatestFrameCapture::publish(cv::Mat frame) {
         std::scoped_lock lock(mutex_);
         latest_ = std::move(frame);
         ++sequence_;
+        if (telemetry_ != nullptr) published_at_ = std::chrono::steady_clock::now();
         error_.reset();
     }
+    if (telemetry_ != nullptr) telemetry_->capturedFrame();
     condition_.notify_all();
 }
 

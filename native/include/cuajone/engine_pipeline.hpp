@@ -19,6 +19,8 @@
 
 namespace cuajone {
 
+class PerformanceTelemetry;
+
 struct EnginePipelineConfig {
     ComputeBackend backend{ComputeBackend::Cuda};
     InferenceProvider provider{InferenceProvider::TensorRt};
@@ -41,6 +43,7 @@ struct EnginePipelineConfig {
     float nms_iou{0.45F};
     std::size_t maximum_detections{300};
     AnalyticsPipelineConfig analytics;
+    PerformanceTelemetry* telemetry{};
 };
 
 struct EnginePipelineSummary {

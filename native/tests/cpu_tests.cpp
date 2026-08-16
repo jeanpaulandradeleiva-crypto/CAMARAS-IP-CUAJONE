@@ -8,6 +8,7 @@
 #include "cuajone/fall_analytics.hpp"
 #include "cuajone/ppe_analytics.hpp"
 #include "cuajone/preprocess.hpp"
+#include "cuajone/performance_telemetry.hpp"
 #include "cuajone/runtime_execution_plan.hpp"
 #include "cuajone/yolo_decode.hpp"
 
@@ -329,8 +330,44 @@ void testCliUrlsAndInvariantDefense() {
                                "--capture-open-timeout-ms", "0", "--device", "2"});
     const RuntimeConfig parsed = parse(valid);
     require(parsed.max_det == 42 && parsed.rtsp_transport == RtspTransport::Udp
-            && parsed.capture_open_timeout.count() == 0 && parsed.device == 2,
-        "CLI did not preserve max-det, transport, zero timeout, or device");
+            && parsed.capture_open_timeout.count() == 0 && parsed.device == 2
+            && !parsed.performance_report,
+        "CLI did not preserve max-det, transport, zero timeout, device, or telemetry default");
+    auto performance_report = base;
+    performance_report.push_back("--performance-report");
+    require(parse(performance_report).performance_report,
+        "CLI did not enable the performance report flag");
+    const std::vector<std::string> benchmark_base{
+        "NexoAIVision", "--benchmark-image", "person.jpg", "--performance-report",
+        "--compute", "cpu", "--mode", "ppe-only", "--ppe-onnx", "ppe.onnx",
+    };
+    const RuntimeConfig benchmark = parse(benchmark_base);
+    require(benchmark.benchmark_image == "person.jpg" && benchmark.benchmark_warmup == 10
+            && benchmark.benchmark_iterations == 100 && benchmark.output.empty(),
+        "Benchmark CLI defaults unexpectedly require monitor output");
+    for (const std::vector<std::string> invalid_suffix : {
+             std::vector<std::string>{"--source", "video.mp4"},
+             std::vector<std::string>{"--show"},
+             std::vector<std::string>{"--preflight"},
+             std::vector<std::string>{"--target-fps", "0"},
+             std::vector<std::string>{"--rtsp-transport", "tcp"},
+             std::vector<std::string>{"--reconnect-delay", "0"},
+             std::vector<std::string>{"--max-reconnect-delay", "30"},
+             std::vector<std::string>{"--capture-open-timeout-ms", "0"},
+             std::vector<std::string>{"--capture-read-timeout-ms", "0"},
+             std::vector<std::string>{"--benchmark-warmup", "10001"},
+             std::vector<std::string>{"--benchmark-iterations", "0"},
+             std::vector<std::string>{"--benchmark-iterations", "10001"},
+         }) {
+        auto invalid = benchmark_base;
+        invalid.insert(invalid.end(), invalid_suffix.begin(), invalid_suffix.end());
+        requireThrows([&] { parse(invalid); }, "Benchmark CLI accepted an invalid combination or bound");
+    }
+    auto missing_benchmark_report = benchmark_base;
+    missing_benchmark_report.erase(
+        std::find(missing_benchmark_report.begin(), missing_benchmark_report.end(), "--performance-report"));
+    requireThrows([&] { parse(missing_benchmark_report); },
+        "Benchmark CLI allowed a run without a performance report");
     auto inference_settings = base;
     inference_settings.insert(inference_settings.end(), {
         "--imgsz", "1280",
@@ -426,6 +463,71 @@ void testCliUrlsAndInvariantDefense() {
     requireThrows(
         [] { FallAnalyzer({0, 1, std::chrono::seconds(1), std::chrono::seconds(1), 1.0F, 45.0F, 0.1F, 0.5F}); },
         "Zero fall confirmation count was accepted by the constructor");
+}
+
+void testPerformanceTelemetry() {
+    PerformanceTelemetry telemetry("video");
+    const std::string empty = telemetry.jsonReport();
+    require(empty.find("\"schema_version\":1") != std::string::npos
+            && empty.find("\"source_mode\":\"video\"") != std::string::npos
+            && empty.find("\"pipeline_total\":{\"samples\":0,\"p50_ms\":0.000,\"p95_ms\":0.000,\"p99_ms\":0.000}") != std::string::npos
+            && empty.find("\"frame_age\":{\"samples\":0,\"p50_ms\":0.000,\"p95_ms\":0.000,\"p99_ms\":0.000}") != std::string::npos,
+        "Zero-sample telemetry report was not safe and deterministic");
+    for (int milliseconds = 1; milliseconds <= 257; ++milliseconds) {
+        telemetry.addSample(PerformanceStage::PpeInference, std::chrono::milliseconds(milliseconds));
+    }
+    telemetry.addSample(PerformanceStage::PipelineTotal, std::chrono::milliseconds(17));
+    telemetry.capturedFrame();
+    telemetry.processedFrame();
+    telemetry.recordLatestSlotSequence(1, 5);
+    telemetry.recordLatestSlotSequence(5, 8);
+    telemetry.recordLatestSlotSequence(8, 8);
+    telemetry.skippedForTargetFps();
+    telemetry.evidenceAppendAttempted();
+    telemetry.evidenceAppendWritten();
+    telemetry.evidenceAppendFailed();
+    const std::string report = telemetry.jsonReport();
+    require(report.find("\"ppe_inference\":{\"samples\":256,\"p50_ms\":129.000,\"p95_ms\":245.000,\"p99_ms\":255.000}") != std::string::npos,
+        "Telemetry rolling window or percentile index changed");
+    require(report.find("\"pipeline_total\":{\"samples\":1,\"p50_ms\":17.000,\"p95_ms\":17.000,\"p99_ms\":17.000}") != std::string::npos,
+        "Pipeline wall-clock telemetry stage changed");
+    require(report.find("\"captured_frames\":1,\"processed_frames\":1,\"latest_slot_sequence_gap_drops\":5,\"target_fps_skipped_frames\":1") != std::string::npos,
+        "Telemetry counters did not retain synthetic sequence-gap drops");
+    require(report.find("\"append_attempted\":1,\"append_written\":1,\"append_failed\":1") != std::string::npos,
+        "Telemetry evidence counters changed");
+    require(performanceSourceMode("rtsp://secret@example/live") == "rtsp"
+            && performanceSourceMode("frame.JPG") == "image"
+            && performanceSourceMode("archive.mp4") == "video",
+        "Telemetry source modes were not classified safely");
+
+    telemetry.setBenchmarkMetadata({2, 3, 640, 480});
+    std::vector<std::size_t> benchmark_calls;
+    runBenchmarkIterations(2, 3, telemetry, [&](std::size_t iteration) {
+        benchmark_calls.push_back(iteration);
+        telemetry.addSample(PerformanceStage::PpeInference, std::chrono::milliseconds(10 + iteration));
+        telemetry.processedFrame();
+    });
+    const std::string benchmark_report = telemetry.jsonReport();
+    require(benchmark_calls == std::vector<std::size_t>{0, 1, 2, 3, 4}
+            && benchmark_report.find("\"processed_frames\":3") != std::string::npos
+            && benchmark_report.find("\"ppe_inference\":{\"samples\":3,\"p50_ms\":13.000,\"p95_ms\":14.000,\"p99_ms\":14.000}") != std::string::npos,
+        "Benchmark warmup reset did not retain exactly the measured calls");
+    require(benchmark_report.find("\"benchmark\":{\"warmup_iterations\":2,\"measured_iterations\":3,\"image_width\":640,\"image_height\":480,\"retained_sample_capacity\":256,\"retained_sample_count\":3}") != std::string::npos,
+        "Benchmark telemetry metadata was incomplete or unsafe");
+
+    std::vector<BenchmarkProgress> progress;
+    runBenchmarkIterations(2, 21, telemetry,
+        [](std::size_t) {},
+        [&](BenchmarkProgress update) { progress.push_back(update); });
+    require(progress.size() == 3
+            && progress[0].warmup_complete
+            && progress[0].completed_measured_frames == 0
+            && progress[0].measured_iterations == 21
+            && !progress[1].warmup_complete
+            && progress[1].completed_measured_frames == 10
+            && !progress[2].warmup_complete
+            && progress[2].completed_measured_frames == 20,
+        "Benchmark progress did not report the completed warmup and ten-frame boundaries");
 }
 
 void testComputeSelectionAndProbeContract() {
@@ -1031,6 +1133,7 @@ int main() {
         {"detect decode and NMS", testDetectSchemaDecodeAndNms},
         {"pose decode", testPoseSchemaAndDecode},
         {"CLI URLs and invariants", testCliUrlsAndInvariantDefense},
+        {"performance telemetry", testPerformanceTelemetry},
         {"compute selection and probe contract", testComputeSelectionAndProbeContract},
         {"runtime execution planning", testRuntimeExecutionPlanning},
         {"ByteTrack lifecycle", testByteTrackLifecycleAndLowConfidenceAssociation},

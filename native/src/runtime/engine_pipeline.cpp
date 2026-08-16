@@ -3,6 +3,7 @@
 #include "cuajone/engine_pipeline.hpp"
 
 #include "cuajone/onnx_session.hpp"
+#include "cuajone/performance_telemetry.hpp"
 #include "cuajone/preprocess.hpp"
 #include "cuajone/yolo_decode.hpp"
 
@@ -13,7 +14,13 @@
 
 #include <optional>
 #include <algorithm>
+#include <chrono>
+#include <condition_variable>
+#include <functional>
+#include <future>
+#include <mutex>
 #include <stdexcept>
+#include <thread>
 #include <utility>
 
 namespace cuajone {
@@ -50,6 +57,65 @@ void validateTask(const EngineMetadata& metadata, const std::string& expected, c
 }
 #endif
 
+class PoseExecutor {
+public:
+    PoseExecutor() : worker_([this](std::stop_token stop) { run(stop); }) {}
+    ~PoseExecutor() { shutdown(); }
+
+    PoseExecutor(const PoseExecutor&) = delete;
+    PoseExecutor& operator=(const PoseExecutor&) = delete;
+
+    template <typename Task>
+    std::future<std::vector<PoseDetection>> submit(Task&& task) {
+        auto promise = std::make_shared<std::promise<std::vector<PoseDetection>>>();
+        auto future = promise->get_future();
+        {
+            std::scoped_lock lock(mutex_);
+            if (!accepting_) throw std::runtime_error("Pose executor is shutting down");
+            if (task_) throw std::logic_error("Pose executor already has a pending task");
+            task_ = [promise, task = std::forward<Task>(task)]() mutable {
+                try {
+                    promise->set_value(task());
+                } catch (...) {
+                    promise->set_exception(std::current_exception());
+                }
+            };
+        }
+        wake_.notify_one();
+        return future;
+    }
+
+    void shutdown() noexcept {
+        {
+            std::scoped_lock lock(mutex_);
+            accepting_ = false;
+        }
+        worker_.request_stop();
+        wake_.notify_one();
+        if (worker_.joinable()) worker_.join();
+    }
+
+private:
+    void run(std::stop_token stop) {
+        std::unique_lock lock(mutex_);
+        for (;;) {
+            wake_.wait(lock, [&] { return stop.stop_requested() || task_ != nullptr; });
+            if (task_ == nullptr) return;
+            auto task = std::move(task_);
+            task_ = nullptr;
+            lock.unlock();
+            task();
+            lock.lock();
+        }
+    }
+
+    std::mutex mutex_;
+    std::condition_variable wake_;
+    std::function<void()> task_;
+    bool accepting_{true};
+    std::jthread worker_;
+};
+
 }  // namespace
 
 struct NativeEnginePipeline::Impl {
@@ -75,6 +141,8 @@ struct NativeEnginePipeline::Impl {
             throw std::invalid_argument("Engine pipeline requires a resolved backend and matching provider");
         }
     }
+
+    ~Impl() { pose_executor.shutdown(); }
 
     void loadCpu() {
         summary.backend = ComputeBackend::Cpu;
@@ -232,7 +300,8 @@ struct NativeEnginePipeline::Impl {
             keypoint_shape = config.pose_keypoint_shape;
             const auto pose_contract = validateOnnxPoseContract(pose_class_count, keypoint_shape);
             pose_session = std::make_unique<OnnxSession>(
-                config.pose_onnx, ModelRole::Pose, OnnxSessionOptions{}, config.image_size);
+                config.pose_onnx, ModelRole::Pose,
+                OnnxSessionOptions{OnnxExecutionProvider::Cpu, std::nullopt, 1}, config.image_size);
             validatePoseSchema(
                 pose_session->outputShape(), pose_contract.class_count,
                 static_cast<std::size_t>(pose_contract.keypoint_shape[0]),
@@ -240,6 +309,7 @@ struct NativeEnginePipeline::Impl {
             pose_preprocessor = std::make_unique<LetterboxPreprocessor>(
                 pose_session->inputWidth(), pose_session->inputHeight());
             summary.pose_loaded = true;
+            hybrid_pose_executor = true;
         }
     }
 
@@ -249,20 +319,98 @@ struct NativeEnginePipeline::Impl {
         std::uint64_t frame_id,
         std::int64_t monotonic_timestamp_ms,
         std::string observed_at) {
+        std::scoped_lock process_lock(process_mutex);
         if (frame.empty() || frame.type() != CV_8UC3) {
             throw std::invalid_argument("Engine pipeline requires a non-empty CV_8UC3 BGR frame");
         }
+        const auto pipeline_started = config.telemetry == nullptr
+            ? std::chrono::steady_clock::time_point{} : std::chrono::steady_clock::now();
+        const auto ppe_preprocess_started = config.telemetry == nullptr
+            ? std::chrono::steady_clock::time_point{} : std::chrono::steady_clock::now();
         const auto ppe_input = ppe_preprocessor->process(frame);
-        const auto ppe_output = ppe_session->infer(ppe_input.nchw);
-        auto ppe_detections = decodeDetections(
-            {ppe_output.values, ppe_output.shape},
-            ppe_names.size(), config.ppe_class_confidences, ppeClassEnabledMask(), config.nms_iou,
-            ppe_input.transform,
-            {DecodeLimits{}.max_nms_candidates, config.maximum_detections});
+        if (config.telemetry != nullptr) {
+            config.telemetry->addSample(PerformanceStage::PpePreprocess,
+                std::chrono::steady_clock::now() - ppe_preprocess_started);
+        }
+        std::future<std::vector<PoseDetection>> pose_future;
+        if (hybrid_pose_executor) {
+            const auto pose_preprocess_started = config.telemetry == nullptr
+                ? std::chrono::steady_clock::time_point{} : std::chrono::steady_clock::now();
+            auto pose_input = pose_preprocessor->process(frame);
+            if (config.telemetry != nullptr) {
+                config.telemetry->addSample(PerformanceStage::PosePreprocess,
+                    std::chrono::steady_clock::now() - pose_preprocess_started);
+            }
+            pose_future = pose_executor.submit([this, pose_input = std::move(pose_input)]() mutable {
+                const auto pose_inference_started = config.telemetry == nullptr
+                    ? std::chrono::steady_clock::time_point{} : std::chrono::steady_clock::now();
+                const auto pose_output = pose_session->infer(pose_input.nchw);
+                if (config.telemetry != nullptr) {
+                    config.telemetry->addSample(PerformanceStage::PoseInference,
+                        std::chrono::steady_clock::now() - pose_inference_started);
+                }
+                const auto pose_decode_started = config.telemetry == nullptr
+                    ? std::chrono::steady_clock::time_point{} : std::chrono::steady_clock::now();
+                auto poses = decodePoses(
+                    {pose_output.values, pose_output.shape}, pose_class_count,
+                    static_cast<std::size_t>(keypoint_shape[0]),
+                    static_cast<std::size_t>(keypoint_shape[1]),
+                    config.analytics.tracker.low_confidence_threshold,
+                    config.nms_iou, pose_input.transform,
+                    {DecodeLimits{}.max_nms_candidates, config.maximum_detections});
+                if (config.telemetry != nullptr) {
+                    config.telemetry->addSample(PerformanceStage::PoseDecode,
+                        std::chrono::steady_clock::now() - pose_decode_started);
+                }
+                return poses;
+            });
+        }
+        std::vector<Detection> ppe_detections;
+        try {
+            const auto ppe_inference_started = config.telemetry == nullptr
+                ? std::chrono::steady_clock::time_point{} : std::chrono::steady_clock::now();
+            const auto ppe_output = ppe_session->infer(ppe_input.nchw);
+            if (config.telemetry != nullptr) {
+                config.telemetry->addSample(PerformanceStage::PpeInference,
+                    std::chrono::steady_clock::now() - ppe_inference_started);
+            }
+            const auto ppe_decode_started = config.telemetry == nullptr
+                ? std::chrono::steady_clock::time_point{} : std::chrono::steady_clock::now();
+            ppe_detections = decodeDetections(
+                {ppe_output.values, ppe_output.shape},
+                ppe_names.size(), config.ppe_class_confidences, ppeClassEnabledMask(), config.nms_iou,
+                ppe_input.transform,
+                {DecodeLimits{}.max_nms_candidates, config.maximum_detections});
+            if (config.telemetry != nullptr) {
+                config.telemetry->addSample(PerformanceStage::PpeDecode,
+                    std::chrono::steady_clock::now() - ppe_decode_started);
+            }
+        } catch (...) {
+            if (pose_future.valid()) {
+                try { pose_future.get(); } catch (...) {}
+            }
+            throw;
+        }
         std::vector<PoseDetection> poses;
-        if (pose_session) {
+        if (hybrid_pose_executor) {
+            poses = pose_future.get();
+        } else if (pose_session) {
+            const auto pose_preprocess_started = config.telemetry == nullptr
+                ? std::chrono::steady_clock::time_point{} : std::chrono::steady_clock::now();
             const auto pose_input = pose_preprocessor->process(frame);
+            if (config.telemetry != nullptr) {
+                config.telemetry->addSample(PerformanceStage::PosePreprocess,
+                    std::chrono::steady_clock::now() - pose_preprocess_started);
+            }
+            const auto pose_inference_started = config.telemetry == nullptr
+                ? std::chrono::steady_clock::time_point{} : std::chrono::steady_clock::now();
             const auto pose_output = pose_session->infer(pose_input.nchw);
+            if (config.telemetry != nullptr) {
+                config.telemetry->addSample(PerformanceStage::PoseInference,
+                    std::chrono::steady_clock::now() - pose_inference_started);
+            }
+            const auto pose_decode_started = config.telemetry == nullptr
+                ? std::chrono::steady_clock::time_point{} : std::chrono::steady_clock::now();
             poses = decodePoses(
                 {pose_output.values, pose_output.shape}, pose_class_count,
                 static_cast<std::size_t>(keypoint_shape[0]),
@@ -270,12 +418,25 @@ struct NativeEnginePipeline::Impl {
                 config.analytics.tracker.low_confidence_threshold,
                 config.nms_iou, pose_input.transform,
                 {DecodeLimits{}.max_nms_candidates, config.maximum_detections});
+            if (config.telemetry != nullptr) {
+                config.telemetry->addSample(PerformanceStage::PoseDecode,
+                    std::chrono::steady_clock::now() - pose_decode_started);
+            }
         }
-        return analytics.process({
+        const auto analytics_started = config.telemetry == nullptr
+            ? std::chrono::steady_clock::time_point{} : std::chrono::steady_clock::now();
+        ProcessedFrame result = analytics.process({
             std::string(kContractVersion), std::move(source_id), frame_id,
             monotonic_timestamp_ms, std::move(observed_at), frame.cols, frame.rows,
             std::move(ppe_detections), std::move(poses), ppe_classes,
         });
+        if (config.telemetry != nullptr) {
+            config.telemetry->addSample(PerformanceStage::Analytics,
+                std::chrono::steady_clock::now() - analytics_started);
+            config.telemetry->addSample(PerformanceStage::PipelineTotal,
+                std::chrono::steady_clock::now() - pipeline_started);
+        }
+        return result;
     }
 
     std::array<std::uint8_t, kPpeOutputLabels.size()> ppeClassEnabledMask() const {
@@ -302,6 +463,9 @@ struct NativeEnginePipeline::Impl {
     std::unique_ptr<LetterboxPreprocessor> ppe_preprocessor;
     std::unique_ptr<LetterboxPreprocessor> pose_preprocessor;
     AnalyticsPipeline analytics;
+    std::mutex process_mutex;
+    bool hybrid_pose_executor{};
+    PoseExecutor pose_executor;
 };
 
 NativeEnginePipeline::NativeEnginePipeline(EnginePipelineConfig config)
@@ -321,6 +485,7 @@ ProcessedFrame NativeEnginePipeline::processFrame(
 }
 
 void NativeEnginePipeline::reset() noexcept {
+    std::scoped_lock lock(impl_->process_mutex);
     impl_->analytics.reset();
 }
 
