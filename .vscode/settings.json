@@ -1,3 +1,4 @@
 {
-    "cmake.sourceDirectory": "D:/Proyectos/CAMARAS-IP-CUAJONE/native"
+    "cmake.sourceDirectory": "D:/Proyectos/CAMARAS-IP-CUAJONE/native",
+    "cmake.configureOnOpen": false
 }
