@@ -262,6 +262,14 @@ struct NativeEnginePipeline::Impl {
             summary.pose_loaded = true;
             summary.pose_metadata_prefix = pose_file->hasMetadataPrefix();
             resolveSharedPreprocessing();
+            // GPU overlap only helps when the device has enough SMs to co-schedule
+            // two FP32 engines; small cards (e.g. GTX 1650 Ti, SM 7.5) serialize at
+            // the device level and overlap regresses (~0.8%) with misleading telemetry.
+            tensorrt_gpu_overlap = config.analytics.mode == AnalyticsMode::PpeFall
+                && device.compute_major >= 8;
+#ifdef CUAJONE_INTERNAL_DIAGNOSTICS
+            tensorrt_gpu_overlap = tensorrt_gpu_overlap && !config.force_serial_tensorrt;
+#endif
         }
 #else
         throw std::runtime_error("CUDA mode is unavailable in this CPU-only build");
@@ -384,35 +392,11 @@ struct NativeEnginePipeline::Impl {
             });
         }
         std::vector<Detection> ppe_detections;
-        try {
-            const auto ppe_inference_started = config.telemetry == nullptr
-                ? std::chrono::steady_clock::time_point{} : std::chrono::steady_clock::now();
-            const auto ppe_output = ppe_session->infer(ppe_input.nchw());
-            if (config.telemetry != nullptr) {
-                config.telemetry->addSample(PerformanceStage::PpeInference,
-                    std::chrono::steady_clock::now() - ppe_inference_started);
-            }
-            const auto ppe_decode_started = config.telemetry == nullptr
-                ? std::chrono::steady_clock::time_point{} : std::chrono::steady_clock::now();
-            ppe_detections = decodeDetections(
-                {ppe_output.values, ppe_output.shape},
-                ppe_names.size(), config.ppe_class_confidences, ppeClassEnabledMask(), config.nms_iou,
-                ppe_input.transform,
-                {DecodeLimits{}.max_nms_candidates, config.maximum_detections});
-            if (config.telemetry != nullptr) {
-                config.telemetry->addSample(PerformanceStage::PpeDecode,
-                    std::chrono::steady_clock::now() - ppe_decode_started);
-            }
-        } catch (...) {
-            if (pose_future.valid()) {
-                try { pose_future.get(); } catch (...) {}
-            }
-            throw;
-        }
         std::vector<PoseDetection> poses;
-        if (hybrid_pose_executor) {
-            poses = pose_future.get();
-        } else if (pose_session) {
+        if (tensorrt_gpu_overlap) {
+#ifdef CUAJONE_WITH_TENSORRT
+            auto& ppe_trt = static_cast<TensorRtSession&>(*ppe_session);
+            auto& pose_trt = static_cast<TensorRtSession&>(*pose_session);
             PreprocessedFrame pose_input = ppe_input;
             if (!shared_preprocessing) {
                 const auto pose_preprocess_started = config.telemetry == nullptr
@@ -423,9 +407,34 @@ struct NativeEnginePipeline::Impl {
                         std::chrono::steady_clock::now() - pose_preprocess_started);
                 }
             }
+            ppe_trt.submit(ppe_input.nchw());
+            pose_trt.submit(pose_input.nchw());
+            try {
+                const auto ppe_inference_started = config.telemetry == nullptr
+                    ? std::chrono::steady_clock::time_point{} : std::chrono::steady_clock::now();
+                const auto ppe_output = ppe_trt.collect();
+                if (config.telemetry != nullptr) {
+                    config.telemetry->addSample(PerformanceStage::PpeInference,
+                        std::chrono::steady_clock::now() - ppe_inference_started);
+                }
+                const auto ppe_decode_started = config.telemetry == nullptr
+                    ? std::chrono::steady_clock::time_point{} : std::chrono::steady_clock::now();
+                ppe_detections = decodeDetections(
+                    {ppe_output.values, ppe_output.shape},
+                    ppe_names.size(), config.ppe_class_confidences, ppeClassEnabledMask(), config.nms_iou,
+                    ppe_input.transform,
+                    {DecodeLimits{}.max_nms_candidates, config.maximum_detections});
+                if (config.telemetry != nullptr) {
+                    config.telemetry->addSample(PerformanceStage::PpeDecode,
+                        std::chrono::steady_clock::now() - ppe_decode_started);
+                }
+            } catch (...) {
+                try { pose_trt.collect(); } catch (...) {}
+                throw;
+            }
             const auto pose_inference_started = config.telemetry == nullptr
                 ? std::chrono::steady_clock::time_point{} : std::chrono::steady_clock::now();
-            const auto pose_output = pose_session->infer(pose_input.nchw());
+            const auto pose_output = pose_trt.collect();
             if (config.telemetry != nullptr) {
                 config.telemetry->addSample(PerformanceStage::PoseInference,
                     std::chrono::steady_clock::now() - pose_inference_started);
@@ -442,6 +451,67 @@ struct NativeEnginePipeline::Impl {
             if (config.telemetry != nullptr) {
                 config.telemetry->addSample(PerformanceStage::PoseDecode,
                     std::chrono::steady_clock::now() - pose_decode_started);
+            }
+#endif
+        } else {
+            try {
+                const auto ppe_inference_started = config.telemetry == nullptr
+                    ? std::chrono::steady_clock::time_point{} : std::chrono::steady_clock::now();
+                const auto ppe_output = ppe_session->infer(ppe_input.nchw());
+                if (config.telemetry != nullptr) {
+                    config.telemetry->addSample(PerformanceStage::PpeInference,
+                        std::chrono::steady_clock::now() - ppe_inference_started);
+                }
+                const auto ppe_decode_started = config.telemetry == nullptr
+                    ? std::chrono::steady_clock::time_point{} : std::chrono::steady_clock::now();
+                ppe_detections = decodeDetections(
+                    {ppe_output.values, ppe_output.shape},
+                    ppe_names.size(), config.ppe_class_confidences, ppeClassEnabledMask(), config.nms_iou,
+                    ppe_input.transform,
+                    {DecodeLimits{}.max_nms_candidates, config.maximum_detections});
+                if (config.telemetry != nullptr) {
+                    config.telemetry->addSample(PerformanceStage::PpeDecode,
+                        std::chrono::steady_clock::now() - ppe_decode_started);
+                }
+            } catch (...) {
+                if (pose_future.valid()) {
+                    try { pose_future.get(); } catch (...) {}
+                }
+                throw;
+            }
+            if (hybrid_pose_executor) {
+                poses = pose_future.get();
+            } else if (pose_session) {
+                PreprocessedFrame pose_input = ppe_input;
+                if (!shared_preprocessing) {
+                    const auto pose_preprocess_started = config.telemetry == nullptr
+                        ? std::chrono::steady_clock::time_point{} : std::chrono::steady_clock::now();
+                    pose_input = pose_preprocessor->process(frame);
+                    if (config.telemetry != nullptr) {
+                        config.telemetry->addSample(PerformanceStage::PosePreprocess,
+                            std::chrono::steady_clock::now() - pose_preprocess_started);
+                    }
+                }
+                const auto pose_inference_started = config.telemetry == nullptr
+                    ? std::chrono::steady_clock::time_point{} : std::chrono::steady_clock::now();
+                const auto pose_output = pose_session->infer(pose_input.nchw());
+                if (config.telemetry != nullptr) {
+                    config.telemetry->addSample(PerformanceStage::PoseInference,
+                        std::chrono::steady_clock::now() - pose_inference_started);
+                }
+                const auto pose_decode_started = config.telemetry == nullptr
+                    ? std::chrono::steady_clock::time_point{} : std::chrono::steady_clock::now();
+                poses = decodePoses(
+                    {pose_output.values, pose_output.shape}, pose_class_count,
+                    static_cast<std::size_t>(keypoint_shape[0]),
+                    static_cast<std::size_t>(keypoint_shape[1]),
+                    config.analytics.tracker.low_confidence_threshold,
+                    config.nms_iou, pose_input.transform,
+                    {DecodeLimits{}.max_nms_candidates, config.maximum_detections});
+                if (config.telemetry != nullptr) {
+                    config.telemetry->addSample(PerformanceStage::PoseDecode,
+                        std::chrono::steady_clock::now() - pose_decode_started);
+                }
             }
         }
         const auto analytics_started = config.telemetry == nullptr
@@ -487,6 +557,7 @@ struct NativeEnginePipeline::Impl {
     std::mutex process_mutex;
     bool hybrid_pose_executor{};
     bool shared_preprocessing{};
+    bool tensorrt_gpu_overlap{};
     PoseExecutor pose_executor;
 };
 

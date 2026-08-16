@@ -64,6 +64,29 @@ DeviceBuffer& DeviceBuffer::operator=(DeviceBuffer&& other) noexcept {
 void* DeviceBuffer::data() noexcept { return data_; }
 std::size_t DeviceBuffer::size() const noexcept { return size_; }
 
+PinnedHostBuffer::PinnedHostBuffer(std::size_t bytes) : size_(bytes) {
+    if (bytes > 0) checkCuda(cudaHostAlloc(&data_, bytes, cudaHostAllocDefault), "cudaHostAlloc");
+}
+
+PinnedHostBuffer::~PinnedHostBuffer() {
+    if (data_ != nullptr) cudaFreeHost(data_);
+}
+
+PinnedHostBuffer::PinnedHostBuffer(PinnedHostBuffer&& other) noexcept
+    : data_(std::exchange(other.data_, nullptr)), size_(std::exchange(other.size_, 0)) {}
+
+PinnedHostBuffer& PinnedHostBuffer::operator=(PinnedHostBuffer&& other) noexcept {
+    if (this == &other) return *this;
+    if (data_ != nullptr) cudaFreeHost(data_);
+    data_ = std::exchange(other.data_, nullptr);
+    size_ = std::exchange(other.size_, 0);
+    return *this;
+}
+
+void* PinnedHostBuffer::data() noexcept { return data_; }
+const void* PinnedHostBuffer::data() const noexcept { return data_; }
+std::size_t PinnedHostBuffer::size() const noexcept { return size_; }
+
 void TensorRtLogger::log(Severity severity, const char* message) noexcept {
     if (severity <= Severity::kWARNING) {
         std::cerr << "TensorRT: " << message << '\n';
@@ -104,7 +127,9 @@ TensorRtSession::TensorRtSession(
     : runtime_(nvinfer1::createInferRuntime(logger_)),
       stream_(),
       input_buffer_(0),
-      output_buffer_(0) {
+      output_buffer_(0),
+      host_input_(0),
+      host_output_(0) {
     if (!runtime_) throw std::runtime_error("TensorRT createInferRuntime failed");
     const auto plan = engine_file.plan();
     engine_.reset(runtime_->deserializeCudaEngine(plan.data(), plan.size()));
@@ -205,62 +230,80 @@ TensorRtSession::TensorRtSession(
         input_elements_, elementSize(input_type_), "TensorRT input"));
     output_buffer_ = DeviceBuffer(resource_limits::checkedTensorBytes(
         output_elements_, elementSize(output_type_), "TensorRT output"));
-    if (input_type_ == nvinfer1::DataType::kFLOAT) host_input_float_.resize(input_elements_);
-    else host_input_half_.resize(input_elements_);
-    if (output_type_ == nvinfer1::DataType::kFLOAT) host_output_float_.resize(output_elements_);
-    else host_output_half_.resize(output_elements_);
-    float_output_.resize(output_elements_);
+    host_input_ = PinnedHostBuffer(resource_limits::checkedTensorBytes(
+        input_elements_, elementSize(input_type_), "TensorRT pinned input"));
+    host_output_ = PinnedHostBuffer(resource_limits::checkedTensorBytes(
+        output_elements_, elementSize(output_type_), "TensorRT pinned output"));
+    if (output_type_ == nvinfer1::DataType::kHALF) float_output_.resize(output_elements_);
     if (!context_->setTensorAddress(input_name_.c_str(), input_buffer_.data())
         || !context_->setTensorAddress(output_name_.c_str(), output_buffer_.data())) {
         throw std::runtime_error("TensorRT setTensorAddress failed");
     }
+    checkCuda(
+        cudaEventCreateWithFlags(&event_, cudaEventDisableTiming),
+        "cudaEventCreateWithFlags");
+}
+
+TensorRtSession::~TensorRtSession() {
+    if (event_ != nullptr) cudaEventDestroy(event_);
 }
 
 int TensorRtSession::inputWidth() const noexcept { return input_width_; }
 int TensorRtSession::inputHeight() const noexcept { return input_height_; }
 const std::vector<std::int64_t>& TensorRtSession::outputShape() const noexcept { return output_shape_; }
 
-InferenceOutput TensorRtSession::infer(std::span<const float> nchw_input) {
+void TensorRtSession::submit(std::span<const float> nchw_input) {
     if (nchw_input.size() != input_elements_) {
         throw std::invalid_argument("Preprocessed input length does not match TensorRT input tensor");
     }
     if (input_type_ == nvinfer1::DataType::kFLOAT) {
-        std::copy(nchw_input.begin(), nchw_input.end(), host_input_float_.begin());
+        std::copy(nchw_input.begin(), nchw_input.end(),
+            static_cast<float*>(host_input_.data()));
     } else if (input_type_ == nvinfer1::DataType::kHALF) {
-        std::transform(nchw_input.begin(), nchw_input.end(), host_input_half_.begin(), [] (float value) {
-            return __float2half(value);
-        });
+        std::transform(nchw_input.begin(), nchw_input.end(),
+            static_cast<__half*>(host_input_.data()), [] (float value) {
+                return __float2half(value);
+            });
     } else {
         throw std::runtime_error("Unsupported TensorRT input data type");
     }
 
-    const void* host_input = input_type_ == nvinfer1::DataType::kFLOAT
-        ? static_cast<const void*>(host_input_float_.data())
-        : static_cast<const void*>(host_input_half_.data());
-    void* host_output = output_type_ == nvinfer1::DataType::kFLOAT
-        ? static_cast<void*>(host_output_float_.data())
-        : static_cast<void*>(host_output_half_.data());
     checkCuda(cudaMemcpyAsync(
-        input_buffer_.data(), host_input, input_buffer_.size(),
+        input_buffer_.data(), host_input_.data(), input_buffer_.size(),
         cudaMemcpyHostToDevice, stream_.get()), "cudaMemcpyAsync input");
     if (!context_->enqueueV3(stream_.get())) {
         throw std::runtime_error("TensorRT enqueueV3 failed");
     }
     checkCuda(cudaMemcpyAsync(
-        host_output, output_buffer_.data(), output_buffer_.size(),
+        host_output_.data(), output_buffer_.data(), output_buffer_.size(),
         cudaMemcpyDeviceToHost, stream_.get()), "cudaMemcpyAsync output");
-    checkCuda(cudaStreamSynchronize(stream_.get()), "cudaStreamSynchronize");
+    checkCuda(cudaEventRecord(event_, stream_.get()), "cudaEventRecord");
+}
 
+InferenceOutput TensorRtSession::collect() {
+    checkCuda(cudaEventSynchronize(event_), "cudaEventSynchronize");
     if (output_type_ == nvinfer1::DataType::kFLOAT) {
-        std::copy(host_output_float_.begin(), host_output_float_.end(), float_output_.begin());
-    } else if (output_type_ == nvinfer1::DataType::kHALF) {
-        std::transform(host_output_half_.begin(), host_output_half_.end(), float_output_.begin(), [] (__half value) {
-            return __half2float(value);
-        });
-    } else {
-        throw std::runtime_error("Unsupported TensorRT output data type");
+        return {
+            std::span<const float>(
+                static_cast<const float*>(host_output_.data()), output_elements_),
+            output_shape_,
+        };
     }
-    return {float_output_, output_shape_};
+    if (output_type_ == nvinfer1::DataType::kHALF) {
+        std::transform(
+            static_cast<const __half*>(host_output_.data()),
+            static_cast<const __half*>(host_output_.data()) + output_elements_,
+            float_output_.begin(), [] (__half value) {
+                return __half2float(value);
+            });
+        return {float_output_, output_shape_};
+    }
+    throw std::runtime_error("Unsupported TensorRT output data type");
+}
+
+InferenceOutput TensorRtSession::infer(std::span<const float> nchw_input) {
+    submit(nchw_input);
+    return collect();
 }
 
 DeviceSummary selectCudaDevice(std::optional<int> requested_device) {

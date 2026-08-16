@@ -415,7 +415,26 @@ if(CUAJONE_BUILD_RUNTIME)
         endif()
         add_executable(cuajone_trt_smoke tests/trt_smoke.cpp)
         target_link_libraries(cuajone_trt_smoke PRIVATE cuajone_runtime)
+        target_include_directories(cuajone_trt_smoke PRIVATE "${TENSORRT_INCLUDE_DIR}")
         add_test(NAME cuajone_trt_smoke COMMAND cuajone_trt_smoke "${CUAJONE_TEST_ENGINE}")
+
+        set(CUAJONE_TEST_POSE_ENGINE "" CACHE FILEPATH "Pose engine used by the opt-in TensorRT pipeline parity test")
+        set(CUAJONE_TEST_PERSON_IMAGE
+            "${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/person_regression.jpg"
+            CACHE FILEPATH "Offline person image used by the opt-in TensorRT pipeline parity test")
+        if(NOT EXISTS "${CUAJONE_TEST_POSE_ENGINE}")
+            message(FATAL_ERROR "CUAJONE_TEST_POSE_ENGINE must point to a compatible pose engine")
+        endif()
+        add_executable(cuajone_trt_pipeline_parity tests/trt_pipeline_parity.cpp)
+        target_link_libraries(cuajone_trt_pipeline_parity PRIVATE cuajone_runtime)
+        target_include_directories(cuajone_trt_pipeline_parity SYSTEM PRIVATE
+            "${CUAJONE_BYTE_TRACK_ROOT}/include"
+            "${CUAJONE_EIGEN_ROOT}")
+        target_include_directories(cuajone_trt_pipeline_parity PRIVATE
+            "${TENSORRT_INCLUDE_DIR}")
+        add_test(NAME cuajone_trt_pipeline_parity
+            COMMAND cuajone_trt_pipeline_parity
+                "${CUAJONE_TEST_ENGINE}" "${CUAJONE_TEST_POSE_ENGINE}" "${CUAJONE_TEST_PERSON_IMAGE}")
     endif()
 
     if(CUAJONE_ENABLE_ONNX_CUDA_INTEGRATION_TESTS)

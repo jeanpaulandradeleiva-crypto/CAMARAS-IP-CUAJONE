@@ -211,6 +211,16 @@ EnginePipelineConfig enginePipelineConfig(
     pipeline_config.force_separate_hybrid_preprocessing = !config.benchmark_image.empty()
         && separate_hybrid_preprocessing != nullptr && std::string_view(separate_hybrid_preprocessing) == "1";
     std::free(separate_hybrid_preprocessing);
+    char* serial_tensorrt_benchmark{};
+    std::size_t serial_tensorrt_benchmark_length{};
+    if (_dupenv_s(
+            &serial_tensorrt_benchmark, &serial_tensorrt_benchmark_length,
+            "CUAJONE_INTERNAL_SERIAL_TENSORRT_BENCHMARK") != 0) {
+        throw std::runtime_error("Could not read the internal serial TensorRT benchmark switch");
+    }
+    pipeline_config.force_serial_tensorrt = !config.benchmark_image.empty()
+        && serial_tensorrt_benchmark != nullptr && std::string_view(serial_tensorrt_benchmark) == "1";
+    std::free(serial_tensorrt_benchmark);
 #endif
     return pipeline_config;
 }

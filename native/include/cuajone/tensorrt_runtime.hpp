@@ -53,6 +53,23 @@ private:
     std::size_t size_{};
 };
 
+class PinnedHostBuffer {
+public:
+    explicit PinnedHostBuffer(std::size_t bytes);
+    ~PinnedHostBuffer();
+    PinnedHostBuffer(const PinnedHostBuffer&) = delete;
+    PinnedHostBuffer& operator=(const PinnedHostBuffer&) = delete;
+    PinnedHostBuffer(PinnedHostBuffer&& other) noexcept;
+    PinnedHostBuffer& operator=(PinnedHostBuffer&& other) noexcept;
+    [[nodiscard]] void* data() noexcept;
+    [[nodiscard]] const void* data() const noexcept;
+    [[nodiscard]] std::size_t size() const noexcept;
+
+private:
+    void* data_{};
+    std::size_t size_{};
+};
+
 class TensorRtLogger final : public nvinfer1::ILogger {
 public:
     void log(Severity severity, const char* message) noexcept override;
@@ -61,6 +78,7 @@ public:
 class TensorRtSession final : public InferenceSession {
 public:
     TensorRtSession(const EngineFile& engine_file, std::optional<std::array<int, 2>> preferred_image_size);
+    ~TensorRtSession() override;
 
     TensorRtSession(const TensorRtSession&) = delete;
     TensorRtSession& operator=(const TensorRtSession&) = delete;
@@ -69,6 +87,9 @@ public:
     [[nodiscard]] int inputHeight() const noexcept override;
     [[nodiscard]] const std::vector<std::int64_t>& outputShape() const noexcept override;
     InferenceOutput infer(std::span<const float> nchw_input) override;
+
+    void submit(std::span<const float> nchw_input);
+    InferenceOutput collect();
 
 private:
     static std::size_t elementSize(nvinfer1::DataType type);
@@ -92,11 +113,10 @@ private:
     std::size_t output_elements_{};
     DeviceBuffer input_buffer_;
     DeviceBuffer output_buffer_;
-    std::vector<float> host_input_float_;
-    std::vector<__half> host_input_half_;
-    std::vector<float> host_output_float_;
-    std::vector<__half> host_output_half_;
+    PinnedHostBuffer host_input_;
+    PinnedHostBuffer host_output_;
     std::vector<float> float_output_;
+    cudaEvent_t event_{};
     std::vector<std::int64_t> output_shape_;
 };
 
