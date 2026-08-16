@@ -18,6 +18,8 @@
 namespace cuajone {
 namespace {
 
+constexpr std::size_t kMaximumEvidenceWriterQueueCapacity = 4096;
+
 template <typename Number>
 Number parseNumber(std::string_view text, std::string_view option) {
     Number value{};
@@ -219,6 +221,9 @@ void validate(RuntimeConfig& config) {
         || config.benchmark_iterations > 10000) {
         throw std::invalid_argument("Benchmark warmup must be in [0, 10000] and iterations in [1, 10000]");
     }
+    if (config.evidence_writer_queue_capacity > kMaximumEvidenceWriterQueueCapacity) {
+        throw std::invalid_argument("--evidence-writer-queue-capacity must be in [0, 4096]");
+    }
     if (!benchmark && (config.source.empty() || config.output.empty())) {
         throw std::invalid_argument(
             "--source and --output are required");
@@ -313,6 +318,7 @@ RuntimeConfig parseCommandLine(int argc, char** argv) {
         else if (option == "--benchmark-image") config.benchmark_image = requireValue(index, argc, argv, option);
         else if (option == "--benchmark-warmup") config.benchmark_warmup = parseNumber<std::size_t>(requireValue(index, argc, argv, option), option);
         else if (option == "--benchmark-iterations") config.benchmark_iterations = parseNumber<std::size_t>(requireValue(index, argc, argv, option), option);
+        else if (option == "--evidence-writer-queue-capacity") config.evidence_writer_queue_capacity = parseNumber<std::size_t>(requireValue(index, argc, argv, option), option);
         else if (option == "--compute") {
             config.compute_backend = parseComputeBackend(requireValue(index, argc, argv, option));
             config.compute_explicit = true;
@@ -412,6 +418,7 @@ void printHelp(std::ostream& output) {
         "  --benchmark-image <path>    Run a bounded in-process benchmark on one local image\n"
         "  --benchmark-warmup <n>      Benchmark warmup calls (default: 10; 0..10000)\n"
         "  --benchmark-iterations <n>  Measured benchmark calls (default: 100; 1..10000)\n"
+        "  --evidence-writer-queue-capacity <n>  0 is synchronous; 1..4096 enables FIFO writer\n"
         "  --preflight                  Validate everything without opening the source\n"
         "  --mode <mode>                ppe-only or ppe-fall (default: ppe-fall)\n"
         "  --device <index>             CUDA device index (default: first compatible)\n"

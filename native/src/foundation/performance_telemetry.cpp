@@ -68,6 +68,7 @@ struct PerformanceTelemetry::Impl {
     std::uint64_t evidence_append_attempted{};
     std::uint64_t evidence_append_written{};
     std::uint64_t evidence_append_failed{};
+    std::optional<EvidenceQueueTelemetry> evidence_queue;
     std::optional<BenchmarkMetadata> benchmark;
 };
 
@@ -122,6 +123,11 @@ void PerformanceTelemetry::evidenceAppendFailed() {
     ++impl_->evidence_append_failed;
 }
 
+void PerformanceTelemetry::setEvidenceQueueTelemetry(EvidenceQueueTelemetry telemetry) {
+    std::scoped_lock lock(impl_->mutex);
+    impl_->evidence_queue = std::move(telemetry);
+}
+
 void PerformanceTelemetry::reset() {
     std::scoped_lock lock(impl_->mutex);
     for (auto& stage : impl_->stages) stage.reset();
@@ -143,7 +149,7 @@ std::string PerformanceTelemetry::jsonReport() const {
     std::scoped_lock lock(impl_->mutex);
     std::ostringstream output;
     output << std::fixed << std::setprecision(3);
-    output << "{\"schema_version\":1,\"source_mode\":\"" << impl_->source_mode
+    output << "{\"schema_version\":2,\"source_mode\":\"" << impl_->source_mode
            << "\",\"counts\":{\"captured_frames\":" << impl_->captured_frames
            << ",\"processed_frames\":" << impl_->processed_frames
            << ",\"latest_slot_sequence_gap_drops\":" << impl_->latest_slot_sequence_gap_drops
@@ -157,6 +163,23 @@ std::string PerformanceTelemetry::jsonReport() const {
     output << "},\"evidence\":{\"append_attempted\":" << impl_->evidence_append_attempted
             << ",\"append_written\":" << impl_->evidence_append_written
             << ",\"append_failed\":" << impl_->evidence_append_failed << '}';
+    if (impl_->evidence_queue) {
+        const auto& queue = *impl_->evidence_queue;
+        const double blocked_ms = std::chrono::duration<double, std::milli>(queue.blocked_enqueue_duration).count();
+        const double drain_ms = std::chrono::duration<double, std::milli>(queue.drain_duration).count();
+        output << ",\"evidence_writer_queue\":{\"mode\":\""
+               << (queue.enabled ? "async_fifo" : "synchronous")
+               << "\",\"capacity\":" << queue.capacity
+               << ",\"accepted\":" << queue.accepted
+               << ",\"written\":" << queue.written
+               << ",\"failed\":" << queue.failed
+               << ",\"current_depth\":" << queue.current_depth
+               << ",\"high_water_depth\":" << queue.high_water_depth
+               << ",\"blocked_enqueue_count\":" << queue.blocked_enqueue_count
+               << ",\"blocked_enqueue_duration_ms\":" << blocked_ms
+               << ",\"drain_duration_ms\":" << drain_ms
+               << ",\"terminal_failure\":" << (queue.terminal_failure ? "true" : "false") << '}';
+    }
     if (impl_->benchmark) {
         const auto& benchmark = *impl_->benchmark;
         output << ",\"benchmark\":{\"warmup_iterations\":" << benchmark.warmup_iterations

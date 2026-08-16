@@ -7,12 +7,17 @@
 
 #include <chrono>
 #include <algorithm>
+#include <atomic>
+#include <condition_variable>
 #include <filesystem>
 #include <fstream>
 #include <functional>
+#include <future>
 #include <iostream>
+#include <mutex>
 #include <stdexcept>
 #include <string>
+#include <thread>
 #include <vector>
 
 namespace {
@@ -217,6 +222,133 @@ void testCsvWriteFailureIsReported() {
         "CSV failure produced an unexpected regular file");
 }
 
+void testWriterQueueFifoBlockingAndCloneLifetime() {
+    TemporaryDirectory temporary("queue-fifo");
+    std::mutex mutex;
+    std::vector<std::string> ids;
+    std::vector<const unsigned char*> frame_data;
+    std::promise<void> first_started;
+    std::promise<void> release_first;
+    std::shared_future<void> release = release_first.get_future().share();
+    std::atomic_bool first{true};
+    EvidenceWriterQueue queue(temporary.path(), 1,
+        [&](const cv::Mat& frame, const std::string&, const CanonicalEvent& value, std::string& stage) {
+            stage = "v2";
+            if (first.exchange(false)) {
+                first_started.set_value();
+                release.wait();
+            }
+            std::scoped_lock lock(mutex);
+            ids.push_back(value.id);
+            frame_data.push_back(frame.data);
+            require(frame.at<cv::Vec3b>(0, 0) == cv::Vec3b(10, 20, 30),
+                "Queued evidence did not retain its deep-cloned annotated pixels");
+        });
+    cv::Mat frame(8, 8, CV_8UC3, cv::Scalar(10, 20, 30));
+    const auto clone = EvidenceWriterQueue::cloneAnnotatedFrame(frame);
+    require(queue.enqueue(clone, "CAM_01", event(
+        "evt-fifo-1", "com.cuajone.safety.fall.possible.v2", "2026-01-02T03:04:05Z", "fall", 1, 0.8F)),
+        "First queued event was rejected");
+    first_started.get_future().wait();
+    require(queue.enqueue(clone, "CAM_01", event(
+        "evt-fifo-2", "com.cuajone.safety.fall.possible.v2", "2026-01-02T03:04:06Z", "fall", 2, 0.8F)),
+        "Second queued event was rejected");
+    frame.setTo(cv::Scalar(99, 99, 99));
+    std::promise<void> enqueue_entered;
+    std::thread blocked([&] {
+        enqueue_entered.set_value();
+        const bool accepted = queue.enqueue(clone, "CAM_01", event(
+            "evt-fifo-3", "com.cuajone.safety.fall.possible.v2", "2026-01-02T03:04:07Z", "fall", 3, 0.8F));
+        require(accepted, "Full queue dropped the newest event");
+    });
+    enqueue_entered.get_future().wait();
+    while (queue.stats().blocked_enqueue_count == 0) std::this_thread::yield();
+    release_first.set_value();
+    blocked.join();
+    queue.drainAndStop();
+    const auto stats = queue.stats();
+    require(ids == std::vector<std::string>{"evt-fifo-1", "evt-fifo-2", "evt-fifo-3"}
+            && frame_data.size() == 3 && frame_data[0] == frame_data[1] && frame_data[1] == frame_data[2],
+        "Queue did not preserve FIFO order or share one immutable frame clone");
+    require(stats.accepted == 3 && stats.written == 3 && stats.failed == 0
+            && stats.high_water_depth == 1 && stats.blocked_enqueue_count == 1
+            && stats.current_depth == 0,
+        "Queue FIFO/block/drain accounting changed");
+}
+
+void testWriterQueueTerminalFailuresAreAccounted() {
+    for (const std::string stage : {"v2", "v3"}) {
+        TemporaryDirectory temporary("queue-" + stage);
+        std::promise<void> first_started;
+        std::promise<void> release_first;
+        std::shared_future<void> release = release_first.get_future().share();
+        EvidenceWriterQueue queue(temporary.path(), 2,
+            [&](const cv::Mat&, const std::string&, const CanonicalEvent&, std::string& current_stage) {
+                current_stage = stage;
+                first_started.set_value();
+                release.wait();
+                throw std::runtime_error("synthetic " + stage + " failure");
+            });
+        const auto clone = EvidenceWriterQueue::cloneAnnotatedFrame(
+            cv::Mat(4, 4, CV_8UC3, cv::Scalar(1, 2, 3)));
+        require(queue.enqueue(clone, "CAM_01", event(
+            "evt-" + stage + "-1", "com.cuajone.safety.ppe.violation.v2", "2026-01-02T03:04:05Z", "missing", 1, 0.8F)),
+            "First failing job was not accepted");
+        first_started.get_future().wait();
+        require(queue.enqueue(clone, "CAM_01", event(
+            "evt-" + stage + "-2", "com.cuajone.safety.ppe.violation.v2", "2026-01-02T03:04:06Z", "missing", 2, 0.8F)),
+            "Accepted job before terminal failure was rejected");
+        release_first.set_value();
+        queue.drainAndStop();
+        const auto stats = queue.stats();
+        require(stats.accepted == 2 && stats.written == 0 && stats.failed == 2 && stats.terminal_failure,
+            "Terminal writer failure did not account for every accepted job");
+        require(!queue.enqueue(clone, "CAM_01", event(
+                    "evt-" + stage + "-3", "com.cuajone.safety.ppe.violation.v2", "2026-01-02T03:04:07Z", "missing", 3, 0.8F)),
+            "Terminal queue accepted a later job");
+        const std::string ledger = readBytes(temporary.path() / "evidence_writer_failures.jsonl");
+        require(ledger.find("\"stage\":\"" + stage + "\"") != std::string::npos
+                && ledger.find("\"stage\":\"terminal_rejected\"") != std::string::npos,
+            "Failure ledger omitted writer stage or accepted terminal rejection");
+    }
+}
+
+void testWriterQueueRedactsImageFailureDetails() {
+    TemporaryDirectory temporary("queue-redaction");
+    const std::string secret{"rtsp-user:password-123@example.invalid"};
+    const std::string event_id{"evt-redaction-12345678"};
+    EvidenceWriterQueue queue(temporary.path(), 1,
+        [&](const cv::Mat&, const std::string& source_label, const CanonicalEvent& value,
+            std::string& stage) {
+            stage = "v2";
+            EvidenceWriter writer(temporary.path());
+            writer.append(cv::Mat{}, source_label, value);
+        });
+    const auto clone = EvidenceWriterQueue::cloneAnnotatedFrame(
+        cv::Mat(4, 4, CV_8UC3, cv::Scalar(1, 2, 3)));
+    require(queue.enqueue(clone, secret, event(
+                event_id, "com.cuajone.safety.ppe.violation.v2", "2026-01-02T03:04:05Z",
+                "missing", 1, 0.8F)),
+        "Failing image-write job was not accepted");
+    queue.drainAndStop();
+
+    const auto stats = queue.stats();
+    const std::string ledger = readBytes(temporary.path() / "evidence_writer_failures.jsonl");
+    const std::string console_safe = queue.failureMessage();
+    require(stats.accepted == 1 && stats.written == 0 && stats.failed == 1 && stats.terminal_failure,
+        "Image write failure changed queue accounting");
+    require(ledger.find("\"event_id\":\"" + event_id + "\"") != std::string::npos
+            && ledger.find("\"stage\":\"v2\"") != std::string::npos
+            && ledger.find("\"error\":\"evidence_write_failed\"") != std::string::npos,
+        "Failure ledger omitted safe event, stage, or reason");
+    require(console_safe.find(event_id) != std::string::npos
+            && console_safe.find("v2") != std::string::npos
+            && console_safe.find("evidence_write_failed") != std::string::npos,
+        "Console-safe failure representation omitted event, stage, or reason");
+    require(ledger.find(secret) == std::string::npos && console_safe.find(secret) == std::string::npos,
+        "Failure reporting leaked the credential-like source label");
+}
+
 }  // namespace
 
 int main() {
@@ -225,6 +357,9 @@ int main() {
         {"malformed timestamp", testMalformedTimestampDoesNotWrite},
         {"image failure", testImageFailureDoesNotCreatePartialCsvRow},
         {"CSV write failure", testCsvWriteFailureIsReported},
+        {"writer queue FIFO/block/clone", testWriterQueueFifoBlockingAndCloneLifetime},
+        {"writer queue terminal failures", testWriterQueueTerminalFailuresAreAccounted},
+        {"writer queue redacts image failures", testWriterQueueRedactsImageFailureDetails},
     };
     int failures{};
     for (const auto& [name, test] : tests) {

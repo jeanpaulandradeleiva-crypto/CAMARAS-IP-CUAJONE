@@ -162,6 +162,10 @@ bool containsSecretMaterial(std::string_view value) {
 
 }  // namespace
 
+bool canonicalFrameNeedsRender(bool show_window, const CanonicalFrameResult& result) noexcept {
+    return show_window || !result.events.empty();
+}
+
 void validateContractVersion(std::string_view version) {
     // No implicit upgrade/downgrade: every producer must opt into the exact schema.
     if (version != kContractVersion) {

@@ -341,8 +341,17 @@ int monitor(
     const RuntimeConfig& config,
     NativeEnginePipeline& pipeline,
     PerformanceTelemetry* telemetry) {
-    EvidenceWriter evidence(config.output);
-    EvidenceWriterV3 evidence_v3(config.output);
+    std::optional<EvidenceWriter> evidence;
+    std::optional<EvidenceWriterV3> evidence_v3;
+    std::unique_ptr<EvidenceWriterQueue> evidence_queue;
+    if (config.evidence_writer_queue_capacity == 0) {
+        evidence.emplace(config.output);
+        evidence_v3.emplace(config.output);
+        if (telemetry != nullptr) telemetry->setEvidenceQueueTelemetry({false});
+    } else {
+        evidence_queue = std::make_unique<EvidenceWriterQueue>(
+            config.output, config.evidence_writer_queue_capacity);
+    }
     LatestFrameCapture capture(
         config.source,
         std::chrono::duration<double>(config.reconnect_delay_seconds),
@@ -399,26 +408,42 @@ int monitor(
                       << processed.canonical.people.size() << '\n';
             first_inference_logged = true;
         }
-        const auto render_started = telemetry == nullptr ? Clock::time_point{} : Clock::now();
-        const float keypoint_threshold = std::clamp(config.pose_confidence, 0.25F, 0.50F);
-        for (const auto& person : processed.canonical.people) {
-            if (config.analytics_mode == AnalyticsMode::PpeFall) {
-                drawPose(frame, person.keypoints, keypoint_threshold);
+        if (canonicalFrameNeedsRender(config.show_window, processed.canonical)) {
+            const auto render_started = telemetry == nullptr ? Clock::time_point{} : Clock::now();
+            const float keypoint_threshold = std::clamp(config.pose_confidence, 0.25F, 0.50F);
+            for (const auto& person : processed.canonical.people) {
+                if (config.analytics_mode == AnalyticsMode::PpeFall) {
+                    drawPose(frame, person.keypoints, keypoint_threshold);
+                }
+                drawPerson(frame, person);
+                const auto& association = processed.associations.at(person.track_id);
+                for (const PpeItem item : requiredPpeItems()) {
+                    if (!config.ppe_enabled[static_cast<std::size_t>(item)]) continue;
+                    drawAssociatedItem(frame, association.detection(item), std::string(ppeItemLabel(item)));
+                }
             }
-            drawPerson(frame, person);
-            const auto& association = processed.associations.at(person.track_id);
-            for (const PpeItem item : requiredPpeItems()) {
-                if (!config.ppe_enabled[static_cast<std::size_t>(item)]) continue;
-                drawAssociatedItem(frame, association.detection(item), std::string(ppeItemLabel(item)));
-            }
+            if (telemetry != nullptr) telemetry->addSample(PerformanceStage::Render, Clock::now() - render_started);
         }
-        if (telemetry != nullptr) telemetry->addSample(PerformanceStage::Render, Clock::now() - render_started);
 
+        EvidenceWriterQueue::AnnotatedFrame queued_frame;
+        if (evidence_queue && !processed.canonical.events.empty()) {
+            // The queue must never retain the mutable capture/monitor frame.
+            queued_frame = EvidenceWriterQueue::cloneAnnotatedFrame(frame);
+        }
         for (const auto& event : processed.canonical.events) {
+            if (evidence_queue) {
+                if (!evidence_queue->enqueue(queued_frame, config.source_label, event)) {
+                    std::cerr << "Evidence queue rejected " << event.id << ": "
+                              << evidence_queue->failureMessage() << '\n';
+                    stop_requested.store(true, std::memory_order_relaxed);
+                    break;
+                }
+                continue;
+            }
             try {
                 if (telemetry != nullptr) telemetry->evidenceAppendAttempted();
-                const auto record = evidence.append(frame, config.source_label, event);
-                if (event.type == "com.cuajone.safety.ppe.violation.v2") evidence_v3.append(event);
+                const auto record = evidence->append(frame, config.source_label, event);
+                if (event.type == "com.cuajone.safety.ppe.violation.v2") evidence_v3->append(event);
                 if (telemetry != nullptr) telemetry->evidenceAppendWritten();
                 std::cout << "Event: " << record.event_type << " | track " << record.track_id
                           << " | " << record.date << 'T' << record.time << "Z\n";
@@ -439,6 +464,37 @@ int monitor(
     }
     capture.stop();
     cv::destroyAllWindows();
+    if (!evidence_queue) return 0;
+    evidence_queue->drainAndStop();
+    const EvidenceWriterQueueStats queue_stats = evidence_queue->stats();
+    if (telemetry != nullptr) {
+        for (std::uint64_t index = 0; index < queue_stats.accepted; ++index) {
+            telemetry->evidenceAppendAttempted();
+        }
+        for (std::uint64_t index = 0; index < queue_stats.written; ++index) {
+            telemetry->evidenceAppendWritten();
+        }
+        for (std::uint64_t index = 0; index < queue_stats.failed; ++index) {
+            telemetry->evidenceAppendFailed();
+        }
+        telemetry->setEvidenceQueueTelemetry({
+            true,
+            queue_stats.capacity,
+            queue_stats.accepted,
+            queue_stats.written,
+            queue_stats.failed,
+            queue_stats.current_depth,
+            queue_stats.high_water_depth,
+            queue_stats.blocked_enqueue_count,
+            queue_stats.blocked_enqueue_duration,
+            queue_stats.drain_duration,
+            queue_stats.terminal_failure,
+        });
+    }
+    if (queue_stats.terminal_failure) {
+        std::cerr << "Evidence queue failed: " << evidence_queue->failureMessage() << '\n';
+        return 1;
+    }
     return 0;
 }
 
@@ -535,6 +591,10 @@ int main(int argc, char** argv) {
         if (config.performance_report) {
             telemetry = std::make_unique<PerformanceTelemetry>(
                 config.benchmark_image.empty() ? performanceSourceMode(config.source) : "benchmark-image");
+            telemetry->setEvidenceQueueTelemetry({
+                config.evidence_writer_queue_capacity != 0,
+                config.evidence_writer_queue_capacity,
+            });
         }
         ComputeSelection effective_selection = plan.selection;
         try {

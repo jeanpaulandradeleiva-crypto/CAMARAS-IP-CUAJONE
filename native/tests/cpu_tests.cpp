@@ -333,6 +333,15 @@ void testCliUrlsAndInvariantDefense() {
             && parsed.capture_open_timeout.count() == 0 && parsed.device == 2
             && !parsed.performance_report,
         "CLI did not preserve max-det, transport, zero timeout, device, or telemetry default");
+    auto queued_evidence = base;
+    queued_evidence.insert(queued_evidence.end(), {"--evidence-writer-queue-capacity", "4"});
+    require(parse(queued_evidence).evidence_writer_queue_capacity == 4,
+        "CLI did not preserve evidence writer queue capacity");
+    for (const std::string invalid_queue_capacity : {"4097", "-1", "nope"}) {
+        auto invalid = base;
+        invalid.insert(invalid.end(), {"--evidence-writer-queue-capacity", invalid_queue_capacity});
+        requireThrows([&] { parse(invalid); }, "CLI accepted an invalid evidence writer queue capacity");
+    }
     auto performance_report = base;
     performance_report.push_back("--performance-report");
     require(parse(performance_report).performance_report,
@@ -468,7 +477,7 @@ void testCliUrlsAndInvariantDefense() {
 void testPerformanceTelemetry() {
     PerformanceTelemetry telemetry("video");
     const std::string empty = telemetry.jsonReport();
-    require(empty.find("\"schema_version\":1") != std::string::npos
+    require(empty.find("\"schema_version\":2") != std::string::npos
             && empty.find("\"source_mode\":\"video\"") != std::string::npos
             && empty.find("\"pipeline_total\":{\"samples\":0,\"p50_ms\":0.000,\"p95_ms\":0.000,\"p99_ms\":0.000}") != std::string::npos
             && empty.find("\"frame_age\":{\"samples\":0,\"p50_ms\":0.000,\"p95_ms\":0.000,\"p99_ms\":0.000}") != std::string::npos,
@@ -486,6 +495,10 @@ void testPerformanceTelemetry() {
     telemetry.evidenceAppendAttempted();
     telemetry.evidenceAppendWritten();
     telemetry.evidenceAppendFailed();
+    telemetry.setEvidenceQueueTelemetry({
+        true, 2, 3, 2, 1, 0, 2, 1,
+        std::chrono::milliseconds(7), std::chrono::milliseconds(11), true,
+    });
     const std::string report = telemetry.jsonReport();
     require(report.find("\"ppe_inference\":{\"samples\":256,\"p50_ms\":129.000,\"p95_ms\":245.000,\"p99_ms\":255.000}") != std::string::npos,
         "Telemetry rolling window or percentile index changed");
@@ -495,6 +508,9 @@ void testPerformanceTelemetry() {
         "Telemetry counters did not retain synthetic sequence-gap drops");
     require(report.find("\"append_attempted\":1,\"append_written\":1,\"append_failed\":1") != std::string::npos,
         "Telemetry evidence counters changed");
+    require(report.find("\"evidence_writer_queue\":{\"mode\":\"async_fifo\",\"capacity\":2,\"accepted\":3,\"written\":2,\"failed\":1,\"current_depth\":0,\"high_water_depth\":2,\"blocked_enqueue_count\":1,\"blocked_enqueue_duration_ms\":7.000,\"drain_duration_ms\":11.000,\"terminal_failure\":true}") != std::string::npos
+            && report.find("secret@example") == std::string::npos,
+        "Telemetry queue report changed or exposed source data");
     require(performanceSourceMode("rtsp://secret@example/live") == "rtsp"
             && performanceSourceMode("frame.JPG") == "image"
             && performanceSourceMode("archive.mp4") == "video",
@@ -528,6 +544,40 @@ void testPerformanceTelemetry() {
             && !progress[2].warmup_complete
             && progress[2].completed_measured_frames == 20,
         "Benchmark progress did not report the completed warmup and ten-frame boundaries");
+}
+
+void testCanonicalRenderDecision() {
+    CanonicalFrameResult no_event_frame;
+    require(!canonicalFrameNeedsRender(false, no_event_frame),
+        "Headless frame without canonical events requested rendering");
+    require(canonicalFrameNeedsRender(true, no_event_frame),
+        "Display frame without canonical events skipped rendering");
+
+    CanonicalFrameResult event_frame;
+    event_frame.events.push_back({
+        "evt-RENDER_QA-2-7-0", "urn:cuajone:camera:RENDER_QA", "com.cuajone.safety.ppe.violation.v2",
+        "2026-01-01T00:00:00.200Z", "track/7", 2, 200, 7, "Falta: Vest", 0.9F, std::nullopt,
+    });
+    const std::string event_json = canonicalJson(event_frame.events.front());
+    require(canonicalFrameNeedsRender(false, event_frame),
+        "Headless canonical event skipped evidence rendering");
+    require(canonicalJson(event_frame.events.front()) == event_json,
+        "Render decision changed the canonical evidence event");
+
+    PerformanceTelemetry telemetry("video");
+    if (canonicalFrameNeedsRender(false, no_event_frame)) {
+        telemetry.addSample(PerformanceStage::Render, std::chrono::milliseconds(1));
+    }
+    if (canonicalFrameNeedsRender(false, event_frame)) {
+        telemetry.addSample(PerformanceStage::Render, std::chrono::milliseconds(2));
+    }
+    if (canonicalFrameNeedsRender(true, no_event_frame)) {
+        telemetry.addSample(PerformanceStage::Render, std::chrono::milliseconds(3));
+    }
+    require(telemetry.jsonReport().find(
+                "\"render\":{\"samples\":2,\"p50_ms\":2.000,\"p95_ms\":3.000,\"p99_ms\":3.000}")
+            != std::string::npos,
+        "Render telemetry did not exclude headless no-event frames or retain event/display frames");
 }
 
 void testComputeSelectionAndProbeContract() {
@@ -1134,6 +1184,7 @@ int main() {
         {"pose decode", testPoseSchemaAndDecode},
         {"CLI URLs and invariants", testCliUrlsAndInvariantDefense},
         {"performance telemetry", testPerformanceTelemetry},
+        {"canonical render decision", testCanonicalRenderDecision},
         {"compute selection and probe contract", testComputeSelectionAndProbeContract},
         {"runtime execution planning", testRuntimeExecutionPlanning},
         {"ByteTrack lifecycle", testByteTrackLifecycleAndLowConfidenceAssociation},

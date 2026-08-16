@@ -49,6 +49,21 @@ The v2 runtime writes `Reporte_Eventos_Seguridad_v2.csv`; the Python QA harness 
 
 Each v2 row contains seven item states, seven temporal ratios, seven item confidences, the complete missing-item list, event metadata, review fields, and the evidence image path.
 
+### Writer queue
+
+`--evidence-writer-queue-capacity 0` is the default and preserves synchronous JPEG,
+CSV, and applicable v3 JSONL persistence. A value from `1` to `4096` starts one
+bounded FIFO writer worker. Enqueue blocks while full; accepted events are never
+dropped or retried silently. The monitor clones the fully annotated BGR frame once
+per event-bearing frame and shares that immutable clone across all events from it.
+
+On shutdown, including a signal shutdown, the worker stops accepting jobs and drains
+accepted work before the final telemetry report and normal exit. A write failure puts
+the worker in a terminal state, rejects later jobs, accounts for accepted queued jobs,
+and makes the monitor fail non-zero. `evidence_writer_failures.jsonl` records event,
+stage, and error when the output remains writable. JPEG, CSV, and JSONL remain
+separate writes: a JPEG may exist without its CSV/JSONL companion after a failure.
+
 ## Review path
 
 1. Verify the registry and region strategies in `native/src/analytics/ppe_analytics.cpp`.

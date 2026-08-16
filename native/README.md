@@ -494,7 +494,11 @@ de esos componentes; todavía no se midió y no se estima aquí.
   el exportador real.
 - Fuera del pose ONNX `[1,300,57]` aprobado no se soportan otros layouts NMS
   fusionados, múltiples heads/outputs ni outputs dinámicos.
-- La persistencia JPEG/CSV es síncrona y puede afectar latencia durante eventos.
+- Por defecto la persistencia JPEG/CSV/JSONL sigue siendo síncrona. Con
+  `--evidence-writer-queue-capacity 1..4096`, un único worker FIFO acotado mueve la
+  escritura fuera de inferencia, bloquea cuando se llena y drena eventos aceptados al
+  cerrar. El reporte de telemetría schema v2 incluye `evidence_writer_queue`; un fallo
+  terminal se registra en `evidence_writer_failures.jsonl` y hace fallar el proceso.
 - El fallback de apertura simple puede quedar sujeto a un timeout interno del
   backend distinto de los valores configurados; `stop()` no puede cancelar de
   forma segura un `open/read` que OpenCV ya esté ejecutando.

@@ -12,15 +12,21 @@
 #include <windows.h>
 #endif
 
+#include <algorithm>
 #include <chrono>
+#include <condition_variable>
 #include <cmath>
+#include <deque>
 #include <fstream>
 #include <iomanip>
 #include <limits>
 #include <locale>
+#include <memory>
+#include <mutex>
 #include <sstream>
 #include <stdexcept>
 #include <string_view>
+#include <thread>
 #include <vector>
 
 namespace cuajone {
@@ -407,6 +413,247 @@ void EvidenceWriterV3::append(const CanonicalEvent& event) {
     output << canonicalJsonV3(event) << '\n';
     output.flush();
     if (!output) throw std::runtime_error("Cannot flush v3 operator report: " + report_.string());
+}
+
+struct EvidenceWriterQueue::Impl {
+    struct Job {
+        AnnotatedFrame annotated_frame;
+        std::string source_label;
+        CanonicalEvent event;
+    };
+
+    Impl(std::filesystem::path output, std::size_t queue_capacity)
+        : output(std::move(output)), capacity(queue_capacity), writer(this->output), writer_v3(this->output) {
+        operation = [this](const cv::Mat& frame, const std::string& label,
+                            const CanonicalEvent& event, std::string& stage) {
+            stage = "v2";
+            writer->append(frame, label, event);
+            if (event.type == "com.cuajone.safety.ppe.violation.v2") {
+                stage = "v3";
+                writer_v3->append(event);
+            }
+        };
+    }
+
+    Impl(std::filesystem::path output, std::size_t queue_capacity, WriteOperation write_operation)
+        : output(std::move(output)), capacity(queue_capacity), operation(std::move(write_operation)) {}
+
+    std::filesystem::path output;
+    std::size_t capacity;
+    std::optional<EvidenceWriter> writer;
+    std::optional<EvidenceWriterV3> writer_v3;
+    WriteOperation operation;
+    std::mutex mutex;
+    std::condition_variable not_empty;
+    std::condition_variable not_full;
+    std::deque<Job> jobs;
+    std::thread worker;
+    bool accepting{true};
+    bool terminal_failure{};
+    bool stopped{};
+    std::string failure_message;
+    EvidenceWriterQueueStats stats;
+};
+
+namespace {
+
+std::string jsonEscape(std::string_view value) {
+    std::string escaped;
+    for (const unsigned char character : value) {
+        switch (character) {
+        case '"': escaped += "\\\""; break;
+        case '\\': escaped += "\\\\"; break;
+        case '\n': escaped += "\\n"; break;
+        case '\r': escaped += "\\r"; break;
+        case '\t': escaped += "\\t"; break;
+        default:
+            if (character < 0x20U) {
+                std::ostringstream code;
+                code << "\\u" << std::hex << std::setw(4) << std::setfill('0')
+                     << static_cast<int>(character);
+                escaped += code.str();
+            } else {
+                escaped.push_back(static_cast<char>(character));
+            }
+            break;
+        }
+    }
+    return escaped;
+}
+
+std::string_view failureStage(std::string_view stage) {
+    if (stage == "v2" || stage == "v3" || stage == "terminal_rejected") return stage;
+    return "unknown";
+}
+
+std::string failureMessage(
+    const CanonicalEvent& event,
+    std::string_view stage,
+    std::string_view reason) {
+    return "Evidence write failed for " + event.id + " at " + std::string(failureStage(stage))
+        + ": " + std::string(reason);
+}
+
+std::string failureLedgerJson(
+    const CanonicalEvent& event,
+    std::string_view stage,
+    std::string_view message) {
+    return "{\"event_id\":\"" + jsonEscape(event.id) + "\",\"stage\":\""
+        + jsonEscape(stage) + "\",\"error\":\"" + jsonEscape(message) + "\"}\n";
+}
+
+template <typename QueueImpl>
+void appendFailureLedger(
+    QueueImpl& impl,
+    const CanonicalEvent& event,
+    std::string_view stage,
+    std::string_view message) {
+    const auto ledger = impl.output / "evidence_writer_failures.jsonl";
+    try {
+        std::ofstream output(ledger, std::ios::binary | std::ios::app);
+        if (!output) throw std::runtime_error("Cannot open failure ledger: " + ledger.string());
+        output << failureLedgerJson(event, stage, message);
+        output.flush();
+        if (!output) throw std::runtime_error("Cannot flush failure ledger: " + ledger.string());
+        flushFile(ledger);
+    } catch (const std::exception&) {
+        std::scoped_lock lock(impl.mutex);
+        const std::string ledger_error = "Failure ledger could not be written";
+        if (impl.failure_message.empty()) impl.failure_message = ledger_error;
+        else impl.failure_message += "; " + ledger_error;
+    }
+}
+
+template <typename QueueImpl>
+void runWriterWorker(QueueImpl& impl) {
+    for (;;) {
+        typename std::deque<typename QueueImpl::Job>::value_type job;
+        bool terminal_rejection{};
+        {
+            std::unique_lock lock(impl.mutex);
+            impl.not_empty.wait(lock, [&] { return !impl.jobs.empty() || !impl.accepting; });
+            if (impl.jobs.empty()) return;
+            job = std::move(impl.jobs.front());
+            impl.jobs.pop_front();
+            impl.stats.current_depth = impl.jobs.size();
+            terminal_rejection = impl.terminal_failure;
+            impl.not_full.notify_one();
+        }
+        if (terminal_rejection) {
+            {
+                std::scoped_lock lock(impl.mutex);
+                ++impl.stats.failed;
+            }
+            appendFailureLedger(impl, job.event, "terminal_rejected", "writer is in terminal failed state");
+            continue;
+        }
+        std::string stage{"v2"};
+        try {
+            impl.operation(*job.annotated_frame, job.source_label, job.event, stage);
+            std::scoped_lock lock(impl.mutex);
+            ++impl.stats.written;
+        } catch (const std::exception&) {
+            {
+                std::scoped_lock lock(impl.mutex);
+                ++impl.stats.failed;
+                impl.terminal_failure = true;
+                impl.stats.terminal_failure = true;
+                impl.failure_message = failureMessage(job.event, stage, "evidence_write_failed");
+            }
+            appendFailureLedger(impl, job.event, failureStage(stage), "evidence_write_failed");
+        } catch (...) {
+            {
+                std::scoped_lock lock(impl.mutex);
+                ++impl.stats.failed;
+                impl.terminal_failure = true;
+                impl.stats.terminal_failure = true;
+                impl.failure_message = failureMessage(job.event, stage, "unknown_exception");
+            }
+            appendFailureLedger(impl, job.event, failureStage(stage), "unknown_exception");
+        }
+    }
+}
+
+}  // namespace
+
+EvidenceWriterQueue::EvidenceWriterQueue(std::filesystem::path output, std::size_t capacity)
+    : impl_(std::make_unique<Impl>(std::move(output), capacity)) {
+    if (capacity == 0) throw std::invalid_argument("Evidence writer queue capacity must be positive");
+    impl_->stats.capacity = capacity;
+    impl_->worker = std::thread(runWriterWorker<Impl>, std::ref(*impl_));
+}
+
+EvidenceWriterQueue::EvidenceWriterQueue(
+    std::filesystem::path failure_ledger_output,
+    std::size_t capacity,
+    WriteOperation write_operation)
+    : impl_(std::make_unique<Impl>(std::move(failure_ledger_output), capacity, std::move(write_operation))) {
+    if (capacity == 0 || !impl_->operation) {
+        throw std::invalid_argument("Evidence writer queue requires positive capacity and a write operation");
+    }
+    validateWritableOutput(impl_->output);
+    impl_->stats.capacity = capacity;
+    impl_->worker = std::thread(runWriterWorker<Impl>, std::ref(*impl_));
+}
+
+EvidenceWriterQueue::~EvidenceWriterQueue() {
+    drainAndStop();
+}
+
+EvidenceWriterQueue::AnnotatedFrame EvidenceWriterQueue::cloneAnnotatedFrame(const cv::Mat& annotated_frame) {
+    if (annotated_frame.empty()) throw std::invalid_argument("Cannot queue an empty annotated evidence frame");
+    return std::make_shared<const cv::Mat>(annotated_frame.clone());
+}
+
+bool EvidenceWriterQueue::enqueue(
+    AnnotatedFrame annotated_frame,
+    std::string source_label,
+    CanonicalEvent event) {
+    if (!annotated_frame) throw std::invalid_argument("Queued evidence requires an annotated frame");
+    std::unique_lock lock(impl_->mutex);
+    if (!impl_->accepting || impl_->terminal_failure) return false;
+    const auto blocked_started = std::chrono::steady_clock::now();
+    if (impl_->jobs.size() == impl_->capacity) {
+        ++impl_->stats.blocked_enqueue_count;
+        impl_->not_full.wait(lock, [&] {
+            return impl_->jobs.size() < impl_->capacity || !impl_->accepting || impl_->terminal_failure;
+        });
+        impl_->stats.blocked_enqueue_duration += std::chrono::steady_clock::now() - blocked_started;
+    }
+    if (!impl_->accepting || impl_->terminal_failure) return false;
+    impl_->jobs.push_back({std::move(annotated_frame), std::move(source_label), std::move(event)});
+    ++impl_->stats.accepted;
+    impl_->stats.current_depth = impl_->jobs.size();
+    impl_->stats.high_water_depth = std::max(impl_->stats.high_water_depth, impl_->stats.current_depth);
+    impl_->not_empty.notify_one();
+    return true;
+}
+
+void EvidenceWriterQueue::drainAndStop() {
+    if (!impl_) return;
+    const auto started = std::chrono::steady_clock::now();
+    {
+        std::scoped_lock lock(impl_->mutex);
+        if (impl_->stopped) return;
+        impl_->accepting = false;
+        impl_->not_empty.notify_all();
+        impl_->not_full.notify_all();
+    }
+    if (impl_->worker.joinable()) impl_->worker.join();
+    std::scoped_lock lock(impl_->mutex);
+    impl_->stats.current_depth = 0;
+    impl_->stats.drain_duration += std::chrono::steady_clock::now() - started;
+    impl_->stopped = true;
+}
+
+EvidenceWriterQueueStats EvidenceWriterQueue::stats() const {
+    std::scoped_lock lock(impl_->mutex);
+    return impl_->stats;
+}
+
+std::string EvidenceWriterQueue::failureMessage() const {
+    std::scoped_lock lock(impl_->mutex);
+    return impl_->failure_message;
 }
 
 }  // namespace cuajone

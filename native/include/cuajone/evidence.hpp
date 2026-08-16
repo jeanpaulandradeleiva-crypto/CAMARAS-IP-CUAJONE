@@ -8,6 +8,9 @@
 
 #include <filesystem>
 #include <array>
+#include <chrono>
+#include <functional>
+#include <memory>
 #include <string>
 #include <string_view>
 
@@ -67,6 +70,46 @@ public:
 
 private:
     std::filesystem::path report_;
+};
+
+struct EvidenceWriterQueueStats {
+    std::size_t capacity{};
+    std::uint64_t accepted{};
+    std::uint64_t written{};
+    std::uint64_t failed{};
+    std::size_t current_depth{};
+    std::size_t high_water_depth{};
+    std::uint64_t blocked_enqueue_count{};
+    std::chrono::steady_clock::duration blocked_enqueue_duration{};
+    std::chrono::steady_clock::duration drain_duration{};
+    bool terminal_failure{};
+};
+
+class EvidenceWriterQueue {
+public:
+    using AnnotatedFrame = std::shared_ptr<const cv::Mat>;
+    using WriteOperation = std::function<void(
+        const cv::Mat&, const std::string&, const CanonicalEvent&, std::string&)>;
+
+    EvidenceWriterQueue(std::filesystem::path output, std::size_t capacity);
+    EvidenceWriterQueue(
+        std::filesystem::path failure_ledger_output,
+        std::size_t capacity,
+        WriteOperation write_operation);
+    ~EvidenceWriterQueue();
+
+    EvidenceWriterQueue(const EvidenceWriterQueue&) = delete;
+    EvidenceWriterQueue& operator=(const EvidenceWriterQueue&) = delete;
+
+    [[nodiscard]] static AnnotatedFrame cloneAnnotatedFrame(const cv::Mat& annotated_frame);
+    bool enqueue(AnnotatedFrame annotated_frame, std::string source_label, CanonicalEvent event);
+    void drainAndStop();
+    [[nodiscard]] EvidenceWriterQueueStats stats() const;
+    [[nodiscard]] std::string failureMessage() const;
+
+private:
+    struct Impl;
+    std::unique_ptr<Impl> impl_;
 };
 
 }  // namespace cuajone

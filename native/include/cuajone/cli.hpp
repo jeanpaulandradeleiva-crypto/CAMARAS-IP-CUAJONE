@@ -63,6 +63,7 @@ struct RuntimeConfig {
     double target_fps{};
     std::size_t benchmark_warmup{10};
     std::size_t benchmark_iterations{100};
+    std::size_t evidence_writer_queue_capacity{};
     double reconnect_delay_seconds{5.0};
     double maximum_reconnect_delay_seconds{30.0};
     std::chrono::milliseconds capture_open_timeout{20000};

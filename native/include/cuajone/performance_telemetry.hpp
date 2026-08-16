@@ -37,6 +37,20 @@ struct BenchmarkProgress {
     std::size_t measured_iterations{};
 };
 
+struct EvidenceQueueTelemetry {
+    bool enabled{};
+    std::size_t capacity{};
+    std::uint64_t accepted{};
+    std::uint64_t written{};
+    std::uint64_t failed{};
+    std::size_t current_depth{};
+    std::size_t high_water_depth{};
+    std::uint64_t blocked_enqueue_count{};
+    std::chrono::steady_clock::duration blocked_enqueue_duration{};
+    std::chrono::steady_clock::duration drain_duration{};
+    bool terminal_failure{};
+};
+
 class PerformanceTelemetry {
 public:
     static constexpr std::size_t kSampleCapacity = 256;
@@ -55,6 +69,7 @@ public:
     void evidenceAppendAttempted();
     void evidenceAppendWritten();
     void evidenceAppendFailed();
+    void setEvidenceQueueTelemetry(EvidenceQueueTelemetry telemetry);
     void reset();
     void setBenchmarkMetadata(BenchmarkMetadata metadata);
     [[nodiscard]] std::string jsonReport() const;

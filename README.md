@@ -107,7 +107,7 @@ La salida activa usa el [contrato EPP v2](docs/ppe-contract-v2.md). El runtime n
 y el harness Python conservan el mismo CSV/evidencia de siete elementos. Dentro de
 la carpeta de salida:
 
-- `Reporte_Eventos_Seguridad_v2.csv`: append inmediato de eventos;
+- `Reporte_Eventos_Seguridad_v2.csv`: append de eventos (síncrono por defecto);
 - `Evidencias/`: imágenes JPEG anotadas.
 
 El MSI no genera XLSX ni necesita una biblioteca Excel.
@@ -117,6 +117,11 @@ permanece congelado para consumidores estrictos y no se mezcla con el reporte v2
 
 Los IDs de seguimiento correlacionan observaciones temporales; no identifican
 personas.
+
+El flag opcional nativo `--evidence-writer-queue-capacity <1..4096>` usa un solo
+writer FIFO acotado para desacoplar persistencia de inferencia. Con `0` (default)
+conserva la escritura síncrona. La cola bloquea al llenarse, drena lo aceptado al
+cerrar y falla el monitor si el writer entra en estado terminal.
 
 ## Ultralytics experimental
 

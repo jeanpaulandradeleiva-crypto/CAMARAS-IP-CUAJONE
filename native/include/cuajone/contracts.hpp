@@ -54,6 +54,10 @@ struct CanonicalFrameResult {
     std::vector<CanonicalEvent> events;
 };
 
+[[nodiscard]] bool canonicalFrameNeedsRender(
+    bool show_window,
+    const CanonicalFrameResult& result) noexcept;
+
 void validateContractVersion(std::string_view version);
 void validateCanonicalMetadata(const CanonicalFrameResult& result);
 std::string canonicalJson(const CanonicalEvent& event);
