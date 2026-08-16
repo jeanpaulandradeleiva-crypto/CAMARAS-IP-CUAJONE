@@ -108,6 +108,26 @@ std::optional<YoloSchema> validateApprovedEndToEndPoseSchema(
     };
 }
 
+std::optional<YoloSchema> validateApprovedEndToEndDetectSchema(
+    std::span<const std::int64_t> shape,
+    std::size_t class_count) {
+    if (shape.size() != 3 || shape[0] != 1 || shape[1] != 300) return std::nullopt;
+    if (shape[2] != 6) return std::nullopt;
+    if (class_count == 0) {
+        throw std::invalid_argument("End-to-end detect decoding requires at least one class");
+    }
+    return YoloSchema{
+        YoloOutputFormat::DetectEndToEnd,
+        TensorLayout::PredictionsFirst,
+        300,
+        6,
+        false,
+        class_count,
+        0,
+        0,
+    };
+}
+
 class PredictionAccessor {
 public:
     PredictionAccessor(const TensorView& tensor, YoloSchema schema)
@@ -325,6 +345,9 @@ OnnxPoseContract validateOnnxPoseContract(
 }
 
 YoloSchema validateDetectSchema(std::span<const std::int64_t> shape, std::size_t class_count) {
+    if (const auto end_to_end = validateApprovedEndToEndDetectSchema(shape, class_count)) {
+        return *end_to_end;
+    }
     return validateSchema(shape, class_count, 0, 0);
 }
 
@@ -369,6 +392,36 @@ std::vector<Detection> decodeDetections(
     validateDecodeOptions(0.0F, iou_threshold, transform, limits);
     const YoloSchema schema = validateDetectSchema(tensor.shape, class_count);
     const PredictionAccessor values(tensor, schema);
+    if (schema.format == YoloOutputFormat::DetectEndToEnd) {
+        std::vector<Detection> detections;
+        detections.reserve(std::min<std::size_t>(schema.predictions, limits.max_detections));
+        for (std::size_t prediction = 0; prediction < schema.predictions; ++prediction) {
+            const float x1 = values.at(prediction, 0);
+            const float y1 = values.at(prediction, 1);
+            const float x2 = values.at(prediction, 2);
+            const float y2 = values.at(prediction, 3);
+            const float score = values.at(prediction, 4);
+            const float class_value = values.at(prediction, 5);
+            if (!std::isfinite(x1) || !std::isfinite(y1) || !std::isfinite(x2) || !std::isfinite(y2)
+                || !std::isfinite(score) || !std::isfinite(class_value)) continue;
+            if (class_value != std::floor(class_value) || class_value < 0.0F
+                || class_value >= static_cast<float>(class_count)) continue;
+            const int class_id = static_cast<int>(class_value);
+            if (score < class_confidence_thresholds[static_cast<std::size_t>(class_id)]
+                || !class_enabled[static_cast<std::size_t>(class_id)]) continue;
+            const Box box{x1, y1, x2, y2};
+            const Detection candidate{box, score, class_id};
+            if (!isFiniteDetection(candidate) || !hasFinitePositiveArea(box)) continue;
+            detections.push_back(candidate);
+        }
+        std::stable_sort(detections.begin(), detections.end(), DetectionBetter{});
+        if (detections.size() > limits.max_detections) detections.resize(limits.max_detections);
+        for (auto& detection : detections) detection.box = transform.restore(detection.box);
+        std::erase_if(detections, [](const Detection& detection) {
+            return !hasFinitePositiveArea(detection.box);
+        });
+        return detections;
+    }
     BoundedCandidates<Detection> candidates(limits.max_nms_candidates);
     for (std::size_t prediction = 0; prediction < schema.predictions; ++prediction) {
         const auto raw_box = rawBox(values, prediction);

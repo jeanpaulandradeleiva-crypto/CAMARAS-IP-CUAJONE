@@ -21,6 +21,7 @@ enum class TensorLayout {
 enum class YoloOutputFormat {
     Raw,
     PoseEndToEnd,
+    DetectEndToEnd,
 };
 
 struct YoloSchema {

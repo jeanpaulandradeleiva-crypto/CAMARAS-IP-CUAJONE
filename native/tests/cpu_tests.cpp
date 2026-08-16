@@ -308,6 +308,34 @@ void testDetectSchemaDecodeAndNms() {
         {edge_values, edge_shape}, 1, 0.1F, 1.0F, transform, {2, 1});
     require(limited.size() == 1 && limited[0].confidence == 0.9F,
         "Final max detection limit did not preserve the best candidate");
+
+    // End-to-end detect output [1, 300, 6] = [x1,y1,x2,y2,score,class].
+    std::vector<float> end_to_end_values(300 * 6, 0.0F);
+    end_to_end_values[0] = 80.0F;
+    end_to_end_values[1] = 60.0F;
+    end_to_end_values[2] = 240.0F;
+    end_to_end_values[3] = 500.0F;
+    end_to_end_values[4] = 0.90F;
+    end_to_end_values[5] = 0.0F;
+    const std::array<std::int64_t, 3> end_to_end_shape{1, 300, 6};
+    const auto end_to_end_schema = validateDetectSchema(end_to_end_shape, 3);
+    require(end_to_end_schema.format == YoloOutputFormat::DetectEndToEnd
+            && end_to_end_schema.layout == TensorLayout::PredictionsFirst,
+        "Approved [1,300,6] detect output was not recognized as end-to-end");
+    const auto end_to_end = decodeDetections(
+        {end_to_end_values, end_to_end_shape}, 3, 0.5F, 0.45F, transform);
+    require(end_to_end.size() == 1 && end_to_end.front().class_id == 0,
+        "End-to-end detect row did not produce the detection");
+    requireNear(end_to_end.front().confidence, 0.90F, 0.0001F,
+        "End-to-end detect confidence was lost");
+    requireNear(end_to_end.front().box.x1, 80.0F, 0.01F,
+        "End-to-end detect xyxy box was not preserved");
+
+    auto invalid_class = end_to_end_values;
+    invalid_class[5] = 0.5F;
+    require(decodeDetections(
+                {invalid_class, end_to_end_shape}, 3, 0.5F, 0.45F, transform).empty(),
+        "Fractional end-to-end detect class ID was accepted");
 }
 
 void testPoseSchemaAndDecode() {
