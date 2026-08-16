@@ -40,6 +40,12 @@ def test_normalizes_summary_and_per_class_metrics_deterministically() -> None:
         "map50_95": 0.55,
     }
     assert report["required_classes"] == {"helmet": 1, "vest": 2, "safety_boots": 3}
+    assert report["class_schema"] == [
+        {"class_id": 0, "name": "Person"},
+        {"class_id": 1, "name": "Hard_hat"},
+        {"class_id": 2, "name": "Vest"},
+        {"class_id": 3, "name": "Safety_boots"},
+    ]
     assert report["per_class"][0] == {
         "class_id": 1,
         "name": "Hard_hat",
@@ -77,8 +83,28 @@ def test_evaluate_constructs_detect_model_and_uses_configured_split() -> None:
         split="val",
         device="cuda:0",
         yolo_factory=factory,
+        validation_options={"imgsz": 640, "batch": 16, "workers": 2},
     )
 
     assert calls == [("ppe.engine", "detect")]
-    assert val_calls == [{"data": "dataset.yaml", "split": "val", "device": "cuda:0"}]
+    assert val_calls == [
+        {
+            "data": "dataset.yaml",
+            "split": "val",
+            "imgsz": 640,
+            "batch": 16,
+            "workers": 2,
+            "device": "cuda:0",
+        }
+    ]
     assert report["scope"] == "object_detection"
+
+
+def test_evaluate_rejects_validation_options_that_override_common_inputs() -> None:
+    with pytest.raises(ValueError, match="cannot override common inputs: data"):
+        evaluate_detection.evaluate(
+            "ppe.pt",
+            "dataset.yaml",
+            yolo_factory=lambda *_args, **_kwargs: object(),
+            validation_options={"data": "different.yaml"},
+        )

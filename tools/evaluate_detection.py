@@ -71,6 +71,10 @@ def normalize_metrics(metrics: Any, names: Any) -> dict[str, Any]:
         "scope": "object_detection",
         "disclaimer": DISCLAIMER,
         "required_classes": required,
+        "class_schema": [
+            {"class_id": class_id, "name": available[class_id]}
+            for class_id in sorted(available)
+        ],
         "metrics": {
             "precision": float(box.mp),
             "recall": float(box.mr),
@@ -87,6 +91,7 @@ def evaluate(
     split: str = "test",
     device: str | None = None,
     yolo_factory: Any | None = None,
+    validation_options: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     if Path(model_path).suffix.lower() not in {".pt", ".engine"}:
         raise ValueError("El modelo debe tener extensión .pt o .engine.")
@@ -95,7 +100,13 @@ def evaluate(
 
         yolo_factory = YOLO
     model = yolo_factory(model_path, task="detect")
-    kwargs: dict[str, Any] = {"data": data, "split": split}
+    validation_options = dict(validation_options or {})
+    reserved = sorted({"data", "split", "device"} & validation_options.keys())
+    if reserved:
+        raise ValueError(
+            "Validation options cannot override common inputs: " + ", ".join(reserved)
+        )
+    kwargs: dict[str, Any] = {"data": data, "split": split, **validation_options}
     if device:
         kwargs["device"] = device
     metrics = model.val(**kwargs)
