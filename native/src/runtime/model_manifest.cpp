@@ -347,8 +347,8 @@ OnnxModelManifest parseManifest(std::string_view json) {
     const auto& root = objectValue(parsed, "ONNX manifest");
     const std::string role = stringValue(required(root, "role"), "role", 16);
     const std::size_t schema_version = integerValue(
-        required(root, "schema_version"), "schema_version", 2);
-    if (schema_version != 1 && schema_version != 2) {
+        required(root, "schema_version"), "schema_version", 3);
+    if (schema_version != 1 && schema_version != 2 && schema_version != 3) {
         throw std::runtime_error("Unsupported ONNX manifest schema_version");
     }
     if (role == "ppe") {
@@ -402,29 +402,55 @@ OnnxModelManifest parseManifest(std::string_view json) {
     }
     result.input = tensorContract(
         required(root, "input"), "ONNX input contract",
-        resource_limits::kMaximumInputElements, schema_version == 2);
+        resource_limits::kMaximumInputElements, schema_version >= 2);
     result.output = tensorContract(
         required(root, "output"), "ONNX output contract",
-        resource_limits::kMaximumOutputElements, schema_version == 2);
+        resource_limits::kMaximumOutputElements, schema_version >= 2);
     if (result.input.shape.size() != 4 || result.input.shape[0] != 1 || result.input.shape[1] != 3
         || (schema_version == 1 && (result.input.shape[2] > kMaximumImageSize
             || result.input.shape[3] > kMaximumImageSize))) {
         throw std::runtime_error("ONNX input contract must be bounded batch-1, three-channel NCHW");
     }
-    if (schema_version == 2) {
+    if (schema_version >= 2) {
         if (result.input.shape != std::vector<std::int64_t>({1, 3, -1, -1})) {
             throw std::runtime_error("Dynamic ONNX input shape must be [1,3,height,width]");
         }
         parseDynamicShapeContract(required(root, "dynamic_shape"), result);
     }
     const auto& provenance = objectValue(required(root, "provenance"), "provenance");
-    exactKeys(provenance, {"source_uri", "exporter", "license"}, "ONNX provenance");
+    if (schema_version == 3) {
+        exactKeys(provenance, {"source_uri", "exporter", "license", "source_checkpoint"}, "ONNX provenance");
+    } else {
+        exactKeys(provenance, {"source_uri", "exporter", "license"}, "ONNX provenance");
+    }
     result.source_uri = stringValue(required(provenance, "source_uri"), "source_uri");
     if (!result.source_uri.starts_with("https://") && !result.source_uri.starts_with("urn:")) {
         throw std::runtime_error("ONNX provenance source_uri must use https:// or urn:");
     }
     result.exporter = stringValue(required(provenance, "exporter"), "exporter", 256);
     result.license = stringValue(required(provenance, "license"), "license", 256);
+    if (schema_version == 3) {
+        const auto& source_checkpoint = objectValue(
+            required(provenance, "source_checkpoint"), "source_checkpoint");
+        exactKeys(source_checkpoint, {"filename", "sha256"}, "ONNX source checkpoint provenance");
+        result.source_checkpoint_filename = stringValue(
+            required(source_checkpoint, "filename"), "source_checkpoint.filename", 255);
+        if (result.source_checkpoint_filename.empty()
+            || result.source_checkpoint_filename.find_first_of("/\\") != std::string::npos) {
+            throw std::runtime_error("ONNX source checkpoint filename must be a basename");
+        }
+        result.source_checkpoint_sha256 = stringValue(
+            required(source_checkpoint, "sha256"), "source_checkpoint.sha256", 64);
+        if (result.source_checkpoint_sha256.size() != 64 || std::any_of(
+                result.source_checkpoint_sha256.begin(), result.source_checkpoint_sha256.end(),
+                [](unsigned char character) {
+                    return !((character >= '0' && character <= '9')
+                        || (character >= 'a' && character <= 'f'));
+                })) {
+            throw std::runtime_error(
+                "ONNX source checkpoint SHA-256 must be 64 lowercase hexadecimal characters");
+        }
+    }
     if (result.role == ModelRole::Ppe) {
         result.label_contract = stringValue(required(root, "label_contract"), "label_contract", 64);
         for (const auto& label : arrayValue(required(root, "labels"), "PPE labels")) {
@@ -436,7 +462,7 @@ OnnxModelManifest parseManifest(std::string_view json) {
             throw std::runtime_error("PPE manifest must bind the always-all-seven-v2 label contract");
         }
     }
-    if (schema_version == 2) {
+    if (schema_version >= 2) {
         const std::vector<std::int64_t> expected_output = result.role == ModelRole::Ppe
             ? std::vector<std::int64_t>{1, 12, -1}
             : std::vector<std::int64_t>{1, 300, 57};

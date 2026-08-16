@@ -15,7 +15,7 @@ from ultralytics import YOLO
 from cuajone_qa.ppe import validate_ppe_labels
 
 
-MANIFEST_VERSION = 2
+MANIFEST_VERSION = 3
 ALLOWED_IMAGE_SIZES = (640, 768, 960, 1280)
 MAXIMUM_OUTPUT_ELEMENTS = 16 * 1024 * 1024
 
@@ -41,6 +41,13 @@ def _sha256(path: Path) -> str:
         for chunk in iter(lambda: stream.read(1024 * 1024), b""):
             digest.update(chunk)
     return digest.hexdigest()
+
+
+def _checkpoint_provenance(source: Path) -> dict[str, str]:
+    return {
+        "filename": source.name,
+        "sha256": _sha256(source),
+    }
 
 
 def _export_options(task: str) -> dict[str, Any]:
@@ -103,6 +110,7 @@ def export_one(source: Path, target: Path, role: str, task: str) -> None:
             "Install it with `uv pip install onnx` and retry."
         ) from exc
 
+    source_checkpoint = _checkpoint_provenance(source)
     print(f"Exportando {role}: {source.name} -> {target}")
     model = YOLO(str(source), task=task)
     exported_labels: list[str] | None = None
@@ -119,7 +127,11 @@ def export_one(source: Path, target: Path, role: str, task: str) -> None:
         raise RuntimeError(f"Ultralytics no produjo el ONNX esperado: {exported_path}")
 
     target.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copy2(exported_path, target)
+    try:
+        shutil.copy2(exported_path, target)
+    finally:
+        if exported_path != target.resolve():
+            exported_path.unlink(missing_ok=True)
     model = onnx.load(str(target), load_external_data=False)
     if len(model.graph.input) != 1 or len(model.graph.output) != 1:
         raise RuntimeError(
@@ -182,6 +194,7 @@ def export_one(source: Path, target: Path, role: str, task: str) -> None:
             "source_uri": f"urn:cuajone:model:{role}:ultralytics-yolo26",
             "exporter": "Ultralytics YOLO ONNX export",
             "license": "AGPL-3.0-only",
+            "source_checkpoint": source_checkpoint,
         },
     }
     if exported_labels is not None:

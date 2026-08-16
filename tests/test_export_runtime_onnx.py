@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import importlib
 import sys
 
@@ -53,7 +54,7 @@ def test_detect_export_is_raw_and_pose_keeps_ultralytics_default() -> None:
 def test_dynamic_contract_uses_exact_bounded_sizes() -> None:
     module = importlib.import_module(MODULE_NAME)
 
-    assert module.MANIFEST_VERSION == 2
+    assert module.MANIFEST_VERSION == 3
     assert module.ALLOWED_IMAGE_SIZES == (640, 768, 960, 1280)
     assert [module._prediction_count(size) for size in module.ALLOWED_IMAGE_SIZES] == [
         8400,
@@ -61,3 +62,14 @@ def test_dynamic_contract_uses_exact_bounded_sizes() -> None:
         18900,
         33600,
     ]
+
+
+def test_checkpoint_provenance_is_calculated_from_the_selected_file(tmp_path) -> None:
+    module = importlib.import_module(MODULE_NAME)
+    checkpoint = tmp_path / "selected.pt"
+    checkpoint.write_bytes(b"checkpoint-contents")
+
+    assert module._checkpoint_provenance(checkpoint) == {
+        "filename": "selected.pt",
+        "sha256": hashlib.sha256(b"checkpoint-contents").hexdigest(),
+    }

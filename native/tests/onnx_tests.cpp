@@ -45,6 +45,24 @@ void testVerifiedInMemoryInference() {
         "Synthetic in-memory ONNX inference changed Identity values");
 }
 
+void testSingleIntraOpThreadOption() {
+    TemporaryDirectory directory;
+    const Bytes model = identityModel();
+    const auto path = directory.path() / "pose.onnx";
+    writeBytes(path, model);
+    writeText(onnxManifestPath(path), manifest(path, model, "pose"));
+    OnnxSession session(path, ModelRole::Pose,
+        OnnxSessionOptions{OnnxExecutionProvider::Cpu, std::nullopt, 1});
+    const std::vector<float> input{0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11};
+    const InferenceOutput output = session.infer(input);
+    require(std::vector<float>(output.values.begin(), output.values.end()) == input,
+        "Single-thread ONNX session changed Identity inference values");
+    requireThrows([&] {
+        OnnxSession invalid(path, ModelRole::Pose,
+            OnnxSessionOptions{OnnxExecutionProvider::Cpu, std::nullopt, 0});
+    }, "intra-op thread count", "Zero intra-op thread count was accepted");
+}
+
 void testManifestAndArtifactBoundary() {
     TemporaryDirectory directory;
     const Bytes model = identityModel();
@@ -159,13 +177,17 @@ void testManifestResourceLimits() {
         "resource limit", "Oversized ONNX output contract was accepted");
 }
 
-std::string dynamicManifest(std::string_view role = "ppe") {
+std::string dynamicManifest(std::string_view role = "ppe", std::size_t schema_version = 2) {
     const std::string ppe = role == "ppe"
         ? R"(,"label_contract":"always-all-seven-v2","labels":["Gloves","Person","Safety_boots","Vest","respirador","tapaorejas","Hard_hat","lentes_protectores"] )"
         : "";
     const std::string output_shape = role == "ppe"
         ? R"([1,12,"predictions"])" : "[1,300,57]";
-    return R"({"schema_version":2,"artifact_type":"onnx","role":")"
+    const std::string provenance = schema_version == 3
+        ? R"({"source_uri":"urn:cuajone:test","exporter":"tests","license":"AGPL-3.0-only","source_checkpoint":{"filename":"model.pt","sha256":")"
+            + std::string(64, '0') + R"("}})"
+        : R"({"source_uri":"urn:cuajone:test","exporter":"tests","license":"AGPL-3.0-only"})";
+    return R"({"schema_version":)" + std::to_string(schema_version) + R"(,"artifact_type":"onnx","role":")"
         + std::string(role)
         + R"(","model_file":"model.onnx","model_sha256":")"
         + std::string(64, '0')
@@ -173,7 +195,7 @@ std::string dynamicManifest(std::string_view role = "ppe") {
           R"("input":{"name":"images","element_type":"float32","shape":[1,3,"height","width"]},)"
           R"("output":{"name":"output0","element_type":"float32","shape":)"
         + output_shape
-        + R"(},"provenance":{"source_uri":"urn:cuajone:test","exporter":"tests","license":"AGPL-3.0-only"})"
+        + R"(},"provenance":)" + provenance
         + ppe
         + R"(,"dynamic_shape":{"batch":1,"channels":3,"allowed_image_sizes":[640,768,960,1280],"minimum_image_size":640,"optimum_image_size":640,"maximum_image_size":1280}})";
 }
@@ -187,6 +209,11 @@ void testDynamicManifestContract() {
     const OnnxModelManifest pose = parseOnnxModelManifest(dynamicManifest("pose"));
     require(pose.dynamicShapes() && pose.output.shape == std::vector<std::int64_t>({1, 300, 57}),
         "Bounded dynamic pose manifest was not accepted");
+    const OnnxModelManifest audited_pose = parseOnnxModelManifest(dynamicManifest("pose", 3));
+    require(audited_pose.dynamicShapes()
+            && audited_pose.source_checkpoint_filename == "model.pt"
+            && audited_pose.source_checkpoint_sha256 == std::string(64, '0'),
+        "Audited dynamic pose manifest was not accepted");
 
     std::string unsupported = dynamicManifest();
     const std::string allowed = "[640,768,960,1280]";
@@ -210,6 +237,7 @@ void testDynamicManifestContract() {
 int main() {
     const std::vector<std::pair<std::string, std::function<void()>>> tests{
         {"verified in-memory inference", testVerifiedInMemoryInference},
+        {"single intra-op thread option", testSingleIntraOpThreadOption},
         {"manifest and artifact boundary", testManifestAndArtifactBoundary},
         {"PPE manifest semantic order", testPpeManifestBindsSemanticOrder},
         {"external data and custom operators", testExternalDataAndCustomOperatorsRejected},

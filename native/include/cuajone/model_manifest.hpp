@@ -30,6 +30,8 @@ struct OnnxModelManifest {
     std::string source_uri;
     std::string exporter;
     std::string license;
+    std::string source_checkpoint_filename;
+    std::string source_checkpoint_sha256;
     std::string label_contract;
     std::vector<std::string> labels;
     TensorContract input;
@@ -39,7 +41,7 @@ struct OnnxModelManifest {
     int optimum_image_size{};
     int maximum_image_size{};
 
-    [[nodiscard]] bool dynamicShapes() const noexcept { return schema_version == 2; }
+    [[nodiscard]] bool dynamicShapes() const noexcept { return schema_version >= 2; }
 };
 
 struct VerifiedOnnxModel {
