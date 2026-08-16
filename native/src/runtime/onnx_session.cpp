@@ -20,6 +20,7 @@ struct OnnxSession::Impl {
         : environment(ORT_LOGGING_LEVEL_WARNING, "NexoAIVision"),
           session_options(),
           session(nullptr),
+          io_binding(nullptr),
           verified_model(verifyOnnxModel(model_path, expected_role)) {
         session_options.SetGraphOptimizationLevel(GraphOptimizationLevel::ORT_ENABLE_ALL);
         session_options.SetExecutionMode(ExecutionMode::ORT_SEQUENTIAL);
@@ -40,6 +41,7 @@ struct OnnxSession::Impl {
         }
         session = Ort::Session(
             environment, verified_model.bytes.data(), verified_model.bytes.size(), session_options);
+        io_binding = Ort::IoBinding(session);
         if (session.GetInputCount() != 1 || session.GetOutputCount() != 1) {
             throw std::runtime_error("ONNX model must expose exactly one input and one output tensor");
         }
@@ -99,46 +101,35 @@ struct OnnxSession::Impl {
             input_shape, resource_limits::kMaximumInputElements, "ONNX input");
         static_cast<void>(resource_limits::checkedTensorBytes(
             input_elements, sizeof(float), "ONNX input"));
-        const std::size_t output_elements = resource_limits::checkedVolume(
+        output_elements = resource_limits::checkedVolume(
             output_shape, resource_limits::kMaximumOutputElements, "ONNX output");
         static_cast<void>(resource_limits::checkedTensorBytes(
             output_elements, sizeof(float), "ONNX output"));
+        output_values.resize(output_elements);
     }
 
     InferenceOutput run(std::span<const float> input) {
         if (input.size() != input_elements) {
             throw std::invalid_argument("Preprocessed input length does not match ONNX input tensor");
         }
+        if (output_values.size() != output_elements) {
+            throw std::runtime_error("ONNX output buffer size does not match the session output contract");
+        }
         const Ort::MemoryInfo memory = Ort::MemoryInfo::CreateCpu(OrtArenaAllocator, OrtMemTypeDefault);
         Ort::Value input_tensor = Ort::Value::CreateTensor<float>(
             memory, const_cast<float*>(input.data()), input.size(), input_shape.data(), input_shape.size());
-        const char* input_names[]{input_name.c_str()};
-        const char* output_names[]{output_name.c_str()};
-        auto outputs = session.Run(
-            Ort::RunOptions{nullptr}, input_names, &input_tensor, 1, output_names, 1);
-        if (outputs.size() != 1 || !outputs.front().IsTensor()) {
-            throw std::runtime_error("ONNX Runtime returned an invalid output collection");
-        }
-        const auto actual_info = outputs.front().GetTensorTypeAndShapeInfo();
-        const auto actual_shape = actual_info.GetShape();
-        if (actual_info.GetElementType() != ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT) {
-            throw std::runtime_error("ONNX Runtime output type changed after session validation");
-        }
-        const std::size_t count = resource_limits::checkedVolume(
-            actual_shape, resource_limits::kMaximumOutputElements, "ONNX Runtime output");
-        static_cast<void>(resource_limits::checkedTensorBytes(
-            count, sizeof(float), "ONNX Runtime output"));
-        if (actual_shape != output_shape || actual_info.GetElementCount() != count) {
-            throw std::runtime_error("ONNX Runtime output shape or type changed after session validation");
-        }
-        const float* values = outputs.front().GetTensorData<float>();
-        output_values.assign(values, values + count);
+        Ort::Value output_tensor = Ort::Value::CreateTensor<float>(
+            memory, output_values.data(), output_values.size(), output_shape.data(), output_shape.size());
+        io_binding.BindInput(input_name.c_str(), input_tensor);
+        io_binding.BindOutput(output_name.c_str(), output_tensor);
+        session.Run(Ort::RunOptions{nullptr}, io_binding);
         return {output_values, output_shape};
     }
 
     Ort::Env environment;
     Ort::SessionOptions session_options;
     Ort::Session session;
+    Ort::IoBinding io_binding;
     VerifiedOnnxModel verified_model;
     Ort::AllocatorWithDefaultOptions allocator;
     std::string input_name;
@@ -149,6 +140,7 @@ struct OnnxSession::Impl {
     int input_width{};
     int input_height{};
     std::size_t input_elements{};
+    std::size_t output_elements{};
 };
 
 OnnxSession::OnnxSession(

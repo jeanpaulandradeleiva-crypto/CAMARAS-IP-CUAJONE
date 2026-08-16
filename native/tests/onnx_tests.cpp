@@ -45,6 +45,31 @@ void testVerifiedInMemoryInference() {
         "Synthetic in-memory ONNX inference changed Identity values");
 }
 
+void testOutputBindingAliasing() {
+    TemporaryDirectory directory;
+    const Bytes model = identityModel();
+    const auto path = writeModelSet(directory, "aliasing.onnx", model);
+    OnnxSession session(path, ModelRole::Ppe);
+    const std::vector<float> first_input{0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11};
+    const std::vector<float> second_input{11, 10, 9, 8, 7, 6, 5, 4, 3, 2, 1, 0};
+
+    const InferenceOutput first = session.infer(first_input);
+    require(std::vector<float>(first.values.begin(), first.values.end()) == first_input,
+        "Output-bound inference did not return the input values");
+    const float* first_buffer = first.values.data();
+
+    const InferenceOutput second = session.infer(second_input);
+    require(std::vector<float>(second.values.begin(), second.values.end()) == second_input,
+        "Second output-bound inference did not return the input values");
+    require(second.values.data() == first_buffer,
+        "Output binding did not reuse the persistent CPU-resident output buffer");
+
+    require(std::vector<float>(first.values.begin(), first.values.end()) == second_input,
+        "Stale InferenceOutput did not alias the overwritten session output buffer");
+    require(std::ranges::equal(second.shape, std::vector<std::int64_t>({1, 3, 2, 2})),
+        "Output binding changed the synthetic output shape");
+}
+
 void testSingleIntraOpThreadOption() {
     TemporaryDirectory directory;
     const Bytes model = identityModel();
@@ -237,6 +262,7 @@ void testDynamicManifestContract() {
 int main() {
     const std::vector<std::pair<std::string, std::function<void()>>> tests{
         {"verified in-memory inference", testVerifiedInMemoryInference},
+        {"output-binding buffer aliasing", testOutputBindingAliasing},
         {"single intra-op thread option", testSingleIntraOpThreadOption},
         {"manifest and artifact boundary", testManifestAndArtifactBoundary},
         {"PPE manifest semantic order", testPpeManifestBindsSemanticOrder},
