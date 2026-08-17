@@ -639,13 +639,23 @@ try {
             throw "Runtime ACL rows do not grant the locale-independent Users account on the three mutable data directories"
         }
         $customActionRows = Get-MsiRows $database 'SELECT `Action`, `Type`, `Source`, `Target` FROM `CustomAction`' 4
-        $approvedCustomActions = @(
+        $baseApprovedCustomActions = @(
             "Wix4SchedSecureObjects_X64", "Wix4SchedSecureObjectsRollback_X64",
             "Wix4ExecSecureObjects_X64", "Wix4ExecSecureObjectsRollback_X64",
             "DetectComputeHardware", "BlockUnavailableCuda",
             "RestoreLegacyComputeMode", "RestoreNexoAIComputeMode"
         )
-        if ($customActionRows.Count -ne $approvedCustomActions.Count -or
+        # On-target engine build is optional: present only when the MSI ships the
+        # engine-builder payload (HasEngineBuilder=1). Its SetProperty (type 51) and
+        # deferred WixQuietExec64 action both appear in the CustomAction table.
+        $engineBuilderCustomActions = @("SetBuildTensorRtEngines", "BuildTensorRtEngines")
+        $approvedCustomActions = $baseApprovedCustomActions + $engineBuilderCustomActions
+        $engineBuilderPresent = @($customActionRows | Where-Object {
+            $_.Columns[0] -in $engineBuilderCustomActions
+        }).Count -gt 0
+        $expectedCount = $baseApprovedCustomActions.Count
+        if ($engineBuilderPresent) { $expectedCount += $engineBuilderCustomActions.Count }
+        if ($customActionRows.Count -ne $expectedCount -or
             @($customActionRows | Where-Object {
                 $_.Columns[0] -notin $approvedCustomActions
             }).Count -ne 0) {

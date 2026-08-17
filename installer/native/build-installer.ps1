@@ -1732,6 +1732,7 @@ $wixArguments = @("build") + $wixSourceFiles + @(
     "-d", "StageDir=$StageDir",
     "-d", "HasModels=$(if ($hasModels) { '1' } else { '0' })",
     "-d", "HasCudaPayload=$(if ($hasCudaPayload) { '1' } else { '0' })",
+    "-d", "HasEngineBuilder=$(if ($onTargetBuild) { '1' } else { '0' })",
     "-d", "AppVersion=$Version",
     "-d", "MsiVersion=$msiVersion",
     "-d", "ArpComments=$arpComments",
