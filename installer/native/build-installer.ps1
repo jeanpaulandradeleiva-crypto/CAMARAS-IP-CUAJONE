@@ -37,6 +37,8 @@ param(
     [string]$PoseModelPath = $env:CUAJONE_POSE_MODEL_PATH,
     [string]$PpeEnginePath = $env:CUAJONE_PPE_ENGINE_PATH,
     [string]$PoseEnginePath = $env:CUAJONE_POSE_ENGINE_PATH,
+    [string]$PpeOnnxPath = $env:CUAJONE_PPE_ONNX_PATH,
+    [string]$PoseOnnxPath = $env:CUAJONE_POSE_ONNX_PATH,
     [string]$OnnxRuntimeGpuRoot = $env:CUAJONE_ONNXRUNTIME_GPU_ROOT,
     [string]$ParityReceiptPath = $env:CUAJONE_PARITY_RECEIPT,
     [string]$SignToolPath = $env:CUAJONE_SIGNTOOL_PATH,
@@ -130,6 +132,27 @@ function Resolve-ModelSource([string]$ConfiguredPath, [string[]]$FallbackCandida
         return (Resolve-Path -LiteralPath $ConfiguredPath).Path
     }
     return Resolve-FirstExistingPath $FallbackCandidates $Description
+}
+
+function Resolve-EngineBuilderOnnx([string]$ConfiguredPath, [string]$Description) {
+    if ([string]::IsNullOrWhiteSpace($ConfiguredPath)) {
+        throw "$Description was not provided"
+    }
+    $resolved = $ConfiguredPath
+    if (-not [System.IO.Path]::IsPathRooted($resolved)) {
+        $resolved = Join-Path $projectRoot $resolved
+    }
+    Assert-File $resolved $Description
+    $full = (Resolve-Path -LiteralPath $resolved).Path
+    $repositoryRoot = [System.IO.Path]::GetFullPath($projectRoot).TrimEnd('\')
+    $toolFull = [System.IO.Path]::GetFullPath($ToolRoot).TrimEnd('\')
+    if ($full.StartsWith("$repositoryRoot\", [System.StringComparison]::OrdinalIgnoreCase)) {
+        return [pscustomobject]@{ path = $full; scope = "repository" }
+    }
+    if ($full.StartsWith("$toolFull\", [System.StringComparison]::OrdinalIgnoreCase)) {
+        return [pscustomobject]@{ path = $full; scope = "tool" }
+    }
+    throw "$Description must be under the repository or native tool root: $full"
 }
 
 function Export-OnnxModel(
@@ -857,6 +880,9 @@ $resolved = [ordered]@{}
 $imports = [System.Collections.Generic.List[object]]::new()
 $stagedSources = [System.Collections.Generic.List[object]]::new()
 $queue = [System.Collections.Generic.Queue[string]]::new()
+$builderResolved = [ordered]@{}
+$builderImports = [System.Collections.Generic.List[object]]::new()
+$builderQueue = [System.Collections.Generic.Queue[string]]::new()
 $sourceRoots = [ordered]@{
     repository = $projectRoot
     build = (Join-Path $ToolRoot "build")
@@ -981,6 +1007,28 @@ function Add-StagedBinary(
     $queue.Enqueue($Source)
 }
 
+function Add-StagedEngineBuilderBinary(
+    [string]$Source,
+    [string]$Reason,
+    [ValidateSet("build", "tool")]
+    [string]$SourceScope
+) {
+    $name = Split-Path -Leaf $Source
+    if ($builderResolved.Contains($name)) {
+        return
+    }
+    Assert-X64Pe $Source $dumpbin
+    $destination = Join-Path $stageEngineBuilder.FullName $name
+    Copy-StagedInput $Source $destination $SourceScope $Reason
+    $sourceHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $Source).Hash.ToLowerInvariant()
+    $builderResolved[$name] = [pscustomobject]@{
+        source = $Source
+        reason = $Reason
+        sha256 = $sourceHash
+    }
+    $builderQueue.Enqueue($Source)
+}
+
 Add-StagedBinary $ReleaseExecutable "Application executable" "build"
 Add-StagedBinary $LauncherExecutable "Graphical launcher executable" "build"
 $ffmpegPlugin = Join-Path $openCvBin "opencv_videoio_ffmpeg4120_64.dll"
@@ -1041,6 +1089,8 @@ foreach ($cudaLibrary in @(
 }
 $hasCudaPayload = $cudaPayloadRelativePaths.Count -gt 0
 
+# Runtime boundary: the builder/plugin/parser DLLs are approved only under the
+# on-target engine-builder subdirectory (bin\engine-builder), never in the runtime bin.
 $unexpectedTensorRt = @($resolved.Keys | Where-Object {
     $_ -match '^(nvonnxparser|nvinfer_plugin|nvinfer_builder|nvinfer_vc_plugin)'
 })
@@ -1095,8 +1145,20 @@ $includeModelBundle = $true
 $hasModels = $false
 $ppeEngineSha256 = $null
 $poseEngineSha256 = $null
+$onTargetBuild = $false
+$ppeBuilderOnnx = $null
+$poseBuilderOnnx = $null
+$ppeBuilderOnnxSha256 = $null
+$poseBuilderOnnxSha256 = $null
+
+if (($PpeOnnxPath -and -not $PoseOnnxPath) -or ($PoseOnnxPath -and -not $PpeOnnxPath)) {
+    throw "-PpeOnnxPath and -PoseOnnxPath must be provided together for the on-target engine build"
+}
 
 if ($PpeEnginePath -or $PoseEnginePath) {
+    if ($PpeOnnxPath -or $PoseOnnxPath) {
+        Write-Warning "Both pre-built engines and on-target ONNX paths were provided; the pre-built engines take precedence and the on-target ONNX paths are ignored."
+    }
     if (-not $PpeEnginePath) { throw "-PpeEnginePath is required when providing pre-built engines" }
     if (-not $PoseEnginePath) { throw "-PoseEnginePath is required when providing pre-built engines" }
     Assert-File $PpeEnginePath "Pre-built PPE TensorRT engine"
@@ -1120,6 +1182,95 @@ PPE engine SHA-256: $ppeEngineSha256
 
 Pose engine: $PoseEnginePath
 Pose engine SHA-256: $poseEngineSha256
+"@ | Set-Content -LiteralPath (Join-Path $stageDocs.FullName "MODEL-BUNDLE.txt") -Encoding UTF8
+} elseif ($PpeOnnxPath -and $PoseOnnxPath) {
+    $onTargetBuild = $true
+    $ppeBuilderOnnx = Resolve-EngineBuilderOnnx $PpeOnnxPath "PPE ONNX model for on-target engine build"
+    $poseBuilderOnnx = Resolve-EngineBuilderOnnx $PoseOnnxPath "Pose ONNX model for on-target engine build"
+    $ppeBuilderOnnxSha256 = (Get-FileHash -Algorithm SHA256 -LiteralPath $ppeBuilderOnnx.path).Hash.ToLowerInvariant()
+    $poseBuilderOnnxSha256 = (Get-FileHash -Algorithm SHA256 -LiteralPath $poseBuilderOnnx.path).Hash.ToLowerInvariant()
+
+    $stageEngineBuilder = New-Item -ItemType Directory -Path (Join-Path $StageDir "bin\engine-builder") -Force
+
+    Copy-StagedInput $ppeBuilderOnnx.path (Join-Path $stageEngineBuilder.FullName "ppe.onnx") $ppeBuilderOnnx.scope "PPE ONNX model for on-target TensorRT engine build"
+    Copy-StagedInput $poseBuilderOnnx.path (Join-Path $stageEngineBuilder.FullName "pose.onnx") $poseBuilderOnnx.scope "Pose ONNX model for on-target TensorRT engine build"
+    Copy-StagedInput (Join-Path $scriptRoot "Build-EnginesOnTarget.ps1") (Join-Path $stageEngineBuilder.FullName "Build-EnginesOnTarget.ps1") "repository" "On-target TensorRT engine build script"
+
+    $trtexecBuilderPath = Join-Path $tensorRtBin "trtexec.exe"
+    Assert-File $trtexecBuilderPath "TensorRT trtexec builder"
+    Add-StagedEngineBuilderBinary $trtexecBuilderPath "TensorRT engine builder (trtexec)" "tool"
+
+    # TensorRT 11 delay-loads its runtime, plugin, parser, and per-SM builder-resource
+    # DLLs (plus CUDA/cuBLAS/cuDNN), so none of them surface in the static PE import
+    # table. Stage the full TensorRT bin closure explicitly; it stays confined to
+    # bin\engine-builder.
+    foreach ($tensorRtDll in Get-ChildItem -LiteralPath $tensorRtBin -File -Filter "*.dll" | Sort-Object Name) {
+        Add-StagedEngineBuilderBinary $tensorRtDll.FullName "TensorRT DLL (delay-loaded by trtexec)" "tool"
+    }
+
+    # CUDA/cuBLAS/cuDNN/MSVC are likewise delay-loaded by TensorRT, so mirror the
+    # runtime bin's explicit closure instead of relying on PE import resolution.
+    foreach ($builderCudaSource in @(
+            [pscustomobject]@{ directory = $cudaBin; reason = "NVIDIA CUDA runtime for trtexec" },
+            [pscustomobject]@{ directory = $cublasBin; reason = "NVIDIA cuBLAS runtime for trtexec" },
+            [pscustomobject]@{ directory = $cudnnBin; reason = "NVIDIA cuDNN runtime for trtexec" },
+            [pscustomobject]@{ directory = $msvcCrt; reason = "MSVC runtime for trtexec" }
+        )) {
+        foreach ($file in Get-ChildItem -LiteralPath $builderCudaSource.directory -File -Filter "*.dll" | Sort-Object Name) {
+            Add-StagedEngineBuilderBinary $file.FullName $builderCudaSource.reason "tool"
+        }
+    }
+
+    # Defensive static PE closure: resolves any regular (non-delay-loaded) imports of
+    # the staged builder binaries and fails loudly on anything unresolvable.
+    while ($builderQueue.Count -gt 0) {
+        $builderBinary = $builderQueue.Dequeue()
+        foreach ($builderDependency in Get-PeDependencies $builderBinary $dumpbin) {
+            $builderDependencyPath = Find-Dependency $builderDependency $searchDirectories
+            if ($builderDependencyPath) {
+                Add-StagedEngineBuilderBinary $builderDependencyPath "PE import required by $(Split-Path -Leaf $builderBinary)" "tool"
+                $builderImports.Add([pscustomobject]@{
+                    importer = Split-Path -Leaf $builderBinary
+                    dependency = $builderDependency
+                    resolution = "app-local"
+                })
+                continue
+            }
+            $systemBuilderPath = Join-Path $systemDirectory $builderDependency
+            if ($builderDependency -match '^(api-ms-|ext-ms-)' -or (Test-Path -LiteralPath $systemBuilderPath -PathType Leaf)) {
+                $builderImports.Add([pscustomobject]@{
+                    importer = Split-Path -Leaf $builderBinary
+                    dependency = $builderDependency
+                    resolution = "Windows system"
+                })
+                continue
+            }
+            throw "Unresolved PE dependency '$builderDependency' imported by '$builderBinary' (engine-builder)"
+        }
+    }
+
+    # Engine-builder boundary: builder/plugin/parser DLLs must stay out of the runtime bin.
+    $builderOnlyInRuntime = @($resolved.Keys | Where-Object {
+        $_ -match '^(nvonnxparser|nvinfer_plugin|nvinfer_builder|nvinfer_vc_plugin)'
+    })
+    if ($builderOnlyInRuntime) {
+        throw "TensorRT builder/plugin/parser DLLs leaked into the runtime bin: $($builderOnlyInRuntime -join ', ')"
+    }
+
+    @"
+NexoAI Vision model bundle
+
+Build mode: $BuildMode
+Bundle source: On-target TensorRT engine build (trtexec)
+Bundle included: engines are compiled on the target machine at first run
+
+PPE ONNX: $($ppeBuilderOnnx.path)
+PPE ONNX SHA-256: $ppeBuilderOnnxSha256
+
+Pose ONNX: $($poseBuilderOnnx.path)
+Pose ONNX SHA-256: $poseBuilderOnnxSha256
+
+Engine builder: bin\engine-builder (trtexec, TensorRT builder/plugin/parser DLLs, CUDA/cuBLAS/cuDNN closure)
 "@ | Set-Content -LiteralPath (Join-Path $stageDocs.FullName "MODEL-BUNDLE.txt") -Encoding UTF8
 } elseif ($includeModelBundle) {
     $pythonExecutable = Resolve-FirstExistingPath @(
@@ -1389,6 +1540,23 @@ $metadata = [ordered]@{
                 artifact = "bin/models/pose.engine"
             }
         }
+    } elseif ($onTargetBuild) {
+        [ordered]@{
+            included = $false
+            source = "on-target-engine-build"
+            installRoot = "INSTALLFOLDER\bin\engine-builder"
+            engineOutputRoot = "INSTALLFOLDER\bin\models"
+            ppe = [ordered]@{
+                source = $ppeBuilderOnnx.path
+                sourceSha256 = $ppeBuilderOnnxSha256
+                artifact = "bin/engine-builder/ppe.onnx"
+            }
+            pose = [ordered]@{
+                source = $poseBuilderOnnx.path
+                sourceSha256 = $poseBuilderOnnxSha256
+                artifact = "bin/engine-builder/pose.onnx"
+            }
+        }
     } elseif ($includeModelBundle) {
         [ordered]@{
             included = $true
@@ -1448,7 +1616,16 @@ $metadata = [ordered]@{
             reason = $_.Value.reason
         }
     })
+    engineBuilderBinaries = @($builderResolved.GetEnumerator() | ForEach-Object {
+        [ordered]@{
+            name = $_.Key
+            source = $_.Value.source
+            sha256 = $_.Value.sha256
+            reason = $_.Value.reason
+        }
+    })
     imports = @($imports)
+    engineBuilderImports = @($builderImports)
 }
 $metadata | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath (Join-Path $StageDir "build-metadata.json") -Encoding UTF8
 

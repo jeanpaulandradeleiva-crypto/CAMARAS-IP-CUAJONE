@@ -6,7 +6,8 @@ function Get-ForbiddenPayloadFiles([string]$Root) {
     # Development inputs may exist in the repository but must never cross into MSI staging.
     $allowedExecutablePaths = @(
         'bin\NexoAIVisionLauncher.exe',
-        'bin\NexoAIVision.exe'
+        'bin\NexoAIVision.exe',
+        'bin\engine-builder\trtexec.exe'
     )
     $allowedModelPaths = @(
         'bin\models\ppe.engine',
@@ -14,7 +15,9 @@ function Get-ForbiddenPayloadFiles([string]$Root) {
         'bin\models\ppe.onnx',
         'bin\models\ppe.onnx.manifest.json',
         'bin\models\pose.onnx',
-        'bin\models\pose.onnx.manifest.json'
+        'bin\models\pose.onnx.manifest.json',
+        'bin\engine-builder\ppe.onnx',
+        'bin\engine-builder\pose.onnx'
     )
     $patterns = @(
         '(^|[\\/])\.env($|\.)',
