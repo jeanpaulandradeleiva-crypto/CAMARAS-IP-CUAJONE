@@ -37,6 +37,8 @@ param(
     [string]$PoseModelPath = $env:CUAJONE_POSE_MODEL_PATH,
     [string]$PpeEnginePath = $env:CUAJONE_PPE_ENGINE_PATH,
     [string]$PoseEnginePath = $env:CUAJONE_POSE_ENGINE_PATH,
+    [string]$TensorRtSmArchitectures = "75",
+    [switch]$IncludeTensorRtPtxJit,
     [string]$PpeOnnxPath = $env:CUAJONE_PPE_ONNX_PATH,
     [string]$PoseOnnxPath = $env:CUAJONE_POSE_ONNX_PATH,
     [string]$OnnxRuntimeGpuRoot = $env:CUAJONE_ONNXRUNTIME_GPU_ROOT,
@@ -1202,9 +1204,21 @@ Pose engine SHA-256: $poseEngineSha256
 
     # TensorRT 11 delay-loads its runtime, plugin, parser, and per-SM builder-resource
     # DLLs (plus CUDA/cuBLAS/cuDNN), so none of them surface in the static PE import
-    # table. Stage the full TensorRT bin closure explicitly; it stays confined to
-    # bin\engine-builder.
+    # table. Stage the TensorRT bin closure, but trim the per-SM builder-resource DLLs
+    # to the requested architectures (-TensorRtSmArchitectures) to keep the payload
+    # small; the PTX JIT fallback is opt-in (-IncludeTensorRtPtxJit). Everything stays
+    # confined to bin\engine-builder.
+    $requestedSms = @($TensorRtSmArchitectures -split ',' | ForEach-Object { $_.Trim() } | Where-Object { $_ -ne '' })
+    if ($requestedSms.Count -eq 0) {
+        throw "-TensorRtSmArchitectures must list at least one SM architecture (e.g. 75,86)"
+    }
+    $requestedSms = @($requestedSms | Sort-Object -Unique)
     foreach ($tensorRtDll in Get-ChildItem -LiteralPath $tensorRtBin -File -Filter "*.dll" | Sort-Object Name) {
+        if ($tensorRtDll.Name -match '^nvinfer_builder_resource_sm(\d+)_11\.dll$') {
+            if ($Matches[1] -notin $requestedSms) { continue }
+        } elseif ($tensorRtDll.Name -eq 'nvinfer_builder_resource_ptx_11.dll') {
+            if (-not $IncludeTensorRtPtxJit) { continue }
+        }
         Add-StagedEngineBuilderBinary $tensorRtDll.FullName "TensorRT DLL (delay-loaded by trtexec)" "tool"
     }
 
