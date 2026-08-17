@@ -1722,7 +1722,8 @@ $existingCandidates = @(Get-ChildItem -LiteralPath $OutputDir -File | Where-Obje
     $_.Name -like 'NexoAIVision-*-x64*.msi' -or
     $_.Name -like 'NexoAIVision-*-x64*.msi.sha256' -or
     $_.Name -like 'CuajonePPEMonitor-*-x64*.msi' -or
-    $_.Name -like 'CuajonePPEMonitor-*-x64*.msi.sha256'
+    $_.Name -like 'CuajonePPEMonitor-*-x64*.msi.sha256' -or
+    $_.Name -like 'NexoAIVision*.cab'
 })
 if ($existingCandidates.Count -gt 0) {
     $archiveName = "{0}-{1}" -f [DateTime]::UtcNow.ToString("yyyyMMdd-HHmmssfff"), $Version
