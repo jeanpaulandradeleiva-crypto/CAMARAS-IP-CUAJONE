@@ -27,6 +27,11 @@ if ([string]::IsNullOrWhiteSpace($TensorRtBin)) { $TensorRtBin = $PSScriptRoot }
 if ([string]::IsNullOrWhiteSpace($PpeOnnx)) { $PpeOnnx = Join-Path $PSScriptRoot "ppe.onnx" }
 if ([string]::IsNullOrWhiteSpace($PoseOnnx)) { $PoseOnnx = Join-Path $PSScriptRoot "pose.onnx" }
 
+# MSI directory properties (e.g. [INSTALLFOLDER]) carry a trailing backslash, which
+# yields doubled separators after Join-Path. Normalize them for clean trtexec paths.
+$TensorRtBin = $TensorRtBin.TrimEnd('\')
+$OutputDir = $OutputDir.TrimEnd('\')
+
 function Assert-File([string]$Path, [string]$Description) {
     if ([string]::IsNullOrWhiteSpace($Path) -or -not (Test-Path -LiteralPath $Path -PathType Leaf)) {
         throw "$Description was not found: $Path"
@@ -76,31 +81,12 @@ function Invoke-TrtexecBuild(
     $process.StartInfo.Arguments = $arguments -join " "
     $process.StartInfo.UseShellExecute = $false
     $process.StartInfo.CreateNoWindow = $true
-    $process.StartInfo.RedirectStandardOutput = $true
-    $process.StartInfo.RedirectStandardError = $true
-
-    $outputHandler = [System.Diagnostics.DataReceivedEventHandler]{
-        param($sender, $eventArgs)
-        if (-not [string]::IsNullOrEmpty($eventArgs.Data)) {
-            Write-Host ("[trtexec] {0}" -f $eventArgs.Data)
-        }
-    }
-    $errorHandler = [System.Diagnostics.DataReceivedEventHandler]{
-        param($sender, $eventArgs)
-        if (-not [string]::IsNullOrEmpty($eventArgs.Data)) {
-            Write-Host ("[trtexec] {0}" -f $eventArgs.Data)
-        }
-    }
-    $process.add_OutputDataReceived($outputHandler)
-    $process.add_ErrorDataReceived($errorHandler)
 
     Write-Timestamped "Building $Description (timeout: $TimeoutMinutes minutes)"
     Write-Host "  trtexec $($arguments -join ' ')"
     if (-not $process.Start()) {
         throw "Failed to start trtexec for $Description"
     }
-    $process.BeginOutputReadLine()
-    $process.BeginErrorReadLine()
 
     $timeoutMs = $TimeoutMinutes * 60 * 1000
     $completed = $process.WaitForExit($timeoutMs)
