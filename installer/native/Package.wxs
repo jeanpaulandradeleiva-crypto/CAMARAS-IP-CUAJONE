@@ -159,7 +159,9 @@
     <Feature Id="MainFeature" Title="NexoAI Vision" Level="1">
       <ComponentGroupRef Id="PayloadComponents" />
       <ComponentGroupRef Id="RuntimeDataDirectories" />
+      <?if $(var.HasModels)=1 ?>
       <ComponentGroupRef Id="ModelComponents" />
+      <?endif?>
     </Feature>
     <?if $(var.HasCudaPayload)=1 ?>
     <Feature Id="CudaRuntimeFeature" Title="NVIDIA CUDA acceleration" Description="ONNX Runtime CUDA provider, installed only after a compatible NVIDIA CUDA probe succeeds." Level="1">
