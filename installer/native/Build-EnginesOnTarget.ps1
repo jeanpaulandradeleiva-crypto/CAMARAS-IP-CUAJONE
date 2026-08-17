@@ -2,16 +2,13 @@
 
 [CmdletBinding()]
 param(
-    [Parameter(Mandatory = $true)]
     [string]$PpeOnnx,
 
-    [Parameter(Mandatory = $true)]
     [string]$PoseOnnx,
 
     [Parameter(Mandatory = $true)]
     [string]$OutputDir,
 
-    [Parameter(Mandatory = $true)]
     [string]$TensorRtBin,
 
     [ValidateNotNullOrEmpty()]
@@ -23,6 +20,12 @@ param(
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
+
+# Resolve self-relative defaults so the MSI custom action only needs -OutputDir:
+# the script, ONNX models, and trtexec all live together in bin\engine-builder.
+if ([string]::IsNullOrWhiteSpace($TensorRtBin)) { $TensorRtBin = $PSScriptRoot }
+if ([string]::IsNullOrWhiteSpace($PpeOnnx)) { $PpeOnnx = Join-Path $PSScriptRoot "ppe.onnx" }
+if ([string]::IsNullOrWhiteSpace($PoseOnnx)) { $PoseOnnx = Join-Path $PSScriptRoot "pose.onnx" }
 
 function Assert-File([string]$Path, [string]$Description) {
     if ([string]::IsNullOrWhiteSpace($Path) -or -not (Test-Path -LiteralPath $Path -PathType Leaf)) {
