@@ -63,8 +63,8 @@ function Invoke-TrtexecBuild(
     [string]$WorkingDirectory
 ) {
     $arguments = @(
-        "--onnx=$Onnx",
-        "--saveEngine=$Engine",
+        ('--onnx="' + $Onnx + '"'),
+        ('--saveEngine="' + $Engine + '"'),
         "--minShapes=images:1x3x640x640",
         "--optShapes=images:1x3x640x640",
         "--maxShapes=images:1x3x1280x1280"
@@ -73,9 +73,7 @@ function Invoke-TrtexecBuild(
     $process = [System.Diagnostics.Process]::new()
     $process.StartInfo.FileName = $Trtexec
     $process.StartInfo.WorkingDirectory = $WorkingDirectory
-    foreach ($argument in $arguments) {
-        $null = $process.StartInfo.ArgumentList.Add($argument)
-    }
+    $process.StartInfo.Arguments = $arguments -join " "
     $process.StartInfo.UseShellExecute = $false
     $process.StartInfo.CreateNoWindow = $true
     $process.StartInfo.RedirectStandardOutput = $true
@@ -108,7 +106,7 @@ function Invoke-TrtexecBuild(
     $completed = $process.WaitForExit($timeoutMs)
     if (-not $completed) {
         try {
-            $process.Kill($true)
+            $process.Kill()
         } catch {
         }
         throw "$Description timed out after $TimeoutMinutes minutes and was terminated. No engine was produced."
@@ -187,25 +185,17 @@ try {
     $manifestPath = Join-Path $OutputDir "engine-build-manifest.json"
     [ordered]@{
         generated_utc = [DateTime]::UtcNow.ToString("o")
-        gpu = [ordered]@{
-            name = $gpuName
-            compute_capability = $computeCapability
-            sm = $sm
-        }
+        gpu_name = $gpuName
+        gpu_compute_capability = $computeCapability
+        gpu_sm = $sm
         ppe_labels = $PpeLabels
-        engines = [ordered]@{
-            ppe = [ordered]@{
-                file = "ppe.engine"
-                sha256 = $ppeEngineSha256
-            }
-            pose = [ordered]@{
-                file = "pose.engine"
-                sha256 = $poseEngineSha256
-            }
-        }
+        ppe_engine_file = "ppe.engine"
+        ppe_engine_sha256 = $ppeEngineSha256
+        pose_engine_file = "pose.engine"
+        pose_engine_sha256 = $poseEngineSha256
         trtexec = $trtexec
         tensor_rt_bin = $TensorRtBin
-    } | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath $manifestPath -Encoding UTF8
+    } | ConvertTo-Json | Set-Content -LiteralPath $manifestPath -Encoding UTF8
 
     Write-Progress -Id 1 -Activity "Building TensorRT engines" -Status "Complete" -Completed
     Write-Timestamped "Engine build complete: ppe.engine and pose.engine written to $OutputDir"
