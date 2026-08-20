@@ -140,6 +140,7 @@ struct NativeEnginePipeline::Impl {
         } else {
             throw std::invalid_argument("Engine pipeline requires a resolved backend and matching provider");
         }
+        cachePpeClassEnabledMask();
     }
 
     ~Impl() { pose_executor.shutdown(); }
@@ -421,7 +422,7 @@ struct NativeEnginePipeline::Impl {
                     ? std::chrono::steady_clock::time_point{} : std::chrono::steady_clock::now();
                 ppe_detections = decodeDetections(
                     {ppe_output.values, ppe_output.shape},
-                    ppe_names.size(), config.ppe_class_confidences, ppeClassEnabledMask(), config.nms_iou,
+                    ppe_names.size(), config.ppe_class_confidences, ppe_class_enabled, config.nms_iou,
                     ppe_input.transform,
                     {DecodeLimits{}.max_nms_candidates, config.maximum_detections});
                 if (config.telemetry != nullptr) {
@@ -466,7 +467,7 @@ struct NativeEnginePipeline::Impl {
                     ? std::chrono::steady_clock::time_point{} : std::chrono::steady_clock::now();
                 ppe_detections = decodeDetections(
                     {ppe_output.values, ppe_output.shape},
-                    ppe_names.size(), config.ppe_class_confidences, ppeClassEnabledMask(), config.nms_iou,
+                    ppe_names.size(), config.ppe_class_confidences, ppe_class_enabled, config.nms_iou,
                     ppe_input.transform,
                     {DecodeLimits{}.max_nms_candidates, config.maximum_detections});
                 if (config.telemetry != nullptr) {
@@ -530,13 +531,12 @@ struct NativeEnginePipeline::Impl {
         return result;
     }
 
-    std::array<std::uint8_t, kPpeOutputLabels.size()> ppeClassEnabledMask() const {
-        std::array<std::uint8_t, kPpeOutputLabels.size()> enabled{};
-        enabled[1] = 1;
+    void cachePpeClassEnabledMask() {
+        ppe_class_enabled[1] = 1;
         for (const auto& [item, class_id] : ppe_classes.item_ids) {
-            enabled[static_cast<std::size_t>(class_id)] = config.ppe_enabled[static_cast<std::size_t>(item)] ? 1 : 0;
+            ppe_class_enabled[static_cast<std::size_t>(class_id)] =
+                config.ppe_enabled[static_cast<std::size_t>(item)] ? 1 : 0;
         }
-        return enabled;
     }
 
     EnginePipelineConfig config;
@@ -547,6 +547,7 @@ struct NativeEnginePipeline::Impl {
 #endif
     std::map<int, std::string> ppe_names;
     PpeClassMap ppe_classes;
+    std::array<std::uint8_t, kPpeOutputLabels.size()> ppe_class_enabled{};
     std::size_t pose_class_count{};
     std::array<int, 2> keypoint_shape{};
     std::unique_ptr<InferenceSession> ppe_session;

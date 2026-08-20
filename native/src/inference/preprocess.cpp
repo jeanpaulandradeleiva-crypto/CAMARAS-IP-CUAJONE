@@ -47,13 +47,16 @@ PreprocessedFrame LetterboxPreprocessor::process(const cv::Mat& bgr_frame) {
     const std::size_t plane = width * static_cast<std::size_t>(model_height_);
     auto packed = std::make_shared<std::vector<float>>(resource_limits::checkedMultiply(
         3, plane, resource_limits::kMaximumInputElements, "Preprocessed input"));
+    float* red = packed->data();
+    float* green = red + plane;
+    float* blue = green + plane;
     for (int y = 0; y < model_height_; ++y) {
         const auto* row = canvas_.ptr<cv::Vec3b>(y);
         for (int x = 0; x < model_width_; ++x) {
-            const std::size_t offset = static_cast<std::size_t>(y) * width + static_cast<std::size_t>(x);
-            (*packed)[offset] = static_cast<float>(row[x][2]) / 255.0F;
-            (*packed)[plane + offset] = static_cast<float>(row[x][1]) / 255.0F;
-            (*packed)[2 * plane + offset] = static_cast<float>(row[x][0]) / 255.0F;
+            const auto& pixel = row[x];
+            *red++ = static_cast<float>(pixel[2]) / 255.0F;
+            *green++ = static_cast<float>(pixel[1]) / 255.0F;
+            *blue++ = static_cast<float>(pixel[0]) / 255.0F;
         }
     }
 

@@ -219,6 +219,20 @@ void testPreprocessOwnershipParityAndSharingGuard() {
             "Owned preprocessing diverged byte-for-byte from legacy NCHW packing");
     }
 
+    cv::Mat all_intensities(1, 256, CV_8UC3);
+    for (int value = 0; value <= 255; ++value) {
+        all_intensities.at<cv::Vec3b>(0, value) = cv::Vec3b(
+            static_cast<unsigned char>(value),
+            static_cast<unsigned char>(255 - value),
+            static_cast<unsigned char>(value));
+    }
+    LetterboxPreprocessor intensity_preprocessor(256, 1);
+    const PreprocessedFrame intensity_current = intensity_preprocessor.process(all_intensities);
+    const std::vector<float> intensity_legacy = legacyPreprocess(all_intensities, 256, 1);
+    require(std::memcmp(intensity_current.nchw().data(), intensity_legacy.data(),
+                intensity_legacy.size() * sizeof(float)) == 0,
+        "Planar normalization diverged from legacy division for a uint8 intensity");
+
     cv::Mat first(9, 13, CV_8UC3, cv::Scalar(1, 2, 3));
     cv::Mat second(9, 13, CV_8UC3, cv::Scalar(200, 201, 202));
     PreprocessedFrame shared;

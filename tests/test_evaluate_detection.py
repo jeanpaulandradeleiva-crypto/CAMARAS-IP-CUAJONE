@@ -9,9 +9,7 @@ import pytest
 
 from tools import evaluate_detection
 
-
 NAMES = {0: "Person", 1: "Hard_hat", 2: "Vest", 3: "Safety_boots"}
-
 
 def fake_metrics() -> Any:
     return SimpleNamespace(
