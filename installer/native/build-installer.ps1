@@ -339,10 +339,63 @@ function Get-StringSha256([string]$Value) {
 function Get-UltralyticsVersion([string]$PythonPath) {
     Assert-File $PythonPath "Python executable for ONNX export"
     $output = @(& $PythonPath -c "import ultralytics; print(ultralytics.__version__)" 2>&1)
-    if ($LASTEXITCODE -ne 0 -or $output.Count -ne 1 -or [string]::IsNullOrWhiteSpace($output[0])) {
+    $versions = @($output | ForEach-Object { ([string]$_).Trim() } | Where-Object {
+        $_ -match '^\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?$'
+    })
+    if ($LASTEXITCODE -ne 0 -or $versions.Count -ne 1) {
         throw "Could not determine the Ultralytics version for ONNX export`n$($output -join [Environment]::NewLine)"
     }
-    return $output[0].Trim()
+    return $versions[0]
+}
+
+function Test-ExportedOnnxCache(
+    [string]$OnnxPath,
+    [string]$ManifestPath,
+    [ValidateSet("ppe", "pose")]
+    [string]$Role
+) {
+    try {
+        $manifest = Get-Content -LiteralPath $ManifestPath -Raw | ConvertFrom-Json
+        $expectedRootKeys = @(
+            "schema_version", "artifact_type", "role", "model_file", "model_sha256",
+            "model_size_bytes", "external_data", "custom_operators", "input", "output",
+            "provenance", "dynamic_shape"
+        )
+        if ($Role -ceq "ppe") { $expectedRootKeys += @("label_contract", "labels") }
+        $actualRootKeys = @($manifest.PSObject.Properties.Name | Sort-Object)
+        if (($actualRootKeys -join "`n") -cne (@($expectedRootKeys | Sort-Object) -join "`n")) { return $false }
+        if ($manifest.schema_version -ne 2 -or $manifest.artifact_type -cne "onnx" -or $manifest.role -cne $Role `
+            -or $manifest.model_file -cne (Split-Path -Leaf $OnnxPath) `
+            -or $manifest.external_data -ne $false -or $manifest.custom_operators -ne $false) { return $false }
+
+        $onnxItem = Get-Item -LiteralPath $OnnxPath
+        $onnxSha256 = (Get-FileHash -Algorithm SHA256 -LiteralPath $OnnxPath).Hash.ToLowerInvariant()
+        if ($manifest.model_sha256 -cne $onnxSha256 -or $manifest.model_size_bytes -ne $onnxItem.Length) { return $false }
+
+        $expectedTensorKeys = @("name", "element_type", "shape")
+        if ((@($manifest.input.PSObject.Properties.Name | Sort-Object) -join "`n") -cne (@($expectedTensorKeys | Sort-Object) -join "`n") `
+            -or (@($manifest.output.PSObject.Properties.Name | Sort-Object) -join "`n") -cne (@($expectedTensorKeys | Sort-Object) -join "`n") `
+            -or $manifest.input.element_type -cne "float32" -or $manifest.output.element_type -cne "float32" `
+            -or (@($manifest.input.shape) -join ",") -cne "1,3,height,width") { return $false }
+        $expectedOutput = if ($Role -ceq "ppe") { "1,12,predictions" } else { "1,300,57" }
+        if ((@($manifest.output.shape) -join ",") -cne $expectedOutput) { return $false }
+
+        $expectedDynamicKeys = @("batch", "channels", "allowed_image_sizes", "minimum_image_size", "optimum_image_size", "maximum_image_size")
+        if ((@($manifest.dynamic_shape.PSObject.Properties.Name | Sort-Object) -join "`n") -cne (@($expectedDynamicKeys | Sort-Object) -join "`n") `
+            -or $manifest.dynamic_shape.batch -ne 1 -or $manifest.dynamic_shape.channels -ne 3 `
+            -or (@($manifest.dynamic_shape.allowed_image_sizes) -join ",") -cne "640,768,960,1280" `
+            -or $manifest.dynamic_shape.minimum_image_size -ne 640 -or $manifest.dynamic_shape.optimum_image_size -ne 640 `
+            -or $manifest.dynamic_shape.maximum_image_size -ne 1280) { return $false }
+        if ((@($manifest.provenance.PSObject.Properties.Name | Sort-Object) -join "`n") -cne "exporter`nlicense`nsource_uri") { return $false }
+
+        if ($Role -ceq "ppe") {
+            $expectedLabels = "Gloves,Person,Safety_boots,Vest,respirador,tapaorejas,Hard_hat,lentes_protectores"
+            if ($manifest.label_contract -cne "always-all-seven-v2" -or (@($manifest.labels) -join ",") -cne $expectedLabels) { return $false }
+        }
+        return $true
+    } catch {
+        return $false
+    }
 }
 
 function Get-OrExportOnnxModel(
@@ -375,7 +428,8 @@ function Get-OrExportOnnxModel(
             $cacheHit = $receipt.recipe -ceq $recipe `
                 -and $receipt.source_sha256 -ceq $sourceSha256 `
                 -and $receipt.onnx_sha256 -ceq $onnxSha256 `
-                -and $receipt.manifest_sha256 -ceq $manifestSha256
+                -and $receipt.manifest_sha256 -ceq $manifestSha256 `
+                -and (Test-ExportedOnnxCache $onnxPath $manifestPath $Role)
         } catch {
             $cacheHit = $false
         }

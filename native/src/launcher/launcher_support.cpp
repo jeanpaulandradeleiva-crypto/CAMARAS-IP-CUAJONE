@@ -208,9 +208,13 @@ std::wstring formatPpeConfidenceThreshold(float value) {
 
 LaunchPlan buildLaunchPlan(const LauncherSettings& settings, bool preflight) {
     if (settings.source.empty()) {
-        throw std::invalid_argument("RTSP camera URL is required");
+        throw std::invalid_argument("Camera URL or video file is required");
     }
-    validateRtspCameraUrl(settings.source);
+    if (isRtspSource(settings.source)) {
+        validateRtspCameraUrl(settings.source);
+    } else if (!regularFile(settings.source)) {
+        throw std::invalid_argument("Source must be a valid RTSP URL or an existing video file");
+    }
     if (settings.output.empty()) {
         throw std::invalid_argument("Output folder is required");
     }

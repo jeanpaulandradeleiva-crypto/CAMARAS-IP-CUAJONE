@@ -7,6 +7,7 @@
 #include <fstream>
 #include <functional>
 #include <iostream>
+#include <iterator>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -84,13 +85,16 @@ void addOnnxModels(LauncherSettings& settings, const TemporaryTree& tree) {
     tree.makeFile(L"pose.onnx.manifest.json");
 }
 
-void testRtspCameraSourceIsRequired() {
+void testCameraOrVideoSourceIsRequired() {
     TemporaryTree tree;
     auto settings = baseSettings(tree);
     addTensorRtModels(settings, tree);
     settings.source = tree.makeFile(L"source with space.mp4").wstring();
-    requireThrows([&] { buildLaunchPlan(settings, false); },
-        "Launcher accepted a local media file as the camera source");
+    const auto video_plan = buildLaunchPlan(settings, false);
+    const auto source = std::ranges::find(video_plan.arguments, L"--source");
+    require(source != video_plan.arguments.end() && std::next(source) != video_plan.arguments.end()
+            && *std::next(source) == settings.source,
+        "Launcher did not emit the local video file as the --source argument");
     settings.source = L"rtsp://";
     requireThrows([&] { buildLaunchPlan(settings, false); },
         "Launcher accepted an RTSP URL without a host");
@@ -374,7 +378,7 @@ void testSavedCameraProfileNames() {
 
 int main() {
     const std::vector<std::pair<std::string, std::function<void()>>> tests{
-        {"RTSP camera source requirement", testRtspCameraSourceIsRequired},
+        {"camera or video source requirement", testCameraOrVideoSourceIsRequired},
         {"launcher model matrix and arguments", testModelMatrixAndArguments},
         {"PPE-only pose omission", testPpeOnlyOmitsPoseArguments},
         {"operational settings and arguments", testOperationalSettingsAndArguments},

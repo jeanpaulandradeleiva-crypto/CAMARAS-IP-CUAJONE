@@ -64,6 +64,7 @@ enum ControlId : int {
     OpenLogButton,
     OutputEdit,
     OutputBrowse,
+    SourceBrowse,
     AnalyticsCombo,
     ComputeCombo,
     ImageSizeCombo,
@@ -628,10 +629,11 @@ void createControls(LauncherWindow& state) {
     addTooltip(state, state.theme_button, L"Light or dark theme / Tema claro u oscuro");
 
     addLocalizedText(
-        state, createLabel(state, L"RTSP camera", label_x, row_y, 120),
-        L"RTSP camera", L"Cámara RTSP");
-    state.source = createEdit(state, SourceEdit, edit_x, row_y, 724);
+        state, createLabel(state, L"Camera or video file", label_x, row_y, 120),
+        L"Camera or video file", L"Cámara o archivo de video");
+    state.source = createEdit(state, SourceEdit, edit_x, row_y, edit_width);
     SetWindowTextW(state.source, L"rtsp://");
+    addLocalizedText(state, createBrowseButton(state, SourceBrowse, row_y), L"Browse...", L"Explorar...");
 
     addLocalizedText(
         state, createLabel(state, L"Camera ID", label_x, row_y + 36, 120),
@@ -941,6 +943,38 @@ std::filesystem::path pickFolder(HWND owner) {
     DWORD options{};
     dialog->GetOptions(&options);
     dialog->SetOptions(options | FOS_FORCEFILESYSTEM | FOS_PICKFOLDERS | FOS_PATHMUSTEXIST);
+    result = dialog->Show(owner);
+    std::filesystem::path path;
+    if (SUCCEEDED(result)) {
+        IShellItem* item = nullptr;
+        if (SUCCEEDED(dialog->GetResult(&item))) {
+            PWSTR raw_path = nullptr;
+            if (SUCCEEDED(item->GetDisplayName(SIGDN_FILESYSPATH, &raw_path))) {
+                path = raw_path;
+                CoTaskMemFree(raw_path);
+            }
+            item->Release();
+        }
+    }
+    dialog->Release();
+    return path;
+}
+
+std::filesystem::path pickVideoFile(HWND owner) {
+    IFileOpenDialog* dialog = nullptr;
+    HRESULT result = CoCreateInstance(
+        CLSID_FileOpenDialog, nullptr, CLSCTX_INPROC_SERVER,
+        IID_PPV_ARGS(&dialog));
+    if (FAILED(result)) return {};
+    DWORD options{};
+    dialog->GetOptions(&options);
+    dialog->SetOptions(options | FOS_FORCEFILESYSTEM | FOS_PATHMUSTEXIST | FOS_FILEMUSTEXIST);
+    const COMDLG_FILTERSPEC filters[] = {
+        {L"Video files", L"*.mp4;*.avi;*.mov;*.mkv"},
+        {L"All files", L"*.*"},
+    };
+    dialog->SetFileTypes(static_cast<UINT>(std::size(filters)), filters);
+    dialog->SetFileTypeIndex(1);
     result = dialog->Show(owner);
     std::filesystem::path path;
     if (SUCCEEDED(result)) {
@@ -1301,7 +1335,10 @@ LRESULT CALLBACK thresholdWheelProcedure(
 }
 
 void browseInto(LauncherWindow& state, int id) {
-    if (id == OutputBrowse) {
+    if (id == SourceBrowse) {
+        const auto path = pickVideoFile(state.window);
+        if (!path.empty()) setText(state.source, path);
+    } else if (id == OutputBrowse) {
         const auto path = pickFolder(state.window);
         if (!path.empty()) setText(state.output, path);
     }
@@ -1395,7 +1432,7 @@ LRESULT CALLBACK windowProcedure(HWND window, UINT message, WPARAM wparam, LPARA
                     persistPreferences(*state);
                 }
                 else if (id == LoadEnvButton) loadEnv(*state);
-                else if (id == OutputBrowse) {
+                else if (id == SourceBrowse || id == OutputBrowse) {
                     browseInto(*state, id);
                 }
                 else if (id == ShowCheck && HIWORD(wparam) == BN_CLICKED) {

@@ -225,6 +225,24 @@ std::string dynamicManifest(std::string_view role = "ppe", std::size_t schema_ve
         + R"(,"dynamic_shape":{"batch":1,"channels":3,"allowed_image_sizes":[640,768,960,1280],"minimum_image_size":640,"optimum_image_size":640,"maximum_image_size":1280}})";
 }
 
+void testLegacyPpeManifestRequirements() {
+    const std::string labels = R"("label_contract":"always-all-seven-v2","labels":["Gloves","Person","Safety_boots","Vest","respirador","tapaorejas","Hard_hat","lentes_protectores"],)";
+    std::string without_labels = manifest(std::filesystem::path("ppe.onnx"), identityModel());
+    const auto labels_position = without_labels.find(labels);
+    require(labels_position != std::string::npos, "Synthetic PPE label contract was not found");
+    without_labels.erase(labels_position, labels.size());
+    requireThrows([&] { static_cast<void>(parseOnnxModelManifest(without_labels)); },
+        "missing or unsupported fields", "Schema-v1 PPE manifest without labels was accepted");
+
+    std::string unsupported_output = dynamicManifest();
+    const std::string approved_output = R"([1,12,"predictions"])";
+    const auto output_position = unsupported_output.find(approved_output);
+    require(output_position != std::string::npos, "Dynamic PPE output contract was not found");
+    unsupported_output.replace(output_position, approved_output.size(), "[1,10,8400]");
+    requireThrows([&] { static_cast<void>(parseOnnxModelManifest(unsupported_output)); },
+        "approved bounded role schema", "PPE [1,10,8400] contract was accepted with labels");
+}
+
 void testDynamicManifestContract() {
     const OnnxModelManifest ppe = parseOnnxModelManifest(dynamicManifest());
     require(ppe.dynamicShapes() && ppe.allowed_image_sizes == std::vector<int>({640, 768, 960, 1280})
@@ -266,6 +284,7 @@ int main() {
         {"single intra-op thread option", testSingleIntraOpThreadOption},
         {"manifest and artifact boundary", testManifestAndArtifactBoundary},
         {"PPE manifest semantic order", testPpeManifestBindsSemanticOrder},
+        {"legacy PPE manifest requirements", testLegacyPpeManifestRequirements},
         {"external data and custom operators", testExternalDataAndCustomOperatorsRejected},
         {"manifest resource limits", testManifestResourceLimits},
         {"bounded dynamic manifest contract", testDynamicManifestContract},
