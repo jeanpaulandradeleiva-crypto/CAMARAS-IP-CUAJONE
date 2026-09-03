@@ -12,12 +12,14 @@ $packageSource = Get-Content -LiteralPath (Join-Path $PSScriptRoot "Package.wxs"
 
 $requiredPatterns = [ordered]@{
     "detect-only branch" = 'if task == "detect":'
-    "YOLO26 raw head" = 'head.end2end = False'
-    "raw detect export" = 'model.export(format="onnx", imgsz=640, dynamic=True, nms=False, end2end=False)'
+    "YOLO26 end-to-end head" = 'head.end2end = True'
+    "end-to-end detect export" = 'model.export(format="onnx", imgsz=640, dynamic=True, nms=False, end2end=True)'
     "pose-compatible export" = 'model.export(format="onnx", imgsz=640, dynamic=True, nms=False)'
-    "versioned cache recipe" = 'recipe_version=4'
+    "versioned cache recipe" = 'recipe_version=5'
     "cache export mode" = 'export_mode=$exportMode'
-    "raw cache identity" = 'raw-detect-dynamic-end2end-false-v2'
+    "end-to-end cache identity" = 'end2end-detect-dynamic-v3'
+    "end-to-end manifest schema" = '"inference_mode": "end2end",'
+    "manifest v3 source checkpoint" = '"source_checkpoint": {'
     "bounded image sizes" = '"allowed_image_sizes": [640, 768, 960, 1280]'
     "all-size inference validation" = 'for image_size in (640, 768, 960, 1280):'
     "normalized cache receipt hash" = '$exported.onnxSha256 = $manifest.modelSha256'

@@ -9,6 +9,9 @@ param(
     [Parameter(Mandatory = $true)]
     [string]$OutputDir,
 
+    [ValidateSet("fp32", "fp16")]
+    [string]$Precision = "fp32",
+
     [string]$TensorRtBin,
 
     [ValidateNotNullOrEmpty()]
@@ -74,6 +77,9 @@ function Invoke-TrtexecBuild(
         "--optShapes=images:1x3x640x640",
         "--maxShapes=images:1x3x1280x1280"
     )
+    # TensorRT 10+ builds strongly typed networks: precision follows the ONNX
+    # graph, so FP16 requires an FP16 ONNX input; there is no builder flag for it.
+    # $Precision only records the declared precision in engine-build-manifest.json.
 
     $process = [System.Diagnostics.Process]::new()
     $process.StartInfo.FileName = $Trtexec
@@ -143,6 +149,7 @@ try {
     }
 
     Write-Timestamped "Resolved GPU: $gpuName (compute capability $computeCapability, SM $sm)"
+    Write-Timestamped "Engine precision: $Precision"
     Write-Timestamped "PPE labels: $PpeLabels"
 
     $ppeEnginePath = Join-Path $OutputDir "ppe.engine"
@@ -171,6 +178,7 @@ try {
     $manifestPath = Join-Path $OutputDir "engine-build-manifest.json"
     [ordered]@{
         generated_utc = [DateTime]::UtcNow.ToString("o")
+        precision = $Precision
         gpu_name = $gpuName
         gpu_compute_capability = $computeCapability
         gpu_sm = $sm

@@ -9,6 +9,7 @@
 
 #include <array>
 #include <chrono>
+#include <cstdint>
 #include <filesystem>
 #include <map>
 #include <optional>
@@ -32,6 +33,7 @@ struct RuntimeConfig {
     bool capture_open_timeout_explicit{};
     bool capture_read_timeout_explicit{};
     bool allow_nonperson_pose_class{};
+    bool pose_requires_person{};
     ComputeBackend compute_backend{ComputeBackend::Auto};
     AnalyticsMode analytics_mode{AnalyticsMode::PpeFall};
     std::string source;
@@ -61,6 +63,7 @@ struct RuntimeConfig {
     std::size_t tracker_max_tracks{128};
     int tracker_frame_rate{30};
     double target_fps{};
+    double telemetry_interval_seconds{};
     std::size_t benchmark_warmup{10};
     std::size_t benchmark_iterations{100};
     std::size_t evidence_writer_queue_capacity{};
@@ -73,11 +76,17 @@ struct RuntimeConfig {
     FallConfig fall;
 };
 
+struct RtspAuthority {
+    std::string host;
+    std::uint16_t port{554};
+};
+
 RuntimeConfig parseCommandLine(int argc, char** argv);
 void printHelp(std::ostream& output);
 std::string redactSource(const std::string& source);
 std::string defaultSourceLabel(const std::string& source);
 bool isRtspSource(std::string_view source) noexcept;
+RtspAuthority parseRtspAuthority(std::string_view source);
 void validateRtspSource(const std::string& source);
 
 }  // namespace cuajone

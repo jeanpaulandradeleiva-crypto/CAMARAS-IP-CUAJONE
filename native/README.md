@@ -336,6 +336,26 @@ normalmente queda acotada por los timeouts anteriores, pero el fallback simple
 puede conservar el límite propio del backend. Un reinicio limpia frame y secuencia
 antes de crear el nuevo reader, evitando publicar datos obsoletos.
 
+Before every RTSP or RTSPS `capture.open` attempt, the runtime writes one
+credential-safe progress line and runs a DNS/TCP reachability preflight. The
+preflight has a fixed, independent 2-second deadline on Windows; it does not reuse
+the 20-second default `--capture-open-timeout-ms`. Progress and failures log only
+the host and port, never the URL, userinfo, path, or query. A preflight result of
+`dns_failure`, `no_route`, `tcp_timeout`, or `connection_refused` skips
+`capture.open` and enters the existing reconnect backoff. `rtsp_handshake_failed`
+means TCP connectivity succeeded, so the runtime continues to `capture.open`; if
+that open fails, it is reported immediately as `rtsp_handshake_failed` without a
+second probe. `unknown` also continues to `capture.open` and remains the fallback
+when connectivity could not be established. The stable `reason` categories are
+`dns_failure`, `no_route`, `tcp_timeout`, `connection_refused`,
+`rtsp_handshake_failed`, and `unknown`. `no_route` and `tcp_timeout` mean the
+endpoint is unreachable from the current network path and may be affected by
+routing, VLAN, firewall, or host availability; they do not assert that VLAN
+isolation is the cause. Literal IPv4 and bracketed literal IPv6 authorities use
+the direct-address path without hostname DNS resolution, then use the same bounded
+non-blocking TCP classification. `dns_failure` is limited to hostname-resolution
+failures; other resolver or API errors remain `unknown`.
+
 ## Compatibilidad de engines
 
 El loader admite un plan TensorRT raw o un prefijo Ultralytics de 4 bytes
@@ -427,7 +447,12 @@ Cuando se habilita `--performance-report`, `stages_ms.pipeline_total` agrega el
 tiempo de pared del pipeline desde el inicio de `processFrame` hasta terminar la
 analítica. No es la suma de las ramas PPE y pose: permite comparar directamente
 percentiles p50/p95/p99 seriales y del solapamiento híbrido, y excluye render y
-evidencia.
+evidencia. Cada etapa conserva además `max_ms` junto a p50/p95/p99 sobre la misma
+ventana rodante de 256 muestras. `--telemetry-interval-sec <seconds>` (default `0`)
+mantiene el reporte exit-only; con un valor mayor que cero y `--performance-report`
+escribe además el mismo `jsonReport` sin resetear contadores a stderr en cada
+intervalo durante el monitoreo. Los snapshots nunca registran por frame y no
+cambian overlay, vsync, inferencia, tracking, analítica ni evidencia.
 
 Cuando `ppe-fall` comparte preprocesamiento, `ppe_preprocess` conserva una muestra
 por frame y `pose_preprocess` queda en cero; no se fabrican dos duraciones para una

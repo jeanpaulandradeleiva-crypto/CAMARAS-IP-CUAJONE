@@ -16,9 +16,10 @@
 namespace cuajone {
 namespace {
 
-constexpr std::array<std::string_view, 10> kStageNames{
+constexpr std::array<std::string_view, 13> kStageNames{
     "frame_age", "pipeline_total", "ppe_preprocess", "ppe_inference", "ppe_decode",
     "pose_preprocess", "pose_inference", "pose_decode", "analytics", "render",
+    "process_mutex_wait", "capture_wait", "evidence_append",
 };
 
 constexpr std::size_t stageIndex(PerformanceStage stage) {
@@ -47,10 +48,36 @@ void appendStats(std::ostringstream& output, const RollingSamples& samples) {
         const std::size_t index = static_cast<std::size_t>(std::ceil(quantile * sorted.size())) - 1;
         return sorted[index];
     };
+    const double maximum = sorted.empty() ? 0.0 : sorted.back();
     output << "{\"samples\":" << samples.size
            << ",\"p50_ms\":" << percentile(0.50)
            << ",\"p95_ms\":" << percentile(0.95)
-           << ",\"p99_ms\":" << percentile(0.99) << '}';
+           << ",\"p99_ms\":" << percentile(0.99)
+           << ",\"max_ms\":" << maximum << '}';
+}
+
+void appendJsonString(std::ostringstream& output, std::string_view value) {
+    output << '"';
+    for (const unsigned char character : value) {
+        switch (character) {
+        case '"': output << "\\\""; break;
+        case '\\': output << "\\\\"; break;
+        case '\n': output << "\\n"; break;
+        case '\r': output << "\\r"; break;
+        case '\t': output << "\\t"; break;
+        default:
+            if (character < 0x20U) {
+                std::ostringstream code;
+                code << "\\u" << std::hex << std::setw(4) << std::setfill('0')
+                     << static_cast<int>(character);
+                output << code.str();
+            } else {
+                output << static_cast<char>(character);
+            }
+            break;
+        }
+    }
+    output << '"';
 }
 
 }  // namespace
@@ -64,11 +91,13 @@ struct PerformanceTelemetry::Impl {
     std::uint64_t captured_frames{};
     std::uint64_t processed_frames{};
     std::uint64_t latest_slot_sequence_gap_drops{};
+    std::uint64_t capture_wait_timeouts{};
     std::uint64_t target_fps_skipped_frames{};
     std::uint64_t evidence_append_attempted{};
     std::uint64_t evidence_append_written{};
     std::uint64_t evidence_append_failed{};
     std::optional<EvidenceQueueTelemetry> evidence_queue;
+    std::optional<ExecutionPathInfo> execution_path;
     std::optional<BenchmarkMetadata> benchmark;
 };
 
@@ -108,6 +137,11 @@ void PerformanceTelemetry::skippedForTargetFps() {
     ++impl_->target_fps_skipped_frames;
 }
 
+void PerformanceTelemetry::recordCaptureWaitTimeout() {
+    std::scoped_lock lock(impl_->mutex);
+    ++impl_->capture_wait_timeouts;
+}
+
 void PerformanceTelemetry::evidenceAppendAttempted() {
     std::scoped_lock lock(impl_->mutex);
     ++impl_->evidence_append_attempted;
@@ -128,12 +162,18 @@ void PerformanceTelemetry::setEvidenceQueueTelemetry(EvidenceQueueTelemetry tele
     impl_->evidence_queue = std::move(telemetry);
 }
 
+void PerformanceTelemetry::setExecutionPath(ExecutionPathInfo info) {
+    std::scoped_lock lock(impl_->mutex);
+    impl_->execution_path = std::move(info);
+}
+
 void PerformanceTelemetry::reset() {
     std::scoped_lock lock(impl_->mutex);
     for (auto& stage : impl_->stages) stage.reset();
     impl_->captured_frames = 0;
     impl_->processed_frames = 0;
     impl_->latest_slot_sequence_gap_drops = 0;
+    impl_->capture_wait_timeouts = 0;
     impl_->target_fps_skipped_frames = 0;
     impl_->evidence_append_attempted = 0;
     impl_->evidence_append_written = 0;
@@ -153,6 +193,7 @@ std::string PerformanceTelemetry::jsonReport() const {
            << "\",\"counts\":{\"captured_frames\":" << impl_->captured_frames
            << ",\"processed_frames\":" << impl_->processed_frames
            << ",\"latest_slot_sequence_gap_drops\":" << impl_->latest_slot_sequence_gap_drops
+           << ",\"capture_wait_timeouts\":" << impl_->capture_wait_timeouts
            << ",\"target_fps_skipped_frames\":" << impl_->target_fps_skipped_frames
            << "},\"stages_ms\":{";
     for (std::size_t index = 0; index < kStageNames.size(); ++index) {
@@ -189,6 +230,23 @@ std::string PerformanceTelemetry::jsonReport() const {
                << ",\"retained_sample_capacity\":" << kSampleCapacity
                << ",\"retained_sample_count\":"
                << std::min(benchmark.measured_iterations, kSampleCapacity) << '}';
+    }
+    if (impl_->execution_path) {
+        const auto& path = *impl_->execution_path;
+        output << ",\"execution_path\":{\"hybrid_pose_executor\":"
+               << (path.hybrid_pose_executor ? "true" : "false")
+               << ",\"tensorrt_gpu_overlap\":" << (path.tensorrt_gpu_overlap ? "true" : "false")
+               << ",\"shared_preprocessing\":" << (path.shared_preprocessing ? "true" : "false")
+               << ",\"backend\":";
+        appendJsonString(output, path.backend);
+        output << ",\"provider\":";
+        appendJsonString(output, path.provider);
+        output << ",\"device_name\":";
+        appendJsonString(output, path.device_name);
+        output << ",\"device_index\":" << path.device_index
+               << ",\"device_count\":" << path.device_count
+               << ",\"compute_sm_major\":" << path.compute_sm_major
+               << ",\"compute_sm_minor\":" << path.compute_sm_minor << '}';
     }
     output << '}';
     return output.str();

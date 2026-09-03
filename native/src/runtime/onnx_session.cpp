@@ -72,7 +72,9 @@ struct OnnxSession::Impl {
             input_shape = {1, 3, concrete_size, concrete_size};
             input_height = concrete_size;
             input_width = concrete_size;
-            if (expected_role == ModelRole::Ppe) {
+            if (expected_role == ModelRole::Ppe && contract.output.shape[2] < 0) {
+                // Raw contract: the predictions axis is dynamic and follows imgsz.
+                // End-to-end contracts declare a static [1,300,6] output instead.
                 output_shape = {
                     1, 12,
                     static_cast<std::int64_t>(yoloPredictionCount(concrete_size)),

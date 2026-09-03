@@ -1,7 +1,16 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
 #include "cuajone/capture.hpp"
+#include "cuajone/cli.hpp"
 #include "cuajone/performance_telemetry.hpp"
+
+#ifdef _WIN32
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <winsock2.h>
+#include <ws2tcpip.h>
+#endif
 
 #include <opencv2/imgcodecs.hpp>
 #include <opencv2/videoio.hpp>
@@ -11,12 +20,302 @@
 #include <cmath>
 #include <cstdlib>
 #include <filesystem>
+#include <iostream>
 #include <limits>
+#include <optional>
 #include <stdexcept>
 #include <thread>
 #include <vector>
 
 namespace cuajone {
+namespace {
+
+bool isLiteralIpv4(std::string_view host) noexcept {
+    std::size_t component_start{};
+    for (std::size_t component_index = 0; component_index < 4; ++component_index) {
+        const std::size_t component_end = host.find('.', component_start);
+        if (component_index < 3 && component_end == std::string_view::npos) return false;
+        const std::string_view component = host.substr(
+            component_start,
+            component_end == std::string_view::npos
+                ? std::string_view::npos : component_end - component_start);
+        if (component.empty() || component.size() > 3) return false;
+        unsigned int value{};
+        for (const char character : component) {
+            if (character < '0' || character > '9') return false;
+            value = value * 10U + static_cast<unsigned int>(character - '0');
+        }
+        if (value > 255U) return false;
+        if (component_index == 3) return component_end == std::string_view::npos;
+        component_start = component_end + 1;
+    }
+    return false;
+}
+
+bool countIpv6Groups(std::string_view groups, std::size_t& count) noexcept {
+    while (!groups.empty()) {
+        const std::size_t separator = groups.find(':');
+        const std::string_view group = groups.substr(0, separator);
+        if (group.empty()) return false;
+        if (group.find('.') != std::string_view::npos) {
+            if (separator != std::string_view::npos || !isLiteralIpv4(group)) return false;
+            count += 2;
+            return true;
+        }
+        if (group.size() > 4) return false;
+        for (const char character : group) {
+            if (std::isxdigit(static_cast<unsigned char>(character)) == 0) return false;
+        }
+        ++count;
+        if (separator == std::string_view::npos) return true;
+        groups.remove_prefix(separator + 1);
+    }
+    return true;
+}
+
+bool isLiteralIpv6(std::string_view host) noexcept {
+    if (host.empty() || host.find(':') == std::string_view::npos || host.find(":::") != std::string_view::npos) {
+        return false;
+    }
+    const std::size_t compression = host.find("::");
+    if (compression == std::string_view::npos) {
+        std::size_t count{};
+        return countIpv6Groups(host, count) && count == 8;
+    }
+    if (host.find("::", compression + 2) != std::string_view::npos) return false;
+    std::size_t count{};
+    return countIpv6Groups(host.substr(0, compression), count)
+        && countIpv6Groups(host.substr(compression + 2), count) && count < 8;
+}
+
+#ifdef _WIN32
+class WinsockSession {
+public:
+    WinsockSession() : started_(WSAStartup(MAKEWORD(2, 2), &data_) == 0) {}
+    ~WinsockSession() {
+        if (started_) WSACleanup();
+    }
+
+    [[nodiscard]] bool started() const noexcept { return started_; }
+
+private:
+    WSADATA data_{};
+    bool started_{};
+};
+
+int reasonPriority(RtspReachabilityReason reason) {
+    switch (reason) {
+        case RtspReachabilityReason::NoRoute: return 4;
+        case RtspReachabilityReason::TcpTimeout: return 3;
+        case RtspReachabilityReason::ConnectionRefused: return 2;
+        case RtspReachabilityReason::Unknown: return 1;
+        default: return 0;
+    }
+}
+
+void retainMoreSpecificReason(
+    std::optional<RtspReachabilityReason>& retained,
+    RtspReachabilityReason candidate) {
+    if (!retained || reasonPriority(candidate) > reasonPriority(*retained)) retained = candidate;
+}
+#endif
+
+RtspReachabilityReason probeRtspReachability(
+    const RtspAuthority& authority,
+    std::chrono::milliseconds timeout) {
+#ifdef _WIN32
+    if (timeout.count() <= 0) return RtspReachabilityReason::Unknown;
+
+    WinsockSession winsock;
+    if (!winsock.started()) return RtspReachabilityReason::Unknown;
+
+    const auto deadline = std::chrono::steady_clock::now() + timeout;
+    ADDRINFOEXA hints{};
+    hints.ai_family = AF_UNSPEC;
+    hints.ai_socktype = SOCK_STREAM;
+    const RtspAddressPath address_path = classifyRtspAddressPath(authority.host);
+    hints.ai_flags = AI_NUMERICSERV;
+    if (address_path == RtspAddressPath::DirectAddress) hints.ai_flags |= AI_NUMERICHOST;
+    PADDRINFOEXA addresses{};
+    const std::string service = std::to_string(authority.port);
+    timeval resolution_timeout{
+        static_cast<long>(timeout.count() / 1000),
+        static_cast<long>((timeout.count() % 1000) * 1000),
+    };
+    const int resolution_error = GetAddrInfoExA(authority.host.c_str(), service.c_str(), NS_ALL, nullptr,
+        &hints, &addresses, &resolution_timeout, nullptr, nullptr, nullptr);
+    if (resolution_error != 0) {
+        return classifyRtspResolutionFailure(address_path, resolution_error);
+    }
+
+    std::optional<RtspReachabilityReason> failure;
+    for (auto* address = addresses; address != nullptr; address = address->ai_next) {
+        const SOCKET socket_handle = socket(
+            address->ai_family, address->ai_socktype, address->ai_protocol);
+        if (socket_handle == INVALID_SOCKET) {
+            retainMoreSpecificReason(failure, classifyRtspConnectError(WSAGetLastError()));
+            continue;
+        }
+        const auto close_socket = [&] { closesocket(socket_handle); };
+        u_long non_blocking = 1;
+        if (ioctlsocket(socket_handle, FIONBIO, &non_blocking) != 0) {
+            retainMoreSpecificReason(failure, classifyRtspConnectError(WSAGetLastError()));
+            close_socket();
+            continue;
+        }
+        if (connect(socket_handle, address->ai_addr, static_cast<int>(address->ai_addrlen)) == 0) {
+            close_socket();
+            FreeAddrInfoExA(addresses);
+            return RtspReachabilityReason::RtspHandshakeFailed;
+        }
+
+        const int connect_error = WSAGetLastError();
+        if (connect_error != WSAEWOULDBLOCK && connect_error != WSAEINPROGRESS) {
+            retainMoreSpecificReason(failure, classifyRtspConnectError(connect_error));
+            close_socket();
+            continue;
+        }
+        const auto now = std::chrono::steady_clock::now();
+        if (now >= deadline) {
+            retainMoreSpecificReason(failure, RtspReachabilityReason::TcpTimeout);
+            close_socket();
+            continue;
+        }
+        const auto remaining = std::chrono::duration_cast<std::chrono::milliseconds>(deadline - now);
+        timeval connect_timeout{
+            static_cast<long>(remaining.count() / 1000),
+            static_cast<long>((remaining.count() % 1000) * 1000),
+        };
+        fd_set writable;
+        fd_set errors;
+        FD_ZERO(&writable);
+        FD_ZERO(&errors);
+        FD_SET(socket_handle, &writable);
+        FD_SET(socket_handle, &errors);
+        const int selected = select(0, nullptr, &writable, &errors, &connect_timeout);
+        if (selected == 0) {
+            retainMoreSpecificReason(failure, RtspReachabilityReason::TcpTimeout);
+            close_socket();
+            continue;
+        }
+        if (selected == SOCKET_ERROR) {
+            retainMoreSpecificReason(failure, classifyRtspConnectError(WSAGetLastError()));
+            close_socket();
+            continue;
+        }
+        int socket_error{};
+        int socket_error_size = sizeof(socket_error);
+        if (getsockopt(socket_handle, SOL_SOCKET, SO_ERROR,
+                reinterpret_cast<char*>(&socket_error), &socket_error_size) != 0) {
+            retainMoreSpecificReason(failure, classifyRtspConnectError(WSAGetLastError()));
+        } else if (socket_error == 0) {
+            close_socket();
+            FreeAddrInfoExA(addresses);
+            return RtspReachabilityReason::RtspHandshakeFailed;
+        } else {
+            retainMoreSpecificReason(failure, classifyRtspConnectError(socket_error));
+        }
+        close_socket();
+    }
+    FreeAddrInfoExA(addresses);
+    return failure.value_or(RtspReachabilityReason::Unknown);
+#else
+    (void)authority;
+    (void)timeout;
+    return RtspReachabilityReason::Unknown;
+#endif
+}
+
+std::string safeEndpoint(std::string_view host, std::uint16_t port) {
+    if (host.empty()) return "unavailable";
+    const bool is_ipv6 = host.find(':') != std::string_view::npos;
+    return (is_ipv6 ? "[" : "") + std::string(host) + (is_ipv6 ? "]" : "")
+        + ":" + std::to_string(port);
+}
+
+}  // namespace
+
+RtspReachabilityReason classifyRtspConnectError(int native_error) noexcept {
+#ifdef _WIN32
+    if (native_error == WSAENETUNREACH || native_error == WSAEHOSTUNREACH
+        || native_error == WSAEHOSTDOWN) {
+        return RtspReachabilityReason::NoRoute;
+    }
+    if (native_error == WSAETIMEDOUT) return RtspReachabilityReason::TcpTimeout;
+    if (native_error == WSAECONNREFUSED) return RtspReachabilityReason::ConnectionRefused;
+#else
+    (void)native_error;
+#endif
+    return RtspReachabilityReason::Unknown;
+}
+
+RtspReachabilityReason classifyRtspResolutionFailure(
+    RtspAddressPath address_path,
+    int native_error) noexcept {
+    if (address_path == RtspAddressPath::DirectAddress) return RtspReachabilityReason::Unknown;
+#ifdef _WIN32
+    if (native_error == EAI_AGAIN || native_error == EAI_FAIL || native_error == EAI_NONAME
+        || native_error == EAI_NODATA) {
+        return RtspReachabilityReason::DnsFailure;
+    }
+#else
+    (void)native_error;
+#endif
+    return RtspReachabilityReason::Unknown;
+}
+
+RtspAddressPath classifyRtspAddressPath(std::string_view host) noexcept {
+    return isLiteralIpv4(host) || isLiteralIpv6(host)
+        ? RtspAddressPath::DirectAddress
+        : RtspAddressPath::HostnameResolution;
+}
+
+bool shouldSkipRtspOpen(RtspReachabilityReason reason) noexcept {
+    switch (reason) {
+        case RtspReachabilityReason::DnsFailure:
+        case RtspReachabilityReason::NoRoute:
+        case RtspReachabilityReason::TcpTimeout:
+        case RtspReachabilityReason::ConnectionRefused:
+            return true;
+        case RtspReachabilityReason::RtspHandshakeFailed:
+        case RtspReachabilityReason::Unknown:
+            return false;
+    }
+    return false;
+}
+
+std::string formatRtspOpenProgress(std::string_view host, std::uint16_t port) {
+    return "RTSP open [endpoint=" + safeEndpoint(host, port)
+        + "]: checking reachability before opening RTSP.";
+}
+
+std::string formatRtspOpenFailure(
+    std::string_view host,
+    std::uint16_t port,
+    RtspReachabilityReason reason) {
+    const std::string prefix = "RTSP open failed [reason=";
+    const std::string endpoint = "] endpoint=" + safeEndpoint(host, port) + ": ";
+    switch (reason) {
+        case RtspReachabilityReason::DnsFailure:
+            return prefix + "dns_failure" + endpoint + "DNS resolution failed.";
+        case RtspReachabilityReason::NoRoute:
+            return prefix + "no_route" + endpoint
+                + "No route to the endpoint; it is unreachable from the current network path and may be affected by routing, VLAN, firewall, or host availability.";
+        case RtspReachabilityReason::TcpTimeout:
+            return prefix + "tcp_timeout" + endpoint
+                + "TCP connection timed out; the endpoint is unreachable from the current network path and may be affected by routing, VLAN, firewall, or host availability.";
+        case RtspReachabilityReason::ConnectionRefused:
+            return prefix + "connection_refused" + endpoint + "TCP connection was refused.";
+        case RtspReachabilityReason::RtspHandshakeFailed:
+            return prefix + "rtsp_handshake_failed" + endpoint
+                + "TCP connectivity succeeded, but OpenCV/FFmpeg could not complete the RTSP handshake.";
+        case RtspReachabilityReason::Unknown:
+            return prefix + "unknown" + endpoint
+                + "OpenCV could not open the source; reachability could not be classified.";
+    }
+    return prefix + "unknown" + endpoint
+        + "OpenCV could not open the source; reachability could not be classified.";
+}
 
 LatestFrameCapture::LatestFrameCapture(
     std::string source,
@@ -88,10 +387,19 @@ bool LatestFrameCapture::waitForLatest(
     std::chrono::steady_clock::time_point& published_at,
     std::chrono::milliseconds timeout) {
     if (timeout.count() < 0) throw std::invalid_argument("Frame wait timeout must be non-negative");
+    const auto wait_started = telemetry_ == nullptr
+        ? std::chrono::steady_clock::time_point{} : std::chrono::steady_clock::now();
     std::unique_lock lock(mutex_);
     condition_.wait_for(lock, timeout, [&] {
         return sequence_ != previous_sequence || ended_;
     });
+    if (telemetry_ != nullptr) {
+        telemetry_->addSample(
+            PerformanceStage::CaptureWait, std::chrono::steady_clock::now() - wait_started);
+        // A wait timeout only means no newer frame arrived in time; it is not a
+        // frame drop and must stay distinct from latest_slot_sequence_gap_drops.
+        if (sequence_ == previous_sequence && !ended_) telemetry_->recordCaptureWaitTimeout();
+    }
     if (sequence_ == previous_sequence) return false;
     frame = latest_;
     sequence = sequence_;
@@ -167,26 +475,61 @@ void LatestFrameCapture::readerLoop(std::stop_token stop_token) {
     auto delay = reconnect_delay_;
     while (!stop_token.stop_requested()) {
         cv::VideoCapture capture;
-        std::vector<int> parameters;
-        if (open_timeout_.count() > 0) {
-            parameters.insert(parameters.end(), {
-                cv::CAP_PROP_OPEN_TIMEOUT_MSEC, static_cast<int>(open_timeout_.count())});
+        const bool rtsp = isRtsp();
+        std::string host;
+        std::uint16_t port{};
+        RtspReachabilityReason preflight_reason = RtspReachabilityReason::Unknown;
+        bool tcp_connectivity_established = false;
+        bool skip_open = false;
+        if (rtsp) {
+            try {
+                const RtspAuthority authority = parseRtspAuthority(source_);
+                host = authority.host;
+                port = authority.port;
+                std::cerr << formatRtspOpenProgress(host, port) << '\n';
+                preflight_reason = probeRtspReachability(authority, kRtspPreflightTimeout);
+                tcp_connectivity_established =
+                    preflight_reason == RtspReachabilityReason::RtspHandshakeFailed;
+                skip_open = shouldSkipRtspOpen(preflight_reason);
+            } catch (const std::exception&) {
+                // Keep the credential-safe unknown fallback for malformed direct construction.
+                std::cerr << formatRtspOpenProgress(host, port) << '\n';
+            }
         }
-        if (read_timeout_.count() > 0) {
-            parameters.insert(parameters.end(), {
-                cv::CAP_PROP_READ_TIMEOUT_MSEC, static_cast<int>(read_timeout_.count())});
-        }
-        bool opened = parameters.empty()
-            ? capture.open(source_, cv::CAP_FFMPEG)
-            : capture.open(source_, cv::CAP_FFMPEG, parameters);
-        if (!opened && !parameters.empty()) {
-            capture.release();
-            opened = capture.open(source_, cv::CAP_FFMPEG);
+
+        bool opened = false;
+        if (!skip_open) {
+            std::vector<int> parameters;
+            if (open_timeout_.count() > 0) {
+                parameters.insert(parameters.end(), {
+                    cv::CAP_PROP_OPEN_TIMEOUT_MSEC, static_cast<int>(open_timeout_.count())});
+            }
+            if (read_timeout_.count() > 0) {
+                parameters.insert(parameters.end(), {
+                    cv::CAP_PROP_READ_TIMEOUT_MSEC, static_cast<int>(read_timeout_.count())});
+            }
+            opened = parameters.empty()
+                ? capture.open(source_, cv::CAP_FFMPEG)
+                : capture.open(source_, cv::CAP_FFMPEG, parameters);
+            if (!opened && !parameters.empty()) {
+                capture.release();
+                opened = capture.open(source_, cv::CAP_FFMPEG);
+            }
         }
         if (!opened) {
+            std::string open_error = "OpenCV could not open the source";
+            if (rtsp) {
+                const RtspReachabilityReason reason = skip_open
+                    ? preflight_reason
+                    : tcp_connectivity_established
+                        ? RtspReachabilityReason::RtspHandshakeFailed
+                        : RtspReachabilityReason::Unknown;
+                open_error = formatRtspOpenFailure(host, port, reason);
+            }
+            std::cerr << open_error << '\n';
             {
                 std::scoped_lock lock(mutex_);
-                error_ = "OpenCV could not open the source";
+                error_ = std::move(open_error);
             }
             condition_.notify_all();
         } else {

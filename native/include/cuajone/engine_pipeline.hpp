@@ -32,6 +32,9 @@ struct EnginePipelineConfig {
     std::size_t pose_class_count{1};
     std::array<int, 2> pose_keypoint_shape{17, 3};
     bool allow_nonperson_pose_class{};
+    // Opt-in latency gate: run pose only when PPE found at least one person,
+    // so empty scenes skip the whole pose preprocess/inference/decode cost.
+    bool pose_requires_person{};
     std::optional<int> device;
     int image_size{kDefaultImageSize};
     float ppe_confidence{0.30F};
@@ -65,6 +68,7 @@ struct EnginePipelineSummary {
     bool ppe_metadata_prefix{};
     bool pose_loaded{};
     bool pose_metadata_prefix{};
+    bool pose_requires_person{};
     int image_size{kDefaultImageSize};
 };
 

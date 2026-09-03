@@ -136,7 +136,8 @@ std::string missingItems(const std::optional<PpeEvaluation>& evaluation) {
     if (!evaluation || !evaluation->evaluated) return {};
     std::string result;
     for (const auto& item : evaluation->items) {
-        if (item.present) continue;
+        if (item.wear_state != PpeWearState::Absent
+            && item.wear_state != PpeWearState::PresentIncorrectly) continue;
         if (!result.empty()) result += ";";
         result += ppeItemLabel(item.item);
     }

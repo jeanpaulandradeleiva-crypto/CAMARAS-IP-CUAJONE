@@ -15,9 +15,39 @@ namespace cuajone { class PerformanceTelemetry; }
 #include <optional>
 #include <stop_token>
 #include <string>
+#include <string_view>
 #include <thread>
 
 namespace cuajone {
+
+enum class RtspReachabilityReason {
+    DnsFailure,
+    NoRoute,
+    TcpTimeout,
+    ConnectionRefused,
+    RtspHandshakeFailed,
+    Unknown,
+};
+
+enum class RtspAddressPath {
+    DirectAddress,
+    HostnameResolution,
+};
+
+// Fixed, independent bound for the Windows DNS/TCP preflight before RTSP open.
+inline constexpr std::chrono::milliseconds kRtspPreflightTimeout{2000};
+
+[[nodiscard]] RtspReachabilityReason classifyRtspConnectError(int native_error) noexcept;
+[[nodiscard]] RtspAddressPath classifyRtspAddressPath(std::string_view host) noexcept;
+[[nodiscard]] RtspReachabilityReason classifyRtspResolutionFailure(
+    RtspAddressPath address_path,
+    int native_error) noexcept;
+[[nodiscard]] bool shouldSkipRtspOpen(RtspReachabilityReason reason) noexcept;
+[[nodiscard]] std::string formatRtspOpenProgress(std::string_view host, std::uint16_t port);
+[[nodiscard]] std::string formatRtspOpenFailure(
+    std::string_view host,
+    std::uint16_t port,
+    RtspReachabilityReason reason);
 
 class LatestFrameCapture {
 public:

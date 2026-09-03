@@ -124,8 +124,7 @@ PpeEvaluation evaluate(const std::array<std::deque<float>, kPpeItemCount>& histo
         if (!enabled) {
             reason = "DISABLED_BY_POLICY";
         } else if (states.size() < config.minimum_samples) {
-            wear_state = latest_states[index];
-            reason = latest_reasons[index];
+            reason = "INSUFFICIENT_TEMPORAL_SAMPLES";
         } else if (count(PpeWearState::PresentCorrectly) / denominator >= config.present_ratio) {
             wear_state = PpeWearState::PresentCorrectly;
             reason = "ASSOCIATED_REGION";

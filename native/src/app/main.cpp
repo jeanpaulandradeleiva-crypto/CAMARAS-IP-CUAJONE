@@ -164,6 +164,7 @@ EnginePipelineConfig enginePipelineConfig(
         config.pose_class_count,
         config.pose_keypoint_shape,
         config.allow_nonperson_pose_class,
+        config.pose_requires_person,
         config.device,
         config.image_size,
         config.ppe_confidence,
@@ -276,6 +277,9 @@ std::unique_ptr<NativeEnginePipeline> runBasePreflight(
     if (config.benchmark_image.empty()) {
         std::cout << "Source: " << redactSource(config.source) << " | label: " << config.source_label << '\n';
         std::cout << "Output: " << config.output.string() << '\n';
+        if (summary.pose_loaded && summary.pose_requires_person) {
+            std::cout << "Pose person gate: enabled (pose runs only when PPE detects a person)\n";
+        }
     } else {
         std::cout << "Source: benchmark-image\n";
     }
@@ -385,6 +389,9 @@ int monitor(
     auto next_inference = Clock::time_point::min();
     std::optional<std::string> last_capture_error;
     bool first_inference_logged{};
+    const std::chrono::duration<double> telemetry_interval(config.telemetry_interval_seconds);
+    const bool periodic_telemetry = telemetry != nullptr && telemetry_interval.count() > 0.0;
+    auto next_snapshot = Clock::now() + telemetry_interval;
     if (config.show_window) {
         cv::namedWindow(kLiveAnalyticsWindowTitle, cv::WINDOW_NORMAL);
 #ifdef _WIN32
@@ -393,6 +400,12 @@ int monitor(
     }
 
     while (!stop_requested.load(std::memory_order_relaxed)) {
+        if (periodic_telemetry && Clock::now() >= next_snapshot) {
+            // Non-resetting snapshot: jsonReport only reads counters and rolling
+            // samples, so periodic emission never disturbs the exit-only report.
+            std::cerr << "Telemetry snapshot: " << telemetry->jsonReport() << '\n';
+            next_snapshot = Clock::now() + telemetry_interval;
+        }
         cv::Mat frame;
         std::uint64_t latest_sequence = sequence;
         Clock::time_point published_at;
@@ -462,9 +475,15 @@ int monitor(
             }
             try {
                 if (telemetry != nullptr) telemetry->evidenceAppendAttempted();
+                const auto evidence_started = telemetry == nullptr
+                    ? Clock::time_point{} : Clock::now();
                 const auto record = evidence->append(frame, config.source_label, event);
                 if (event.type == "com.cuajone.safety.ppe.violation.v2") evidence_v3->append(event);
-                if (telemetry != nullptr) telemetry->evidenceAppendWritten();
+                if (telemetry != nullptr) {
+                    telemetry->addSample(PerformanceStage::EvidenceAppend,
+                        Clock::now() - evidence_started);
+                    telemetry->evidenceAppendWritten();
+                }
                 std::cout << "Event: " << record.event_type << " | track " << record.track_id
                           << " | " << record.date << 'T' << record.time << "Z\n";
             } catch (const std::exception& error) {

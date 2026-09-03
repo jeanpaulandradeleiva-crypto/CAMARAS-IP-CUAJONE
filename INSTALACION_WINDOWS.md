@@ -21,7 +21,7 @@ PowerShell ni escribir comandos.
 4. Elige cómo procesará la aplicación:
 
    - **Auto (recomendado):** usa GPU NVIDIA si está lista; en caso contrario usa CPU.
-   - **GPU (CUDA):** requiere GPU compatible y driver suficientemente reciente; la instalación se detiene si no están listos.
+   - **GPU (CUDA):** requiere GPU compatible y driver suficientemente reciente; la instalación se detiene si no están listos. La GPU usa **TensorRT**: mínimo SM 7.5 (Turing o más nuevo, incluida la GTX 1650 Ti) y Driver API CUDA 12.9 o superior. Los engines TensorRT se construyen para el modelo exacto de GPU del equipo.
    - **CPU:** no requiere GPU NVIDIA.
 
    El instalador no descarga, instala ni cambia drivers.

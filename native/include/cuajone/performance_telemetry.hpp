@@ -22,6 +22,9 @@ enum class PerformanceStage {
     PoseDecode,
     Analytics,
     Render,
+    ProcessMutexWait,
+    CaptureWait,
+    EvidenceAppend,
 };
 
 struct BenchmarkMetadata {
@@ -51,6 +54,19 @@ struct EvidenceQueueTelemetry {
     bool terminal_failure{};
 };
 
+struct ExecutionPathInfo {
+    bool hybrid_pose_executor{};
+    bool tensorrt_gpu_overlap{};
+    bool shared_preprocessing{};
+    std::string backend;
+    std::string provider;
+    std::string device_name;
+    int device_index{};
+    int device_count{};
+    int compute_sm_major{};
+    int compute_sm_minor{};
+};
+
 class PerformanceTelemetry {
 public:
     static constexpr std::size_t kSampleCapacity = 256;
@@ -65,11 +81,13 @@ public:
     void capturedFrame();
     void processedFrame();
     void recordLatestSlotSequence(std::uint64_t previous_sequence, std::uint64_t latest_sequence);
+    void recordCaptureWaitTimeout();
     void skippedForTargetFps();
     void evidenceAppendAttempted();
     void evidenceAppendWritten();
     void evidenceAppendFailed();
     void setEvidenceQueueTelemetry(EvidenceQueueTelemetry telemetry);
+    void setExecutionPath(ExecutionPathInfo info);
     void reset();
     void setBenchmarkMetadata(BenchmarkMetadata metadata);
     [[nodiscard]] std::string jsonReport() const;

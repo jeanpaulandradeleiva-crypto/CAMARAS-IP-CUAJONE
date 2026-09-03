@@ -50,7 +50,7 @@ def _checkpoint_provenance(source: Path) -> dict[str, str]:
     }
 
 
-def _export_options(task: str) -> dict[str, Any]:
+def _export_options(task: str, *, end2end: bool = True) -> dict[str, Any]:
     options: dict[str, Any] = {
         "format": "onnx",
         "imgsz": 640,
@@ -62,15 +62,26 @@ def _export_options(task: str) -> dict[str, Any]:
         "device": "cpu",
     }
     if task == "detect":
-        options["end2end"] = False
+        options["end2end"] = end2end
     return options
+
+
+def _expected_output_shape(role: str, *, end2end: bool) -> list[int | str]:
+    if role == "ppe":
+        # YOLO26 end-to-end is the default contract: decode+NMS fused in-graph,
+        # fixed [batch, 300, 6] rows (x1, y1, x2, y2, score, class). Raw output
+        # [1, 12, predictions] is the opt-in comparison artifact.
+        return [1, 300, 6] if end2end else [1, 12, "predictions"]
+    return [1, 300, 57]
 
 
 def _prediction_count(image_size: int) -> int:
     return sum((image_size // stride) ** 2 for stride in (8, 16, 32))
 
 
-def _validate_dynamic_model(target: Path, role: str, input_name: str, output_name: str) -> None:
+def _validate_dynamic_model(
+    target: Path, role: str, input_name: str, output_name: str, *, end2end: bool = False
+) -> None:
     try:
         import numpy as np
         import onnxruntime as ort
@@ -86,9 +97,13 @@ def _validate_dynamic_model(target: Path, role: str, input_name: str, output_nam
             {input_name: np.zeros((1, 3, image_size, image_size), dtype=np.float32)},
         )[0]
         expected_shape = (
-            (1, 12, _prediction_count(image_size))
-            if role == "ppe"
-            else (1, 300, 57)
+            (1, 300, 6)
+            if end2end
+            else (
+                (1, 12, _prediction_count(image_size))
+                if role == "ppe"
+                else (1, 300, 57)
+            )
         )
         if output.dtype != np.float32 or tuple(output.shape) != expected_shape:
             raise RuntimeError(
@@ -99,7 +114,22 @@ def _validate_dynamic_model(target: Path, role: str, input_name: str, output_nam
             raise RuntimeError(f"{role} ONNX output exceeds the runtime element bound")
 
 
-def export_one(source: Path, target: Path, role: str, task: str) -> None:
+def convert_onnx_to_fp16(target: Path) -> None:
+    # TensorRT 11 builds strongly typed networks: an FP16 engine requires an FP16
+    # graph. I/O stays float32, so the manifest tensor contract is unchanged.
+    import onnx
+    from onnxruntime.transformers.onnx_model import OnnxModel
+
+    model = onnx.load(str(target))
+    wrapped = OnnxModel(model)
+    wrapped.convert_float_to_float16(keep_io_types=True)
+    wrapped.save_model_to_file(str(target), use_external_data_format=False)
+
+
+def export_one(source: Path, target: Path, role: str, task: str, *, end2end: bool = True, half: bool = False) -> None:
+    # End-to-end only exists for the detect task; pose keeps its default export.
+    if task != "detect":
+        end2end = False
     try:
         import onnx
     except ModuleNotFoundError as exc:
@@ -119,9 +149,10 @@ def export_one(source: Path, target: Path, role: str, task: str) -> None:
         validate_ppe_labels(names)
         exported_labels = [names[index] for index in range(len(names))]
     if task == "detect" and hasattr(model.model.model[-1], "end2end"):
-        # The native decoder expects raw YOLO channels, not YOLO26 end-to-end [N, 6].
-        model.model.model[-1].end2end = False
-    exported = model.export(**_export_options(task))
+        # End-to-end is the default runtime contract; raw is the opt-in
+        # comparison artifact produced with end2end=False.
+        model.model.model[-1].end2end = end2end
+    exported = model.export(**_export_options(task, end2end=end2end))
     exported_path = Path(exported).resolve()
     if not exported_path.is_file():
         raise RuntimeError(f"Ultralytics no produjo el ONNX esperado: {exported_path}")
@@ -147,6 +178,8 @@ def export_one(source: Path, target: Path, role: str, task: str) -> None:
         batch.dim_value = 1
     onnx.checker.check_model(model)
     onnx.save(model, str(target))
+    if half:
+        convert_onnx_to_fp16(target)
     model = onnx.load(str(target), load_external_data=False)
 
     input_info = model.graph.input[0]
@@ -155,18 +188,21 @@ def export_one(source: Path, target: Path, role: str, task: str) -> None:
     output_shape = _shape(output_info, ("batch", "channels", "predictions"))
     if input_shape != [1, 3, "height", "width"]:
         raise RuntimeError(f"{target.name} must expose dynamic [1,3,height,width] input")
-    expected_output_shape: list[int | str] = (
-        [1, 12, "predictions"] if role == "ppe" else [1, 300, 57]
-    )
+    expected_output_shape = _expected_output_shape(role, end2end=end2end)
     if output_shape != expected_output_shape:
         raise RuntimeError(
             f"{target.name} must expose the approved {role} output {expected_output_shape}"
         )
-    _validate_dynamic_model(target, role, input_info.name, output_info.name)
+    _validate_dynamic_model(
+        target, role, input_info.name, output_info.name, end2end=end2end
+    )
     payload = {
         "schema_version": MANIFEST_VERSION,
         "artifact_type": "onnx",
         "role": role,
+        # Pose exports are always end-to-end ([1,300,57]); the end2end flag only
+        # selects between the fused PPE contract and its raw comparison artifact.
+        "inference_mode": ("end2end" if role == "pose" or end2end else "raw-nms"),
         "model_file": target.name,
         "model_sha256": _sha256(target),
         "model_size_bytes": target.stat().st_size,
@@ -197,6 +233,11 @@ def export_one(source: Path, target: Path, role: str, task: str) -> None:
             "source_checkpoint": source_checkpoint,
         },
     }
+    if not end2end and role == "ppe":
+        payload["note"] = (
+            "Raw+NMS comparison artifact: the native runtime contract is the "
+            "end-to-end export with decode and NMS fused in-graph ([1,300,6])."
+        )
     if exported_labels is not None:
         payload["labels"] = exported_labels
         payload["label_contract"] = "always-all-seven-v2"
@@ -213,10 +254,35 @@ def main() -> int:
     parser.add_argument("--ppe", type=Path, required=True)
     parser.add_argument("--pose", type=Path, required=True)
     parser.add_argument("--output-dir", type=Path, required=True)
+    parser.add_argument(
+        "--ppe-raw",
+        action="store_true",
+        help="Also export the raw PPE variant [1,12,predictions] for offline "
+        "comparison against the default end-to-end export on the frozen test split.",
+    )
+    parser.add_argument(
+        "--half",
+        action="store_true",
+        help="Convert both ONNX artifacts to FP16 (I/O stays float32). Required "
+        "for FP16 TensorRT engines: TensorRT 11 builds strongly typed networks.",
+    )
     args = parser.parse_args()
 
-    export_one(args.ppe.resolve(), args.output_dir.resolve() / "ppe.onnx", "ppe", "detect")
-    export_one(args.pose.resolve(), args.output_dir.resolve() / "pose.onnx", "pose", "pose")
+    export_one(
+        args.ppe.resolve(), args.output_dir.resolve() / "ppe.onnx", "ppe", "detect", half=args.half
+    )
+    if args.ppe_raw:
+        export_one(
+            args.ppe.resolve(),
+            args.output_dir.resolve() / "ppe-raw.onnx",
+            "ppe",
+            "detect",
+            end2end=False,
+            half=args.half,
+        )
+    export_one(
+        args.pose.resolve(), args.output_dir.resolve() / "pose.onnx", "pose", "pose", half=args.half
+    )
     return 0
 
 

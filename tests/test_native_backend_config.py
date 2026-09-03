@@ -90,6 +90,36 @@ def test_native_backend_maps_dynamic_size_and_exact_class_thresholds() -> None:
     assert config.ppe_class_confidences == list(thresholds.values())
 
 
+def test_native_backend_maps_pose_person_gate() -> None:
+    backend = NativeBackend(
+        QaRuntimeConfig.defaults(mode="ppe-fall", backend="native"),
+        module=native_module(),
+        engine_config={
+            "backend": "cpu",
+            "ppe_onnx": "ppe.onnx",
+            "pose_onnx": "pose.onnx",
+            "ppe_labels": FIXED_LABELS,
+            "pose_requires_person": True,
+        },
+    )
+
+    config = backend._engine_pipeline.config
+    assert config.pose_requires_person is True
+
+    ungated = NativeBackend(
+        QaRuntimeConfig.defaults(mode="ppe-fall", backend="native"),
+        module=native_module(),
+        engine_config={
+            "backend": "cpu",
+            "ppe_onnx": "ppe.onnx",
+            "pose_onnx": "pose.onnx",
+            "ppe_labels": FIXED_LABELS,
+        },
+    )
+
+    assert ungated._engine_pipeline.config.pose_requires_person is False
+
+
 @pytest.mark.parametrize(
     ("provider", "artifacts", "expected_provider"),
     (

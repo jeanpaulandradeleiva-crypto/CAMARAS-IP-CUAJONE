@@ -17,6 +17,7 @@ def test_runtime_settings_defaults_and_overrides_are_isolated(tmp_path: Path) ->
             "PPE_MODEL_PATH": "models/custom-ppe.pt",
             "SHOW_WINDOW": "0",
             "EPP_WINDOW": "6",
+            "POSE_PERSON_GATE": "1",
         },
         runtime_dir=first_runtime,
     )
@@ -27,6 +28,7 @@ def test_runtime_settings_defaults_and_overrides_are_isolated(tmp_path: Path) ->
     assert first.ppe_model_path == str((first_runtime / "models/custom-ppe.pt").resolve())
     assert not first.show_window
     assert first.epp_window == 6
+    assert first.pose_person_gate
 
     assert second.camera_id == "CAM_P01_ADM"
     assert second.base_dir == second_runtime.resolve()
@@ -39,6 +41,7 @@ def test_runtime_settings_defaults_and_overrides_are_isolated(tmp_path: Path) ->
     )
     assert second.show_window
     assert second.epp_window == 20
+    assert not second.pose_person_gate
 
 
 def test_runtime_state_is_not_shared_between_constructions() -> None:

@@ -117,9 +117,16 @@ Genera los artefactos locales y sus manifests desde los checkpoints fuente:
 uv run python tools/export_runtime_onnx.py --ppe best_ppe.pt --pose yolo26s-pose.pt --output-dir models
 ```
 
-El detector EPP se exporta raw con `end2end=False` y produce `[1,12,8400]` para las
-ocho clases configuradas. Pose conserva la exportación predeterminada compatible de
-Ultralytics. La carpeta `models/` completa es generada y no se versiona.
+El detector EPP se exporta **end-to-end** por defecto (`end2end=True`): YOLO26 con
+decode+NMS fusionados en el grafo, salida `[1,300,6]` (x1, y1, x2, y2, score, clase)
+para las ocho clases configuradas. Pose conserva la exportación predeterminada
+compatible de Ultralytics. La carpeta `models/` completa es generada y no se versiona.
+
+Con `--ppe-raw` el exportador genera además `ppe-raw.onnx`, la variante raw
+`[1,12,predicciones]` destinada a comparaciones offline contra el default end-to-end.
+Ambos contratos son aceptados por el runtime nativo; el protocolo de comparación
+sobre el test congelado está documentado en el
+[roadmap de optimización](optimization-roadmap.md).
 
 | Variable | Uso |
 | --- | --- |
@@ -143,6 +150,7 @@ manifest, contrato tensorial y proveedor antes de procesar frames.
 | `ANALYTICS_MODE` | `ppe-fall` | `ppe-only` o `ppe-fall`; `--mode` prevalece. |
 | `PPE_CONF` | `0.48` | Confianza mínima EPP. |
 | `POSE_CONF` | `0.55` | Confianza mínima pose; se ignora en `ppe-only`. |
+| `POSE_PERSON_GATE` | `0` | `1` ejecuta pose solo cuando PPE detectó al menos una persona; desactiva los solapamientos PPE/pose. |
 | `IOU_THRESHOLD` | `0.5` | Umbral NMS compartido. |
 | `TARGET_INFERENCE_FPS` | `0` | `0` procesa cada frame reciente; positivo limita inicios. |
 

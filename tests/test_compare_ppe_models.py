@@ -170,3 +170,23 @@ def test_cli_uses_current_ppe_evaluation_defaults() -> None:
     )
     assert args.output == compare_ppe_models.DEFAULT_OUTPUT
     assert args.split == "val"
+
+def test_compare_accepts_onnx_exports_for_end2end_vs_raw(tmp_path: Path) -> None:
+    raw = tmp_path / "ppe.onnx"
+    end2end = tmp_path / "ppe-end2end.onnx"
+    _, _, data = model_inputs(tmp_path)
+    raw.write_bytes(b"raw")
+    end2end.write_bytes(b"end2end")
+    evaluated: list[Path] = []
+
+    def evaluator(path: str, *_args, **_kwargs) -> dict[str, Any]:
+        evaluated.append(Path(path))
+        return evaluation(0.05 if Path(path) == end2end else 0.0)
+
+    report = compare_ppe_models.compare_models(
+        raw, end2end, data, evaluator=evaluator
+    )
+
+    assert evaluated == [raw.resolve(), end2end.resolve()]
+    assert report["models"]["candidate"]["checkpoint"] == str(end2end.resolve())
+    assert report["deltas"]["metrics"]["map50"] == pytest.approx(0.05)

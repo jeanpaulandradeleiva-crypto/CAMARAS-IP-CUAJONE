@@ -132,11 +132,7 @@ AnalyticsMode parseAnalyticsMode(std::string_view text) {
     throw std::invalid_argument("--mode must be ppe-only or ppe-fall");
 }
 
-struct ParsedRtspSource {
-    std::string host;
-};
-
-ParsedRtspSource parseRtspSource(const std::string& source) {
+RtspAuthority parseRtspAuthorityImpl(std::string_view source) {
     if (!isRtspSource(source)) {
         throw std::invalid_argument("Source is not an rtsp:// or rtsps:// URL");
     }
@@ -190,16 +186,18 @@ ParsedRtspSource parseRtspSource(const std::string& source) {
         || host.find(']') != std::string_view::npos) {
         throw std::invalid_argument("RTSP source host is malformed");
     }
+    unsigned int port_number{};
     if ((!port.empty() || host_and_port.ends_with(':'))) {
         if (port.empty()) throw std::invalid_argument("RTSP source port must not be empty");
-        unsigned int port_number{};
         const auto converted = std::from_chars(port.data(), port.data() + port.size(), port_number);
         if (converted.ec != std::errc{} || converted.ptr != port.data() + port.size()
             || port_number == 0 || port_number > 65535) {
             throw std::invalid_argument("RTSP source port must be an integer in [1, 65535]");
         }
     }
-    return {std::string(host)};
+    RtspAuthority result{std::string(host)};
+    if (!port.empty()) result.port = static_cast<std::uint16_t>(port_number);
+    return result;
 }
 
 void validate(RuntimeConfig& config) {
@@ -212,10 +210,11 @@ void validate(RuntimeConfig& config) {
         throw std::invalid_argument("--benchmark-image cannot be combined with --source");
     }
     if (benchmark && (config.show_window || config.preflight || config.target_fps_explicit
+            || config.telemetry_interval_seconds > 0.0
             || config.rtsp_transport_explicit || config.reconnect_delay_explicit
             || config.maximum_reconnect_delay_explicit || config.capture_open_timeout_explicit
             || config.capture_read_timeout_explicit)) {
-        throw std::invalid_argument("--benchmark-image cannot be combined with monitor, RTSP, capture, --target-fps, or --preflight options");
+        throw std::invalid_argument("--benchmark-image cannot be combined with monitor, RTSP, capture, --target-fps, --telemetry-interval-sec, or --preflight options");
     }
     if (config.benchmark_warmup > 10000 || config.benchmark_iterations == 0
         || config.benchmark_iterations > 10000) {
@@ -223,6 +222,12 @@ void validate(RuntimeConfig& config) {
     }
     if (config.evidence_writer_queue_capacity > kMaximumEvidenceWriterQueueCapacity) {
         throw std::invalid_argument("--evidence-writer-queue-capacity must be in [0, 4096]");
+    }
+    if (!std::isfinite(config.telemetry_interval_seconds) || config.telemetry_interval_seconds < 0.0) {
+        throw std::invalid_argument("--telemetry-interval-sec must be finite and non-negative");
+    }
+    if (config.telemetry_interval_seconds > 0.0 && !config.performance_report) {
+        throw std::invalid_argument("--telemetry-interval-sec requires --performance-report");
     }
     if (!benchmark && (config.source.empty() || config.output.empty())) {
         throw std::invalid_argument(
@@ -300,6 +305,10 @@ void validate(RuntimeConfig& config) {
 
 }  // namespace
 
+RtspAuthority parseRtspAuthority(std::string_view source) {
+    return parseRtspAuthorityImpl(source);
+}
+
 RuntimeConfig parseCommandLine(int argc, char** argv) {
     RuntimeConfig config;
     std::array<std::optional<float>, kPpeOutputLabels.size()> class_confidence_overrides;
@@ -312,6 +321,7 @@ RuntimeConfig parseCommandLine(int argc, char** argv) {
         else if (option == "--performance-report") config.performance_report = true;
         else if (option == "--show") config.show_window = true;
         else if (option == "--allow-nonperson-pose-class") config.allow_nonperson_pose_class = true;
+        else if (option == "--pose-person-gate") config.pose_requires_person = true;
         else if (option == "--mode") config.analytics_mode = parseAnalyticsMode(requireValue(index, argc, argv, option));
         else if (option == "--source") config.source = requireValue(index, argc, argv, option);
         else if (option == "--source-label") config.source_label = requireValue(index, argc, argv, option);
@@ -362,6 +372,7 @@ RuntimeConfig parseCommandLine(int argc, char** argv) {
         else if (option == "--tracker-max-tracks") config.tracker_max_tracks = parseNumber<std::size_t>(requireValue(index, argc, argv, option), option);
         else if (option == "--tracker-frame-rate") config.tracker_frame_rate = parseNumber<int>(requireValue(index, argc, argv, option), option);
         else if (option == "--target-fps") { config.target_fps = parseNumber<double>(requireValue(index, argc, argv, option), option); config.target_fps_explicit = true; }
+        else if (option == "--telemetry-interval-sec") { config.telemetry_interval_seconds = parseNumber<double>(requireValue(index, argc, argv, option), option); }
         else if (option == "--reconnect-delay") { config.reconnect_delay_seconds = parseNumber<double>(requireValue(index, argc, argv, option), option); config.reconnect_delay_explicit = true; }
         else if (option == "--max-reconnect-delay") { config.maximum_reconnect_delay_seconds = parseNumber<double>(requireValue(index, argc, argv, option), option); config.maximum_reconnect_delay_explicit = true; }
         else if (option == "--capture-open-timeout-ms") { config.capture_open_timeout = parseMilliseconds(requireValue(index, argc, argv, option), option); config.capture_open_timeout_explicit = true; }
@@ -415,6 +426,8 @@ void printHelp(std::ostream& output) {
         "  --help                       Show this help without runtime startup\n"
         "  --hardware-probe-json        Print stable NVIDIA/CUDA probe JSON and exit\n"
         "  --performance-report         Print one shutdown-only performance JSON report\n"
+        "  --telemetry-interval-sec <seconds>  Non-negative; 0 keeps the exit-only report,"
+        " >0 also writes a non-resetting jsonReport snapshot to stderr every interval (monitor only)\n"
         "  --benchmark-image <path>    Run a bounded in-process benchmark on one local image\n"
         "  --benchmark-warmup <n>      Benchmark warmup calls (default: 10; 0..10000)\n"
         "  --benchmark-iterations <n>  Measured benchmark calls (default: 100; 1..10000)\n"
@@ -426,7 +439,8 @@ void printHelp(std::ostream& output) {
         "  --ppe-labels <a,b,c>         Class labels for a raw engine without metadata\n"
         "  --pose-class-count <number>  Pose classes fallback (default: 1)\n"
         "  --pose-kpt-shape <count,dim> Pose schema fallback (default: 17,3)\n"
-        "  --allow-nonperson-pose-class Allow non-person single-class pose metadata\n\n"
+        "  --allow-nonperson-pose-class Allow non-person single-class pose metadata\n"
+        "  --pose-person-gate           Run pose only when PPE detected a person\n\n"
         "Core thresholds:\n"
         "  --imgsz <size>               Inference size: 640, 768, 960, or 1280 (default: 640)\n"
         "  --ppe-conf <0..1>            PPE confidence (default: 0.30)\n"
@@ -482,7 +496,7 @@ std::string redactSource(const std::string& source) {
 
 std::string defaultSourceLabel(const std::string& source) {
     if (isRtspSource(source)) {
-        return "rtsp-" + parseRtspSource(source).host;
+        return "rtsp-" + parseRtspAuthority(source).host;
     }
     const std::filesystem::path path(source);
     return path.filename().string().empty() ? "offline-source" : path.filename().string();
@@ -493,7 +507,7 @@ bool isRtspSource(std::string_view source) noexcept {
 }
 
 void validateRtspSource(const std::string& source) {
-    if (isRtspSource(source)) static_cast<void>(parseRtspSource(source));
+    if (isRtspSource(source)) static_cast<void>(parseRtspAuthority(source));
 }
 
 }  // namespace cuajone

@@ -93,8 +93,8 @@ def evaluate(
     yolo_factory: Any | None = None,
     validation_options: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
-    if Path(model_path).suffix.lower() not in {".pt", ".engine"}:
-        raise ValueError("El modelo debe tener extensión .pt o .engine.")
+    if Path(model_path).suffix.lower() not in {".pt", ".engine", ".onnx"}:
+        raise ValueError("El modelo debe tener extensión .pt, .engine u .onnx.")
     if yolo_factory is None:
         from ultralytics import YOLO
 
@@ -118,7 +118,7 @@ def evaluate(
 
 def create_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=f"Evalúa un detector YOLO. {DISCLAIMER}")
-    parser.add_argument("model", help="Detector .pt o .engine.")
+    parser.add_argument("model", help="Detector .pt, .engine u .onnx.")
     parser.add_argument("--data", required=True, help="Dataset YAML etiquetado.")
     parser.add_argument("--split", default="test", help="Split del dataset (predeterminado: test).")
     parser.add_argument("--device")

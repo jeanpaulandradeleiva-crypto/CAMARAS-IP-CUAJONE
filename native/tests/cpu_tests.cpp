@@ -253,6 +253,29 @@ void testPreprocessOwnershipParityAndSharingGuard() {
         "Shared preprocessing backing did not outlive its preprocessor");
 }
 
+void testPreprocessBufferReuse() {
+    cv::Mat frame(9, 13, CV_8UC3, cv::Scalar(10, 20, 30));
+    LetterboxPreprocessor preprocessor(640, 640);
+    const float* first_backing = nullptr;
+    {
+        const PreprocessedFrame first = preprocessor.process(frame);
+        first_backing = first.nchw().data();
+        const PreprocessedFrame second = preprocessor.process(frame);
+        require(second.nchw().data() != first_backing,
+            "Preprocessing reused a buffer that was still referenced by the caller");
+    }
+    const float* pooled_backing = nullptr;
+    {
+        const PreprocessedFrame third = preprocessor.process(frame);
+        pooled_backing = third.nchw().data();
+        require(pooled_backing == first_backing,
+            "Preprocessing did not reuse its packed buffer after the caller released it");
+    }
+    const PreprocessedFrame fourth = preprocessor.process(frame);
+    require(fourth.nchw().data() == pooled_backing,
+        "Preprocessing stopped reusing its pooled buffer between consecutive frames");
+}
+
 void testDetectSchemaDecodeAndNms() {
     const LetterboxTransform transform{640, 640, 640, 640, 1.0F, 1.0F, 0, 0};
     // [1, channels=7, predictions=2], channel-major.
@@ -606,8 +629,8 @@ void testPerformanceTelemetry() {
     const std::string empty = telemetry.jsonReport();
     require(empty.find("\"schema_version\":2") != std::string::npos
             && empty.find("\"source_mode\":\"video\"") != std::string::npos
-            && empty.find("\"pipeline_total\":{\"samples\":0,\"p50_ms\":0.000,\"p95_ms\":0.000,\"p99_ms\":0.000}") != std::string::npos
-            && empty.find("\"frame_age\":{\"samples\":0,\"p50_ms\":0.000,\"p95_ms\":0.000,\"p99_ms\":0.000}") != std::string::npos,
+            && empty.find("\"pipeline_total\":{\"samples\":0,\"p50_ms\":0.000,\"p95_ms\":0.000,\"p99_ms\":0.000,\"max_ms\":0.000}") != std::string::npos
+            && empty.find("\"frame_age\":{\"samples\":0,\"p50_ms\":0.000,\"p95_ms\":0.000,\"p99_ms\":0.000,\"max_ms\":0.000}") != std::string::npos,
         "Zero-sample telemetry report was not safe and deterministic");
     for (int milliseconds = 1; milliseconds <= 257; ++milliseconds) {
         telemetry.addSample(PerformanceStage::PpeInference, std::chrono::milliseconds(milliseconds));
@@ -627,11 +650,11 @@ void testPerformanceTelemetry() {
         std::chrono::milliseconds(7), std::chrono::milliseconds(11), true,
     });
     const std::string report = telemetry.jsonReport();
-    require(report.find("\"ppe_inference\":{\"samples\":256,\"p50_ms\":129.000,\"p95_ms\":245.000,\"p99_ms\":255.000}") != std::string::npos,
+    require(report.find("\"ppe_inference\":{\"samples\":256,\"p50_ms\":129.000,\"p95_ms\":245.000,\"p99_ms\":255.000,\"max_ms\":257.000}") != std::string::npos,
         "Telemetry rolling window or percentile index changed");
-    require(report.find("\"pipeline_total\":{\"samples\":1,\"p50_ms\":17.000,\"p95_ms\":17.000,\"p99_ms\":17.000}") != std::string::npos,
+    require(report.find("\"pipeline_total\":{\"samples\":1,\"p50_ms\":17.000,\"p95_ms\":17.000,\"p99_ms\":17.000,\"max_ms\":17.000}") != std::string::npos,
         "Pipeline wall-clock telemetry stage changed");
-    require(report.find("\"captured_frames\":1,\"processed_frames\":1,\"latest_slot_sequence_gap_drops\":5,\"target_fps_skipped_frames\":1") != std::string::npos,
+    require(report.find("\"captured_frames\":1,\"processed_frames\":1,\"latest_slot_sequence_gap_drops\":5,\"capture_wait_timeouts\":0,\"target_fps_skipped_frames\":1") != std::string::npos,
         "Telemetry counters did not retain synthetic sequence-gap drops");
     require(report.find("\"append_attempted\":1,\"append_written\":1,\"append_failed\":1") != std::string::npos,
         "Telemetry evidence counters changed");
@@ -653,7 +676,7 @@ void testPerformanceTelemetry() {
     const std::string benchmark_report = telemetry.jsonReport();
     require(benchmark_calls == std::vector<std::size_t>{0, 1, 2, 3, 4}
             && benchmark_report.find("\"processed_frames\":3") != std::string::npos
-            && benchmark_report.find("\"ppe_inference\":{\"samples\":3,\"p50_ms\":13.000,\"p95_ms\":14.000,\"p99_ms\":14.000}") != std::string::npos,
+            && benchmark_report.find("\"ppe_inference\":{\"samples\":3,\"p50_ms\":13.000,\"p95_ms\":14.000,\"p99_ms\":14.000,\"max_ms\":14.000}") != std::string::npos,
         "Benchmark warmup reset did not retain exactly the measured calls");
     require(benchmark_report.find("\"benchmark\":{\"warmup_iterations\":2,\"measured_iterations\":3,\"image_width\":640,\"image_height\":480,\"retained_sample_capacity\":256,\"retained_sample_count\":3}") != std::string::npos,
         "Benchmark telemetry metadata was incomplete or unsafe");
@@ -702,7 +725,7 @@ void testCanonicalRenderDecision() {
         telemetry.addSample(PerformanceStage::Render, std::chrono::milliseconds(3));
     }
     require(telemetry.jsonReport().find(
-                "\"render\":{\"samples\":2,\"p50_ms\":2.000,\"p95_ms\":3.000,\"p99_ms\":3.000}")
+                "\"render\":{\"samples\":2,\"p50_ms\":2.000,\"p95_ms\":3.000,\"p99_ms\":3.000,\"max_ms\":3.000}")
             != std::string::npos,
         "Render telemetry did not exclude headless no-event frames or retain event/display frames");
 }
@@ -1082,6 +1105,22 @@ void testPpeAssociationVotingAndCooldown() {
     require(temporal.currentEvaluation(101)->compliant,
         "Temporal voting did not apply the existing present-ratio policy to all items");
 
+    PpeAnalyzer mixed_readiness({4, 3, 0.5F, std::chrono::seconds(60), std::chrono::seconds(5)});
+    mixed_readiness.update(105, associations.at(7), false, start);
+    mixed_readiness.update(105, associations.at(7), false, start + std::chrono::seconds(1));
+    PpeAssociation missed_face = associations.at(7);
+    missed_face.detections.erase(PpeItem::Respirator);
+    missed_face.detections.erase(PpeItem::EyeProtection);
+    require(!mixed_readiness.update(105, missed_face, true, start + std::chrono::seconds(2)),
+        "Under-sampled face PPE emitted a violation after non-face items became ready");
+    const auto mixed_evaluation = mixed_readiness.currentEvaluation(105);
+    require(mixed_evaluation && mixed_evaluation->evaluated
+            && mixed_evaluation->items[3].wear_state == PpeWearState::NotVerifiable
+            && mixed_evaluation->items[3].reason == "INSUFFICIENT_TEMPORAL_SAMPLES"
+            && mixed_evaluation->items[6].wear_state == PpeWearState::NotVerifiable
+            && mixed_evaluation->items[6].reason == "INSUFFICIENT_TEMPORAL_SAMPLES",
+        "PPE readiness was not evaluated independently for each face item");
+
     PpeConfig disabled_config{1, 1, 0.5F, std::chrono::seconds(60), std::chrono::seconds(5)};
     disabled_config.enabled[static_cast<std::size_t>(PpeItem::Gloves)] = false;
     PpeAnalyzer disabled(disabled_config);
@@ -1308,6 +1347,7 @@ int main() {
         {"engine metadata prefix", testEngineRawAndMetadataPrefix},
         {"letterbox mapping", testLetterboxMappingAndPacking},
         {"owned preprocessing parity and sharing guard", testPreprocessOwnershipParityAndSharingGuard},
+        {"preprocess buffer reuse", testPreprocessBufferReuse},
         {"detect decode and NMS", testDetectSchemaDecodeAndNms},
         {"pose decode", testPoseSchemaAndDecode},
         {"CLI URLs and invariants", testCliUrlsAndInvariantDefense},

@@ -76,7 +76,7 @@
                   Impersonate="yes"
                   Return="check" />
     <SetProperty Id="BuildTensorRtEngines"
-                 Value="&quot;[System64Folder]WindowsPowerShell\v1.0\powershell.exe&quot; -NoProfile -NonInteractive -ExecutionPolicy Bypass -File &quot;[INSTALLFOLDER]\bin\engine-builder\Build-EnginesOnTarget.ps1&quot; -OutputDir &quot;[INSTALLFOLDER]\bin\models&quot;"
+                 Value="&quot;[System64Folder]WindowsPowerShell\v1.0\powershell.exe&quot; -NoProfile -NonInteractive -ExecutionPolicy Bypass -File &quot;[INSTALLFOLDER]\bin\engine-builder\Build-EnginesOnTarget.ps1&quot; -OutputDir &quot;[INSTALLFOLDER]\bin\models&quot; -Precision fp16"
                  After="InstallFiles"
                  Sequence="execute" />
     <?endif?>

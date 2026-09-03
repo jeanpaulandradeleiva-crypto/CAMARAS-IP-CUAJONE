@@ -101,6 +101,54 @@ uv run python ppe_reportev2.py --mode ppe-only
 
 No se ejecutan pruebas RTSP como parte de la suite automatizada.
 
+## Inferencia GPU: TensorRT
+
+El proveedor GPU de producción es **TensorRT 11** sobre CUDA (bundle fijo
+TensorRT 11.1.0.106); el runtime instalado lo reporta como `TensorRT 11/CUDA`.
+La ruta CPU es ONNX Runtime; el modo híbrido ONNX CUDA ejecuta pose en CPU por
+la inestabilidad documentada del grafo pose en ORT CUDA 1.25.
+
+Especificación de compatibilidad GPU:
+
+| Requisito | Valor |
+| --- | --- |
+| Capacidad de cómputo mínima | **SM 7.5** (Turing o más nuevo) |
+| Driver API CUDA mínima (probe) | 12.9 (`12090`) |
+| Línea base documentada del proyecto | NVIDIA GeForce GTX 1650 Ti (SM 7.5, 4 GiB) |
+| Selección de modo | `auto` / `cuda` / `cpu`; `cuda` falla cerrado sin hardware y driver listos |
+
+Los engines `.engine` **se construyen por máquina** con `trtexec`
+([`installer/native/Build-EnginesOnTarget.ps1`](installer/native/Build-EnginesOnTarget.ps1))
+a partir del ONNX del bundle y quedan vinculados a la capacidad de cómputo de la
+GPU donde se construyeron: **no son portables** entre arquitecturas de GPU ni
+versiones mayores de TensorRT. Al cambiar de GPU o de stack, reconstruirlos.
+Un engine construido en la GTX 1650 Ti (SM 7.5) funciona en cualquier GPU SM 7.5
+con el mismo TensorRT; una GPU de otra arquitectura (p. ej. Ampere SM 8.6)
+requiere su propia construcción.
+
+Los engines heredan el contrato del ONNX de origen: PPE end-to-end `[1,300,6]`
+(decode+NMS fusionados en el grafo) y pose `[1,300,57]`; el runtime valida el
+schema al deserializar.
+
+**Precisión FP16:** TensorRT 11 compila redes *strongly typed*: no existe flag
+`--fp16`; la precisión proviene del grafo ONNX de entrada. Para un engine FP16
+se convierte el ONNX a FP16 (I/O queda en float32; conversor
+`onnxruntime.transformers.OnnxModel`, que resuelve correctamente los casts de
+ops bloqueadas como `Resize`) y se construye con el mismo builder. El gate de
+precisión por clase contra el test congelado
+(`tools/compare_precision_gate.py`) es obligatorio antes de adoptar FP16:
+compara FP32 vs FP16 del mismo grafo contra los labels del split congelado y
+registra el reporte en `artifacts/benchmarks/`. Estado: FP16 aprobado y
+desplegado en la GTX 1650 Ti (SM 7.5) el 2026-09-02 con degradación máxima
+de 0.0062 de recall (Safety_boots) y 0.0000 en las clases críticas.
+
+**Distribución FP16:** el MSI se construye en modo *on-target engine build*
+con ONNX FP16 (`tools/export_runtime_onnx.py --half`) y el custom action
+`BuildTensorRtEngines` compila los engines FP16 en cada máquina durante la
+instalación (`-Precision fp16`). Este variante requiere GPU NVIDIA en todos
+los targets: la construcción del engine falla cerrado sin GPU. Para un bundle
+portable solo-ONNX (sin engines), construye sin `-PpeOnnxPath`/`-PoseOnnxPath`.
+
 ## Contrato de eventos y evidencias
 
 La salida activa usa el [contrato EPP v2](docs/ppe-contract-v2.md). El runtime nativo

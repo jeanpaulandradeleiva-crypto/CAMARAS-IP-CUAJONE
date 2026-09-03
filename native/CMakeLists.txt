@@ -330,6 +330,7 @@ if(CUAJONE_BUILD_RUNTIME)
         PUBLIC cuajone_core
         PRIVATE cuajone_onnxruntime
             bcrypt
+            ws2_32
             opencv_imgcodecs opencv_videoio opencv_highgui)
     if(CUAJONE_ENABLE_TENSORRT)
         target_sources(cuajone_runtime PRIVATE src/runtime/tensorrt_runtime.cpp)
@@ -392,6 +393,14 @@ if(CUAJONE_BUILD_RUNTIME)
         target_compile_options(cuajone_evidence_tests PRIVATE /W4 /permissive- /EHsc)
         add_test(NAME cuajone_evidence_tests COMMAND cuajone_evidence_tests)
         set_tests_properties(cuajone_evidence_tests PROPERTIES
+            ENVIRONMENT_MODIFICATION
+                "PATH=path_list_prepend:$<TARGET_FILE_DIR:opencv_core>;PATH=path_list_prepend:${ONNXRUNTIME_ROOT}/lib")
+
+        add_executable(cuajone_capture_diagnostics_tests tests/capture_diagnostics_tests.cpp)
+        target_link_libraries(cuajone_capture_diagnostics_tests PRIVATE cuajone_runtime ws2_32)
+        target_compile_options(cuajone_capture_diagnostics_tests PRIVATE /W4 /permissive- /EHsc)
+        add_test(NAME cuajone_capture_diagnostics_tests COMMAND cuajone_capture_diagnostics_tests)
+        set_tests_properties(cuajone_capture_diagnostics_tests PROPERTIES
             ENVIRONMENT_MODIFICATION
                 "PATH=path_list_prepend:$<TARGET_FILE_DIR:opencv_core>;PATH=path_list_prepend:${ONNXRUNTIME_ROOT}/lib")
 

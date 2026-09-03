@@ -27,6 +27,21 @@ bool canSharePreprocessedInput(
         && ppe_width == pose_width && ppe_height == pose_height;
 }
 
+std::shared_ptr<std::vector<float>> LetterboxPreprocessor::acquirePackedBuffer(
+    std::size_t element_count) {
+    for (auto& buffer : packed_pool_) {
+        // use_count == 1 means only the pool itself still owns the buffer, so
+        // no async consumer can still be reading it.
+        if (buffer.use_count() == 1) {
+            buffer->resize(element_count);
+            return buffer;
+        }
+    }
+    auto buffer = std::make_shared<std::vector<float>>(element_count);
+    packed_pool_.push_back(buffer);
+    return buffer;
+}
+
 PreprocessedFrame LetterboxPreprocessor::process(const cv::Mat& bgr_frame) {
     if (bgr_frame.empty() || bgr_frame.type() != CV_8UC3) {
         throw std::invalid_argument("Preprocessing requires a non-empty CV_8UC3 frame");
@@ -45,7 +60,7 @@ PreprocessedFrame LetterboxPreprocessor::process(const cv::Mat& bgr_frame) {
 
     const std::size_t width = static_cast<std::size_t>(model_width_);
     const std::size_t plane = width * static_cast<std::size_t>(model_height_);
-    auto packed = std::make_shared<std::vector<float>>(resource_limits::checkedMultiply(
+    auto packed = acquirePackedBuffer(resource_limits::checkedMultiply(
         3, plane, resource_limits::kMaximumInputElements, "Preprocessed input"));
     float* red = packed->data();
     float* green = red + plane;

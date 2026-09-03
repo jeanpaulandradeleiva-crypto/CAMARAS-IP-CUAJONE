@@ -19,11 +19,14 @@ Evaluator = Callable[..., dict[str, Any]]
 
 
 def validate_inputs(baseline: Path, candidate: Path, data: Path) -> None:
+    allowed_suffixes = {".pt", ".engine", ".onnx"}
     for label, path in (("baseline checkpoint", baseline), ("candidate checkpoint", candidate)):
         if not path.is_file():
             raise ValueError(f"The {label} does not exist: {path}")
-        if path.suffix.lower() not in {".pt", ".engine"}:
-            raise ValueError(f"The {label} must be a .pt or .engine model: {path}")
+        if path.suffix.lower() not in allowed_suffixes:
+            raise ValueError(
+                f"The {label} must be a .pt, .engine or .onnx model: {path}"
+            )
     if baseline.resolve() == candidate.resolve() or baseline.samefile(candidate):
         raise ValueError("Baseline and candidate checkpoints must be distinct files.")
     if not data.is_file():
@@ -227,8 +230,8 @@ def create_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Compare two PPE detectors on one explicitly supplied holdout dataset."
     )
-    parser.add_argument("--baseline", type=Path, required=True, help="Baseline .pt or .engine checkpoint.")
-    parser.add_argument("--candidate", type=Path, required=True, help="Candidate .pt or .engine checkpoint.")
+    parser.add_argument("--baseline", type=Path, required=True, help="Baseline .pt, .engine or .onnx model.")
+    parser.add_argument("--candidate", type=Path, required=True, help="Candidate .pt, .engine or .onnx model.")
     parser.add_argument("--data", type=Path, required=True, help="Common holdout dataset YAML.")
     parser.add_argument("--split", choices=("train", "val", "test"), default="val")
     parser.add_argument("--imgsz", type=int, default=640)

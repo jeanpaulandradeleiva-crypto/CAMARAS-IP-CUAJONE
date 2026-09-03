@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
@@ -106,3 +107,31 @@ def test_evaluate_rejects_validation_options_that_override_common_inputs() -> No
             yolo_factory=lambda *_args, **_kwargs: object(),
             validation_options={"data": "different.yaml"},
         )
+def test_evaluate_accepts_onnx_exports(tmp_path: Path) -> None:
+    onnx_model = tmp_path / "ppe.onnx"
+    onnx_model.write_bytes(b"onnx")
+    calls: list[str] = []
+
+    def factory(path: str, *, task: str) -> Any:
+        calls.append(path)
+
+        class FakeModel:
+            names = NAMES
+
+            def val(self, **kwargs: Any) -> Any:
+                return fake_metrics()
+
+        return FakeModel()
+
+    report = evaluate_detection.evaluate(str(onnx_model), "dataset.yaml", yolo_factory=factory)
+
+    assert calls == [str(onnx_model)]
+    assert report["scope"] == "object_detection"
+
+
+def test_evaluate_still_rejects_unknown_model_suffixes(tmp_path: Path) -> None:
+    blob = tmp_path / "ppe.pkl"
+    blob.write_bytes(b"blob")
+
+    with pytest.raises(ValueError, match="extensión"):
+        evaluate_detection.evaluate(str(blob), "dataset.yaml", yolo_factory=lambda *_: object())

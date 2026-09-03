@@ -230,19 +230,24 @@ def test_native_engine_config_uses_fixed_cpu_onnx_paths(
     monkeypatch.setattr(app, "PPE_ONNX_PATH", "C:/models/ppe.onnx")
     monkeypatch.setattr(app, "POSE_ONNX_PATH", "C:/models/pose.onnx")
     monkeypatch.setattr(app, "PPE_LABELS", "Gloves,Person,Safety_boots,Vest,respirador,tapaorejas,Hard_hat,lentes_protectores")
+    monkeypatch.setattr(app, "POSE_PERSON_GATE", False)
 
-    config = app.native_engine_config("ppe-fall")
+    labels = {
+        0: "Gloves", 1: "Person", 2: "Safety_boots", 3: "Vest",
+        4: "respirador", 5: "tapaorejas", 6: "Hard_hat",
+        7: "lentes_protectores",
+    }
 
-    assert config == {
+    assert app.native_engine_config("ppe-fall") == {
         "backend": "cpu",
         "ppe_onnx": "C:/models/ppe.onnx",
         "pose_onnx": "C:/models/pose.onnx",
-        "ppe_labels": {
-            0: "Gloves", 1: "Person", 2: "Safety_boots", 3: "Vest",
-            4: "respirador", 5: "tapaorejas", 6: "Hard_hat",
-            7: "lentes_protectores",
-        },
+        "ppe_labels": labels,
+        "pose_requires_person": False,
     }
+
+    monkeypatch.setattr(app, "POSE_PERSON_GATE", True)
+    assert app.native_engine_config("ppe-fall")["pose_requires_person"] is True
 
 
 def test_native_frame_translates_canonical_events_for_existing_report() -> None:

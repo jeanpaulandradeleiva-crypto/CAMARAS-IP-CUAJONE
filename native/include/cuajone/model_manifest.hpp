@@ -34,6 +34,9 @@ struct OnnxModelManifest {
     std::string source_checkpoint_sha256;
     std::string label_contract;
     std::vector<std::string> labels;
+    // Optional manifest extension: "end2end" (default contract, decode+NMS
+    // fused in-graph, output [1,300,6]) or "raw-nms" (comparison artifact).
+    std::string inference_mode{"raw-nms"};
     TensorContract input;
     TensorContract output;
     std::vector<int> allowed_image_sizes;

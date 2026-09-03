@@ -100,6 +100,7 @@ class NativeBackend:
             native_engine.pose_class_count = int(engine_config.get("pose_class_count", 1))
             native_engine.pose_keypoint_shape = engine_config.get("pose_keypoint_shape", [17, 3])
             native_engine.allow_nonperson_pose_class = bool(engine_config.get("allow_nonperson_pose_class", False))
+            native_engine.pose_requires_person = bool(engine_config.get("pose_requires_person", False))
             native_engine.image_size = int(engine_config.get("image_size", 640))
             native_engine.ppe_confidence = config.values["thresholds"]["ppe_confidence"]
             class_confidences = engine_config.get("ppe_class_confidences")

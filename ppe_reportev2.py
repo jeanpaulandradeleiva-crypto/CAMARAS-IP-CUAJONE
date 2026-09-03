@@ -74,6 +74,7 @@ SHOW_TEMPORARY_TRACK_ID = RUNTIME_SETTINGS.show_temporary_track_id
 WINDOW_NAME = "Monitoreo EPP y caidas"
 
 POSE_CONF = RUNTIME_SETTINGS.pose_conf
+POSE_PERSON_GATE = RUNTIME_SETTINGS.pose_person_gate
 PPE_CONF = RUNTIME_SETTINGS.ppe_conf
 IOU_THRESHOLD = RUNTIME_SETTINGS.iou_threshold
 
@@ -246,6 +247,7 @@ def native_engine_config(mode: str) -> dict[str, Any]:
         "backend": "cpu",
         "ppe_onnx": PPE_ONNX_PATH,
         "ppe_labels": parse_ppe_labels(PPE_LABELS),
+        "pose_requires_person": POSE_PERSON_GATE,
     }
     if mode == DEFAULT_ANALYTICS_MODE:
         config["pose_onnx"] = POSE_ONNX_PATH

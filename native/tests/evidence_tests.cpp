@@ -111,8 +111,11 @@ CanonicalEvent event(
     for (const PpeItem item : requiredPpeItems()) {
         const bool present = evaluated
             && std::find(missing.begin(), missing.end(), item) == missing.end();
+        const PpeWearState wear_state = present
+            ? PpeWearState::PresentCorrectly : PpeWearState::Absent;
         ppe.items.push_back({item, true, present, present ? 0.8F : 0.1F,
-            present ? 0.9F : 0.0F, std::nullopt});
+            present ? 0.9F : 0.0F, std::nullopt, true, wear_state,
+            present ? "ASSOCIATED_REGION" : "NO_ASSOCIATED_DETECTION"});
     }
     return {
         std::move(id), "urn:cuajone:camera:CAM_01", std::move(type), std::move(time),
@@ -173,6 +176,29 @@ void testExactContractAndAppendBehavior() {
             != std::string::npos,
         "Fall row fields or UTF-8 encoding changed");
     require(regularFileCount(images) == 3, "Append did not retain one image per row");
+}
+
+void testMissingItemProjectionUsesViolationStatesOnly() {
+    TemporaryDirectory temporary("missing-projection");
+    const cv::Mat frame(24, 32, CV_8UC3, cv::Scalar(10, 20, 30));
+    CanonicalEvent value = event(
+        "evt-CAM-MISSING1", "com.cuajone.safety.ppe.violation.v2",
+        "2026-01-02T03:04:05.000Z", "Falta: Safety_boots;Vest", 42, 0.875F,
+        {PpeItem::SafetyBoots, PpeItem::Vest});
+    auto& not_verifiable = value.ppe->items[static_cast<std::size_t>(PpeItem::Gloves)];
+    not_verifiable.wear_state = PpeWearState::NotVerifiable;
+    not_verifiable.reason = "INSUFFICIENT_TEMPORAL_SAMPLES";
+    auto& incorrectly_worn = value.ppe->items[static_cast<std::size_t>(PpeItem::SafetyBoots)];
+    incorrectly_worn.wear_state = PpeWearState::PresentIncorrectly;
+    incorrectly_worn.reason = "SPATIALLY_INCOMPATIBLE_REGION";
+
+    EvidenceWriter writer(temporary.path());
+    const EvidenceRecord record = writer.append(frame, "CAM_01", value);
+    const std::string csv = readBytes(temporary.path() / "Reporte_Eventos_Seguridad_v2.csv");
+    require(record.missing_items == "Safety_boots;Vest"
+            && csv.find(",Safety_boots;Vest,Falta: Safety_boots;Vest") != std::string::npos
+            && csv.find("Gloves;Safety_boots;Vest") == std::string::npos,
+        "Operator missing-item projection did not exclude NotVerifiable PPE");
 }
 
 void testMalformedTimestampDoesNotWrite() {
@@ -354,6 +380,7 @@ void testWriterQueueRedactsImageFailureDetails() {
 int main() {
     const std::vector<std::pair<std::string, std::function<void()>>> tests{
         {"exact contract and append", testExactContractAndAppendBehavior},
+        {"missing-item state projection", testMissingItemProjectionUsesViolationStatesOnly},
         {"malformed timestamp", testMalformedTimestampDoesNotWrite},
         {"image failure", testImageFailureDoesNotCreatePartialCsvRow},
         {"CSV write failure", testCsvWriteFailureIsReported},

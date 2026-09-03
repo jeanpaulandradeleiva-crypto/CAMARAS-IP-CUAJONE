@@ -317,6 +317,7 @@ PYBIND11_MODULE(cuajone_native, module) {
         .def_readwrite("pose_class_count", &EnginePipelineConfig::pose_class_count)
         .def_readwrite("pose_keypoint_shape", &EnginePipelineConfig::pose_keypoint_shape)
         .def_readwrite("allow_nonperson_pose_class", &EnginePipelineConfig::allow_nonperson_pose_class)
+        .def_readwrite("pose_requires_person", &EnginePipelineConfig::pose_requires_person)
         .def_readwrite("device", &EnginePipelineConfig::device)
         .def_readwrite("image_size", &EnginePipelineConfig::image_size)
         .def_readwrite("ppe_confidence", &EnginePipelineConfig::ppe_confidence)

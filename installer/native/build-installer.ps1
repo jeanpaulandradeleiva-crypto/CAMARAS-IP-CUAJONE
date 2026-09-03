@@ -179,8 +179,8 @@ model = YOLO(source_model)
 if task == "detect":
     head = model.model.model[-1]
     if hasattr(head, "end2end"):
-        head.end2end = False
-    model.export(format="onnx", imgsz=640, dynamic=True, nms=False, end2end=False)
+        head.end2end = True
+    model.export(format="onnx", imgsz=640, dynamic=True, nms=False, end2end=True)
 else:
     model.export(format="onnx", imgsz=640, dynamic=True, nms=False)
 '@
@@ -261,7 +261,7 @@ input_contract = tensor_contract(model.graph.input, ("batch", "channels", "heigh
 output_contract = tensor_contract(model.graph.output, ("batch", "channels", "predictions"))
 if input_contract["shape"] != [1, 3, "height", "width"]:
     raise RuntimeError("exported ONNX input must be dynamic [1,3,height,width]")
-expected_output_shape = [1, 12, "predictions"] if role == "ppe" else [1, 300, 57]
+expected_output_shape = [1, 300, 6] if role == "ppe" else [1, 300, 57]
 if output_contract["shape"] != expected_output_shape:
     raise RuntimeError("exported ONNX output must use the approved bounded role schema")
 
@@ -271,8 +271,7 @@ for image_size in (640, 768, 960, 1280):
         [output_contract["name"]],
         {input_contract["name"]: np.zeros((1, 3, image_size, image_size), dtype=np.float32)},
     )[0]
-    predictions = sum((image_size // stride) ** 2 for stride in (8, 16, 32))
-    expected_shape = (1, 12, predictions) if role == "ppe" else (1, 300, 57)
+    expected_shape = (1, 300, 6) if role == "ppe" else (1, 300, 57)
     if output.dtype != np.float32 or tuple(output.shape) != expected_shape:
         raise RuntimeError(f"exported ONNX failed dynamic validation at imgsz {image_size}")
     if output.size > 16 * 1024 * 1024:
@@ -280,10 +279,14 @@ for image_size in (640, 768, 960, 1280):
 
 with open(model_path, "rb") as stream:
     model_bytes = stream.read()
+source_filename = source_model.rsplit("\\", 1)[-1].rsplit("/", 1)[-1]
+with open(source_model, "rb") as stream:
+    source_sha256 = hashlib.sha256(stream.read()).hexdigest()
 manifest = {
-    "schema_version": 2,
+    "schema_version": 3,
     "artifact_type": "onnx",
     "role": role,
+    "inference_mode": "end2end",
     "model_file": model_path.rsplit("\\", 1)[-1].rsplit("/", 1)[-1],
     "model_sha256": hashlib.sha256(model_bytes).hexdigest(),
     "model_size_bytes": len(model_bytes),
@@ -300,9 +303,13 @@ manifest = {
         "maximum_image_size": 1280,
     },
     "provenance": {
-        "source_uri": "urn:cuajone:bundled-model:" + source_model,
+        "source_uri": "urn:cuajone:bundled-model:" + source_filename,
         "exporter": "ultralytics-onnx-export",
         "license": "NOASSERTION",
+        "source_checkpoint": {
+            "filename": source_filename,
+            "sha256": source_sha256,
+        },
     },
 }
 if role == "ppe":
@@ -313,7 +320,7 @@ if role == "ppe":
     ]
 print(json.dumps(manifest, separators=(",", ":")))
 '@
-    $output = @(& $PythonPath -c $python $OnnxPath $Role ([System.IO.Path]::GetFileName($SourceModel)) 2>&1)
+    $output = @(& $PythonPath -c $python $OnnxPath $Role $SourceModel 2>&1)
     if ($LASTEXITCODE -ne 0) {
         throw "ONNX manifest generation failed for $OnnxPath`n$($output -join [Environment]::NewLine)"
     }
@@ -364,7 +371,7 @@ function Test-ExportedOnnxCache(
         if ($Role -ceq "ppe") { $expectedRootKeys += @("label_contract", "labels") }
         $actualRootKeys = @($manifest.PSObject.Properties.Name | Sort-Object)
         if (($actualRootKeys -join "`n") -cne (@($expectedRootKeys | Sort-Object) -join "`n")) { return $false }
-        if ($manifest.schema_version -ne 2 -or $manifest.artifact_type -cne "onnx" -or $manifest.role -cne $Role `
+        if ($manifest.schema_version -ne 3 -or $manifest.artifact_type -cne "onnx" -or $manifest.role -cne $Role `
             -or $manifest.model_file -cne (Split-Path -Leaf $OnnxPath) `
             -or $manifest.external_data -ne $false -or $manifest.custom_operators -ne $false) { return $false }
 
@@ -377,7 +384,9 @@ function Test-ExportedOnnxCache(
             -or (@($manifest.output.PSObject.Properties.Name | Sort-Object) -join "`n") -cne (@($expectedTensorKeys | Sort-Object) -join "`n") `
             -or $manifest.input.element_type -cne "float32" -or $manifest.output.element_type -cne "float32" `
             -or (@($manifest.input.shape) -join ",") -cne "1,3,height,width") { return $false }
-        $expectedOutput = if ($Role -ceq "ppe") { "1,12,predictions" } else { "1,300,57" }
+        $expectedOutput = if ($Role -ceq "ppe") { "1,300,6" } else { "1,300,57" }
+        $expectedInferenceMode = "end2end"
+        if ($manifest.inference_mode -cne $expectedInferenceMode) { return $false }
         if ((@($manifest.output.shape) -join ",") -cne $expectedOutput) { return $false }
 
         $expectedDynamicKeys = @("batch", "channels", "allowed_image_sizes", "minimum_image_size", "optimum_image_size", "maximum_image_size")
@@ -386,7 +395,9 @@ function Test-ExportedOnnxCache(
             -or (@($manifest.dynamic_shape.allowed_image_sizes) -join ",") -cne "640,768,960,1280" `
             -or $manifest.dynamic_shape.minimum_image_size -ne 640 -or $manifest.dynamic_shape.optimum_image_size -ne 640 `
             -or $manifest.dynamic_shape.maximum_image_size -ne 1280) { return $false }
-        if ((@($manifest.provenance.PSObject.Properties.Name | Sort-Object) -join "`n") -cne "exporter`nlicense`nsource_uri") { return $false }
+        if ((@($manifest.provenance.PSObject.Properties.Name | Sort-Object) -join "`n") -cne "exporter`nlicense`nsource_checkpoint`nsource_uri") { return $false }
+        if ((@($manifest.provenance.source_checkpoint.PSObject.Properties.Name | Sort-Object) -join "`n") -cne "filename`nsha256" `
+            -or [string]::IsNullOrWhiteSpace($manifest.provenance.source_checkpoint.filename)) { return $false }
 
         if ($Role -ceq "ppe") {
             $expectedLabels = "Gloves,Person,Safety_boots,Vest,respirador,tapaorejas,Hard_hat,lentes_protectores"
@@ -412,8 +423,8 @@ function Get-OrExportOnnxModel(
     Ensure-Directory $CacheRoot
     $sourceSha256 = (Get-FileHash -Algorithm SHA256 -LiteralPath $SourceModel).Hash.ToLowerInvariant()
     $exporterVersion = Get-UltralyticsVersion $PythonPath
-    $exportMode = if ($Task -ceq "detect") { "raw-detect-dynamic-end2end-false-v2" } else { "raw-pose-dynamic-v2" }
-    $recipe = "recipe_version=4;role=$Role;task=$Task;export_mode=$exportMode;allowed_imgsz=640,768,960,1280;source_sha256=$sourceSha256;ultralytics=$exporterVersion"
+    $exportMode = if ($Task -ceq "detect") { "end2end-detect-dynamic-v3" } else { "raw-pose-dynamic-v3" }
+    $recipe = "recipe_version=5;role=$Role;task=$Task;export_mode=$exportMode;allowed_imgsz=640,768,960,1280;source_sha256=$sourceSha256;ultralytics=$exporterVersion"
     $cacheDirectory = Join-Path $CacheRoot (Get-StringSha256 $recipe)
     $onnxPath = Join-Path $cacheDirectory "$Role.onnx"
     $manifestPath = "$onnxPath.manifest.json"

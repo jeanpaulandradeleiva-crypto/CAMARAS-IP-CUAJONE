@@ -255,6 +255,29 @@ void exactKeys(
     }
 }
 
+// Like exactKeys, but tolerates one optional extension key on top of the
+// required set so manifests produced before the extension stay valid.
+void keysWithOptional(
+    const JsonValue::Object& object,
+    std::initializer_list<std::string_view> expected,
+    std::string_view optional_key,
+    std::string_view name) {
+    for (const auto& [key, value] : object) {
+        static_cast<void>(value);
+        const bool known = std::any_of(expected.begin(), expected.end(),
+            [&](std::string_view candidate) { return candidate == key; })
+            || key == optional_key;
+        if (!known) {
+            throw std::runtime_error(std::string(name) + " contains missing or unsupported fields");
+        }
+    }
+    for (const auto key : expected) {
+        if (!object.contains(std::string(key))) {
+            throw std::runtime_error(std::string(name) + " is missing '" + std::string(key) + "'");
+        }
+    }
+}
+
 std::string stringValue(const JsonValue& value, std::string_view name, std::size_t maximum = 1024) {
     const auto* text = std::get_if<std::string>(&value.value);
     if (text == nullptr || text->empty() || text->size() > maximum) {
@@ -357,22 +380,32 @@ OnnxModelManifest parseManifest(std::string_view json) {
             "model_size_bytes", "external_data", "custom_operators", "input", "output",
             "provenance", "label_contract", "labels",
         }, "ONNX manifest");
-        else exactKeys(root, {
+        else if (schema_version == 2) exactKeys(root, {
             "schema_version", "artifact_type", "role", "model_file", "model_sha256",
             "model_size_bytes", "external_data", "custom_operators", "input", "output",
             "provenance", "label_contract", "labels", "dynamic_shape",
         }, "ONNX manifest");
+        else keysWithOptional(root, {
+            "schema_version", "artifact_type", "role", "model_file", "model_sha256",
+            "model_size_bytes", "external_data", "custom_operators", "input", "output",
+            "provenance", "label_contract", "labels", "dynamic_shape",
+        }, "inference_mode", "ONNX manifest");
     } else {
         if (schema_version == 1) exactKeys(root, {
             "schema_version", "artifact_type", "role", "model_file", "model_sha256",
             "model_size_bytes", "external_data", "custom_operators", "input", "output",
             "provenance",
         }, "ONNX manifest");
-        else exactKeys(root, {
+        else if (schema_version == 2) exactKeys(root, {
             "schema_version", "artifact_type", "role", "model_file", "model_sha256",
             "model_size_bytes", "external_data", "custom_operators", "input", "output",
             "provenance", "dynamic_shape",
         }, "ONNX manifest");
+        else keysWithOptional(root, {
+            "schema_version", "artifact_type", "role", "model_file", "model_sha256",
+            "model_size_bytes", "external_data", "custom_operators", "input", "output",
+            "provenance", "dynamic_shape",
+        }, "inference_mode", "ONNX manifest");
     }
     if (stringValue(required(root, "artifact_type"), "artifact_type", 16) != "onnx") {
         throw std::runtime_error("ONNX manifest artifact_type must be onnx");
@@ -382,6 +415,13 @@ OnnxModelManifest parseManifest(std::string_view json) {
     if (role == "ppe") result.role = ModelRole::Ppe;
     else if (role == "pose") result.role = ModelRole::Pose;
     else throw std::runtime_error("ONNX manifest role must be ppe or pose");
+    if (const auto inference_mode = root.find("inference_mode"); inference_mode != root.end()) {
+        const auto mode = stringValue(inference_mode->second, "inference_mode", 16);
+        if (mode != "raw-nms" && mode != "end2end") {
+            throw std::runtime_error("ONNX manifest inference_mode must be raw-nms or end2end");
+        }
+        result.inference_mode = mode;
+    }
     result.model_file = stringValue(required(root, "model_file"), "model_file", 255);
     result.model_sha256 = stringValue(required(root, "model_sha256"), "model_sha256", 64);
     if (result.model_sha256.size() != 64 || std::any_of(
@@ -463,9 +503,15 @@ OnnxModelManifest parseManifest(std::string_view json) {
         }
     }
     if (schema_version >= 2) {
-        const std::vector<std::int64_t> expected_output = result.role == ModelRole::Ppe
-            ? std::vector<std::int64_t>{1, 12, -1}
-            : std::vector<std::int64_t>{1, 300, 57};
+        // PPE accepts both approved contracts: end-to-end (default, static
+        // [1,300,6] with decode+NMS fused in-graph) and raw [1,12,predictions].
+        const bool ppe_end_to_end = result.role == ModelRole::Ppe
+            && result.inference_mode == "end2end";
+        const std::vector<std::int64_t> expected_output = ppe_end_to_end
+            ? std::vector<std::int64_t>{1, 300, 6}
+            : (result.role == ModelRole::Ppe
+                ? std::vector<std::int64_t>{1, 12, -1}
+                : std::vector<std::int64_t>{1, 300, 57});
         if (result.output.shape != expected_output) {
             throw std::runtime_error(
                 "Dynamic ONNX output must match the approved bounded role schema");

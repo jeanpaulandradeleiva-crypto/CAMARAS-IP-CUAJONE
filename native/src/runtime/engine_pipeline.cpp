@@ -124,6 +124,7 @@ struct NativeEnginePipeline::Impl {
         validateImageSize(config.image_size);
         validatePpeClassConfidences(config.ppe_class_confidences);
         summary.image_size = config.image_size;
+        summary.pose_requires_person = config.pose_requires_person;
         if (config.maximum_detections == 0
             || config.maximum_detections > DecodeLimits{}.max_nms_candidates) {
             throw std::invalid_argument("maximum_detections is outside the supported range");
@@ -141,6 +142,20 @@ struct NativeEnginePipeline::Impl {
             throw std::invalid_argument("Engine pipeline requires a resolved backend and matching provider");
         }
         cachePpeClassEnabledMask();
+        if (config.telemetry != nullptr) {
+            config.telemetry->setExecutionPath({
+                hybrid_pose_executor,
+                tensorrt_gpu_overlap,
+                shared_preprocessing,
+                std::string(computeBackendName(summary.backend)),
+                summary.provider,
+                summary.device_name,
+                summary.device_index,
+                summary.device_count,
+                summary.compute_major,
+                summary.compute_minor,
+            });
+        }
     }
 
     ~Impl() { pose_executor.shutdown(); }
@@ -266,8 +281,10 @@ struct NativeEnginePipeline::Impl {
             // GPU overlap only helps when the device has enough SMs to co-schedule
             // two FP32 engines; small cards (e.g. GTX 1650 Ti, SM 7.5) serialize at
             // the device level and overlap regresses (~0.8%) with misleading telemetry.
+            // The person gate needs the PPE decision before scheduling pose, which is
+            // incompatible with submitting both engines up front.
             tensorrt_gpu_overlap = config.analytics.mode == AnalyticsMode::PpeFall
-                && device.compute_major >= 8;
+                && device.compute_major >= 8 && !config.pose_requires_person;
 #ifdef CUAJONE_INTERNAL_DIAGNOSTICS
             tensorrt_gpu_overlap = tensorrt_gpu_overlap && !config.force_serial_tensorrt;
 #endif
@@ -330,7 +347,9 @@ struct NativeEnginePipeline::Impl {
                 pose_session->inputWidth(), pose_session->inputHeight());
             summary.pose_loaded = true;
             resolveSharedPreprocessing();
-            hybrid_pose_executor = true;
+            // The person gate must wait for the PPE decode, so it cannot use the
+            // overlap path that submits pose before any detection is known.
+            hybrid_pose_executor = !config.pose_requires_person;
 #ifdef CUAJONE_INTERNAL_DIAGNOSTICS
             hybrid_pose_executor = !config.force_serial_hybrid;
 #endif
@@ -343,7 +362,13 @@ struct NativeEnginePipeline::Impl {
         std::uint64_t frame_id,
         std::int64_t monotonic_timestamp_ms,
         std::string observed_at) {
-        std::scoped_lock process_lock(process_mutex);
+        const auto mutex_wait_started = config.telemetry == nullptr
+            ? std::chrono::steady_clock::time_point{} : std::chrono::steady_clock::now();
+        std::unique_lock<std::mutex> process_lock(process_mutex);
+        if (config.telemetry != nullptr) {
+            config.telemetry->addSample(PerformanceStage::ProcessMutexWait,
+                std::chrono::steady_clock::now() - mutex_wait_started);
+        }
         if (frame.empty() || frame.type() != CV_8UC3) {
             throw std::invalid_argument("Engine pipeline requires a non-empty CV_8UC3 BGR frame");
         }
@@ -483,35 +508,40 @@ struct NativeEnginePipeline::Impl {
             if (hybrid_pose_executor) {
                 poses = pose_future.get();
             } else if (pose_session) {
-                PreprocessedFrame pose_input = ppe_input;
-                if (!shared_preprocessing) {
-                    const auto pose_preprocess_started = config.telemetry == nullptr
-                        ? std::chrono::steady_clock::time_point{} : std::chrono::steady_clock::now();
-                    pose_input = pose_preprocessor->process(frame);
-                    if (config.telemetry != nullptr) {
-                        config.telemetry->addSample(PerformanceStage::PosePreprocess,
-                            std::chrono::steady_clock::now() - pose_preprocess_started);
+                if (config.pose_requires_person && !personDetectedInPpe(ppe_detections)) {
+                    // No person in the frame: skip the whole pose stage.
+                    poses.clear();
+                } else {
+                    PreprocessedFrame pose_input = ppe_input;
+                    if (!shared_preprocessing) {
+                        const auto pose_preprocess_started = config.telemetry == nullptr
+                            ? std::chrono::steady_clock::time_point{} : std::chrono::steady_clock::now();
+                        pose_input = pose_preprocessor->process(frame);
+                        if (config.telemetry != nullptr) {
+                            config.telemetry->addSample(PerformanceStage::PosePreprocess,
+                                std::chrono::steady_clock::now() - pose_preprocess_started);
+                        }
                     }
-                }
-                const auto pose_inference_started = config.telemetry == nullptr
-                    ? std::chrono::steady_clock::time_point{} : std::chrono::steady_clock::now();
-                const auto pose_output = pose_session->infer(pose_input.nchw());
-                if (config.telemetry != nullptr) {
-                    config.telemetry->addSample(PerformanceStage::PoseInference,
-                        std::chrono::steady_clock::now() - pose_inference_started);
-                }
-                const auto pose_decode_started = config.telemetry == nullptr
-                    ? std::chrono::steady_clock::time_point{} : std::chrono::steady_clock::now();
-                poses = decodePoses(
-                    {pose_output.values, pose_output.shape}, pose_class_count,
-                    static_cast<std::size_t>(keypoint_shape[0]),
-                    static_cast<std::size_t>(keypoint_shape[1]),
-                    config.analytics.tracker.low_confidence_threshold,
-                    config.nms_iou, pose_input.transform,
-                    {DecodeLimits{}.max_nms_candidates, config.maximum_detections});
-                if (config.telemetry != nullptr) {
-                    config.telemetry->addSample(PerformanceStage::PoseDecode,
-                        std::chrono::steady_clock::now() - pose_decode_started);
+                    const auto pose_inference_started = config.telemetry == nullptr
+                        ? std::chrono::steady_clock::time_point{} : std::chrono::steady_clock::now();
+                    const auto pose_output = pose_session->infer(pose_input.nchw());
+                    if (config.telemetry != nullptr) {
+                        config.telemetry->addSample(PerformanceStage::PoseInference,
+                            std::chrono::steady_clock::now() - pose_inference_started);
+                    }
+                    const auto pose_decode_started = config.telemetry == nullptr
+                        ? std::chrono::steady_clock::time_point{} : std::chrono::steady_clock::now();
+                    poses = decodePoses(
+                        {pose_output.values, pose_output.shape}, pose_class_count,
+                        static_cast<std::size_t>(keypoint_shape[0]),
+                        static_cast<std::size_t>(keypoint_shape[1]),
+                        config.analytics.tracker.low_confidence_threshold,
+                        config.nms_iou, pose_input.transform,
+                        {DecodeLimits{}.max_nms_candidates, config.maximum_detections});
+                    if (config.telemetry != nullptr) {
+                        config.telemetry->addSample(PerformanceStage::PoseDecode,
+                            std::chrono::steady_clock::now() - pose_decode_started);
+                    }
                 }
             }
         }
@@ -529,6 +559,13 @@ struct NativeEnginePipeline::Impl {
                 std::chrono::steady_clock::now() - pipeline_started);
         }
         return result;
+    }
+
+    bool personDetectedInPpe(const std::vector<Detection>& detections) const noexcept {
+        return std::any_of(detections.begin(), detections.end(), [&](const Detection& detection) {
+            return std::find(ppe_classes.person_ids.begin(), ppe_classes.person_ids.end(),
+                detection.class_id) != ppe_classes.person_ids.end();
+        });
     }
 
     void cachePpeClassEnabledMask() {
